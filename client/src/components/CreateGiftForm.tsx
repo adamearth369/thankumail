@@ -21,7 +21,7 @@ export function CreateGiftForm() {
     defaultValues: {
       recipientEmail: "",
       message: "",
-      amount: 10,
+      amount: 1000,
     },
   });
 
@@ -135,7 +135,8 @@ export function CreateGiftForm() {
                       placeholder="10" 
                       className="pl-12 text-lg font-bold font-display" 
                       {...field}
-                      onChange={(e) => field.onChange(Number(e.target.value))}
+                      onChange={(e) => field.onChange(Number(e.target.value) * 100)}
+                      value={field.value / 100}
                     />
                   </div>
                 </FormControl>
