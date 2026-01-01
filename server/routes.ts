@@ -14,7 +14,7 @@ async function seed() {
     await db.insert(gifts).values({
       publicId,
       recipientEmail: "demo@example.com",
-      message: "Here's a little thank you for trying out ThankuMail! 🎁",
+      message: "Here's a little thank you for trying out ThanküMail! 🎁",
       amount: 1000, // $10.00
       isClaimed: false,
     });

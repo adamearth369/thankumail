@@ -13,7 +13,7 @@ export default function Home() {
               <Mail className="w-6 h-6" />
             </div>
             <span className="text-xl font-bold font-display tracking-tight text-gray-900">
-              Thanku<span className="text-primary">Mail</span>
+              Thankü<span className="text-primary">Mail</span>
             </span>
           </div>
           <a href="https://github.com" target="_blank" rel="noreferrer" className="text-sm font-bold text-slate-500 hover:text-primary transition-colors">
