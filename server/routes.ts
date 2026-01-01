@@ -5,6 +5,7 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
+import { sendGiftEmail } from "./email";
 
 async function seed() {
   const existing = await db.query.gifts.findFirst();
@@ -32,6 +33,14 @@ export async function registerRoutes(
     try {
       const input = api.gifts.create.input.parse(req.body);
       const gift = await storage.createGift(input);
+      
+      // Send email in the background
+      const protocol = req.headers["x-forwarded-proto"] || "http";
+      const host = req.headers["host"];
+      const claimLink = `${protocol}://${host}/claim/${gift.publicId}`;
+      
+      sendGiftEmail(gift.recipientEmail, claimLink, gift.amount).catch(console.error);
+      
       res.status(201).json(gift);
     } catch (err) {
       if (err instanceof z.ZodError) {
