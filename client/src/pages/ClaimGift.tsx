@@ -186,7 +186,7 @@ export default function ClaimGift() {
       <div className="mt-8 opacity-50 hover:opacity-100 transition-opacity">
         <a href="/" className="flex items-center gap-2 text-slate-500">
           <Gift className="w-4 h-4" />
-          <span className="text-sm font-bold font-display">ThanküMail</span>
+          <span className="text-sm font-bold font-display">Thank<span className="text-primary">ü</span><span className="text-primary">Mail</span></span>
         </a>
       </div>
     </div>
