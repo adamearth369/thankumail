@@ -13,12 +13,14 @@ export const gifts = pgTable("gifts", {
   claimedAt: timestamp("claimed_at"),
 });
 
-export const insertGiftSchema = createInsertSchema(gifts).omit({
+export const insertGiftSchema = createInsertSchema(gifts).extend({
+  amount: z.coerce.number().min(1000, "Minimum amount is $10").max(100000, "Maximum amount is $1000"),
+}).omit({
   id: true,
   createdAt: true,
   claimedAt: true,
   isClaimed: true,
-  publicId: true, // Generated on backend
+  publicId: true,
 });
 
 export type Gift = typeof gifts.$inferSelect;
