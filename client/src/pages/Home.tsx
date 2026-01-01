@@ -1,6 +1,6 @@
 import { CreateGiftForm } from "@/components/CreateGiftForm";
 import { motion } from "framer-motion";
-import { Mail, Sparkles, Coffee } from "lucide-react";
+import { Mail, Sparkles, Coffee, Heart } from "lucide-react";
 
 export default function Home() {
   return (
