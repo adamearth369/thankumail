@@ -1,6 +1,6 @@
 import { CreateGiftForm } from "@/components/CreateGiftForm";
 import { motion } from "framer-motion";
-import { Heart, Sparkles, Coffee } from "lucide-react";
+import { Mail, Sparkles, Coffee } from "lucide-react";
 
 export default function Home() {
   return (
@@ -10,7 +10,7 @@ export default function Home() {
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/20">
-              <Heart className="w-6 h-6 fill-current" />
+              <Mail className="w-6 h-6" />
             </div>
             <span className="text-xl font-bold font-display tracking-tight text-gray-900">
               Thanku<span className="text-primary">Mail</span>
