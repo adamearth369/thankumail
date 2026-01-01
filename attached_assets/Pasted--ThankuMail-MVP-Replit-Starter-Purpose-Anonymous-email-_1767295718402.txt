@@ -1,0 +1,93 @@
+// ThankuMail MVP – Replit Starter
+// Purpose: Anonymous email gifting service (gift cards / digital notes)
+// Stack: Node.js + Express (simple, Replit-friendly)
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const crypto = require('crypto');
+
+const app = express();
+app.use(bodyParser.json());
+
+// ------------------ In-Memory Storage (replace with DB later) ------------------
+const gifts = {}; // giftId -> gift object
+
+// ------------------ Utilities ------------------
+function generateId() {
+  return crypto.randomBytes(6).toString('hex');
+}
+
+// ------------------ Routes ------------------
+
+// Health check
+app.get('/', (req, res) => {
+  res.json({ status: 'ThankuMail MVP running' });
+});
+
+// Create a gift (anonymous sender)
+app.post('/api/gift/create', (req, res) => {
+  const { recipientEmail, message, amount } = req.body;
+
+  if (!recipientEmail || !message || !amount) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const giftId = generateId();
+
+  gifts[giftId] = {
+    id: giftId,
+    recipientEmail,
+    message,
+    amount,
+    claimed: false,
+    createdAt: new Date().toISOString()
+  };
+
+  // In production: send email with claim link
+  res.json({
+    success: true,
+    giftId,
+    claimLink: `/claim/${giftId}`
+  });
+});
+
+// View gift (recipient side)
+app.get('/api/gift/:id', (req, res) => {
+  const gift = gifts[req.params.id];
+  if (!gift) return res.status(404).json({ error: 'Gift not found' });
+
+  res.json({
+    message: gift.message,
+    amount: gift.amount,
+    claimed: gift.claimed
+  });
+});
+
+// Claim gift
+app.post('/api/gift/:id/claim', (req, res) => {
+  const gift = gifts[req.params.id];
+  if (!gift) return res.status(404).json({ error: 'Gift not found' });
+  if (gift.claimed) return res.status(400).json({ error: 'Already claimed' });
+
+  gift.claimed = true;
+  gift.claimedAt = new Date().toISOString();
+
+  // In production: payout logic or gift card provider API
+  res.json({ success: true, amount: gift.amount });
+});
+
+// ------------------ Server ------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`ThankuMail MVP listening on port ${PORT}`);
+});
+
+/*
+NEXT STEPS (roadmap):
+1. Replace in-memory store with database (Postgres / SQLite).
+2. Add email delivery (SendGrid, SES).
+3. Integrate payment intake (Stripe) BEFORE gift creation.
+4. Add compliance rules (no cash laundering, KYC thresholds).
+5. Frontend (simple React or HTML forms).
+6. Admin dashboard for dispute & fraud review.
+*/
