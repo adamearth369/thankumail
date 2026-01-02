@@ -33,16 +33,15 @@ export async function registerRoutes(
     try {
       const { recipientEmail, message, amount } = req.body;
 
-      if (!recipientEmail || !message || !amount) {
+      if (!recipientEmail || !message || amount === undefined) {
         return res.status(400).json({ error: 'Missing fields' });
       }
 
-      if (message.length > 300) {
-        return res.status(400).json({ error: 'Message too long (max 300 characters)' });
-      }
-      const cleanMessage = message.trim();
-
-      const input = api.gifts.create.input.parse({ ...req.body, message: cleanMessage });
+      const input = api.gifts.create.input.parse({ 
+        recipientEmail, 
+        message: message.trim(), 
+        amount 
+      });
       const gift = await storage.createGift(input);
       
       const protocol = req.headers["x-forwarded-proto"] || "http";
