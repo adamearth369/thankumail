@@ -31,16 +31,18 @@ export async function registerRoutes(
 
   app.post(api.gifts.create.path, async (req, res) => {
     try {
+      console.log("Create gift request body:", req.body);
       const { recipientEmail, message, amount } = req.body;
 
-      if (!recipientEmail || !message || amount === undefined) {
-        return res.status(400).json({ error: 'Missing fields' });
+      // Relaxed validation to debug
+      if (!recipientEmail || amount === undefined) {
+        return res.status(400).json({ error: 'Missing required fields: recipientEmail or amount' });
       }
 
       const input = api.gifts.create.input.parse({ 
         recipientEmail, 
-        message: message.trim(), 
-        amount 
+        message: (message || "").trim(), 
+        amount: Number(amount)
       });
       const gift = await storage.createGift(input);
       
