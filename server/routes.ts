@@ -39,6 +39,10 @@ export async function registerRoutes(
         return res.status(400).json({ error: 'Missing required fields: recipientEmail or amount' });
       }
 
+      if (message && message.length > 3000) {
+        return res.status(400).json({ error: 'Message too long (max 3000 characters)' });
+      }
+
       const input = api.gifts.create.input.parse({ 
         recipientEmail, 
         message: (message || "").trim(), 
