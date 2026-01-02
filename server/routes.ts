@@ -69,7 +69,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post('/test-email', async (req, res) => {
+  app.post('/api/send', async (req, res) => {
     try {
       const { to, subject, message } = req.body;
       if (!to || !subject || !message) {
