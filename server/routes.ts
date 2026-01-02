@@ -51,7 +51,7 @@ export async function registerRoutes(
       
       await sendGiftEmail(gift.recipientEmail, claimLink, gift.amount, gift.message);
       
-      res.status(201).json({ success: true, giftId: gift.publicId, claimLink });
+      res.status(201).json({ success: true, giftId: gift.publicId, claimLink: `/claim/${gift.publicId}` });
     } catch (err) {
       console.error(err);
       if (err instanceof z.ZodError) {
