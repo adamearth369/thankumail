@@ -31,25 +31,31 @@ export async function registerRoutes(
 
   app.post(api.gifts.create.path, async (req, res) => {
     try {
+      const { recipientEmail, message, amount } = req.body;
+
+      if (!recipientEmail || !message || !amount) {
+        return res.status(400).json({ error: 'Missing fields' });
+      }
+
       const input = api.gifts.create.input.parse(req.body);
       const gift = await storage.createGift(input);
       
-      // Send email in the background
       const protocol = req.headers["x-forwarded-proto"] || "http";
       const host = req.headers["host"];
       const claimLink = `${protocol}://${host}/claim/${gift.publicId}`;
       
-      sendGiftEmail(gift.recipientEmail, claimLink, gift.amount).catch(console.error);
+      await sendGiftEmail(gift.recipientEmail, claimLink, gift.amount, gift.message);
       
-      res.status(201).json(gift);
+      res.status(201).json({ success: true, giftId: gift.publicId, claimLink });
     } catch (err) {
+      console.error(err);
       if (err instanceof z.ZodError) {
         return res.status(400).json({
           message: err.errors[0].message,
           field: err.errors[0].path.join('.'),
         });
       }
-      throw err;
+      res.status(500).json({ error: 'Email failed to send' });
     }
   });
 
