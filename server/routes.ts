@@ -68,16 +68,31 @@ export async function registerRoutes(
   });
 
   app.post(api.gifts.claim.path, async (req, res) => {
-    const gift = await storage.getGift(req.params.publicId);
-    if (!gift) {
-      return res.status(404).json({ message: 'Gift not found' });
+    try {
+      const gift = await storage.getGift(req.params.publicId);
+      if (!gift) {
+        return res.status(404).send('<h2>Gift not found</h2>');
+      }
+      if (gift.isClaimed) {
+        return res.status(400).send('<h2>This gift has already been claimed 🎁</h2>');
+      }
+      
+      const claimedGift = await storage.claimGift(req.params.publicId);
+      
+      res.send(`
+        <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+          <h1>🎉 Gift Claimed!</h1>
+          <p><strong>Amount:</strong> $${(claimedGift.amount / 100).toFixed(2)}</p>
+          <p><strong>Message:</strong></p>
+          <p style="font-style: italic; color: #666;">"${claimedGift.message}"</p>
+          <p>Thank you for using ThanküMail.</p>
+          <a href="/" style="display: inline-block; margin-top: 20px; color: #7c3aed; text-decoration: none; font-weight: bold;">Send a gift yourself &rarr;</a>
+        </div>
+      `);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send('<h2>Internal server error</h2>');
     }
-    if (gift.isClaimed) {
-      return res.status(400).json({ message: 'Gift already claimed' });
-    }
-    
-    const claimedGift = await storage.claimGift(req.params.publicId);
-    res.json(claimedGift);
   });
 
   return httpServer;
