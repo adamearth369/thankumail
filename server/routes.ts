@@ -65,6 +65,21 @@ export async function registerRoutes(
     }
   });
 
+  app.post('/test-email', async (req, res) => {
+    try {
+      const { to, subject, message } = req.body;
+      if (!to || !subject || !message) {
+        return res.status(400).json({ error: 'Missing to, subject, or message' });
+      }
+
+      await sendGiftEmail(to, "http://localhost:5000/claim/test", 0, message);
+      res.json({ success: true, message: 'Test email sent' });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Test email failed' });
+    }
+  });
+
   app.get(api.gifts.get.path, async (req, res) => {
     const gift = await storage.getGift(req.params.publicId);
     if (!gift) {
