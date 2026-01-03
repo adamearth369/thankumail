@@ -91,6 +91,26 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/__email_test", async (req, res) => {
+    try {
+      const to = req.query.to as string;
+      if (!to) return res.status(400).send("Missing ?to=email");
+
+      const { transporter } = await import("./email");
+
+      const info = await transporter.sendMail({
+        from: `"${process.env.FROM_NAME}" <${process.env.FROM_EMAIL}>`,
+        to,
+        subject: "ThankuMail SMTP test",
+        text: "If you received this, SMTP works.",
+      });
+
+      res.send(`SENT: ${info.messageId}`);
+    } catch (err) {
+      res.status(500).send(String(err));
+    }
+  });
+
   app.get(api.gifts.get.path, async (req, res) => {
     const gift = await storage.getGift(req.params.publicId);
     if (!gift) {
