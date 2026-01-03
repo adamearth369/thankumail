@@ -1,16 +1,13 @@
 import nodemailer from 'nodemailer';
 
 const transporter = nodemailer.createTransport({
-  host: process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
-  port: parseInt(process.env.BREVO_SMTP_PORT || '587'),
+  host: process.env.BREVO_SMTP_HOST,
+  port: Number(process.env.BREVO_SMTP_PORT),
   secure: false,
   auth: {
-    user: process.env.BREVO_SMTP_USER || process.env.BREVO_EMAIL,
-    pass: process.env.BREVO_SMTP_KEY
+    user: process.env.BREVO_SMTP_USER,
+    pass: process.env.BREVO_SMTP_KEY,
   },
-  tls: {
-    rejectUnauthorized: false
-  }
 });
 
 export async function sendGiftEmail(recipientEmail: string, claimLink: string, amount: number, message?: string) {
