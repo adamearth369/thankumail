@@ -50,9 +50,16 @@ export async function registerRoutes(
       });
       const gift = await storage.createGift(input);
       
-      const protocol = req.headers["x-forwarded-proto"] || "http";
-      const host = req.headers["host"];
-      const claimLink = `${protocol}://${host}/claim/${gift.publicId}`;
+      const baseUrl = process.env.BASE_URL;
+      let claimLink: string;
+      
+      if (baseUrl) {
+        claimLink = `${baseUrl.replace(/\/$/, '')}/claim/${gift.publicId}`;
+      } else {
+        const protocol = req.headers["x-forwarded-proto"] || "http";
+        const host = req.headers["host"];
+        claimLink = `${protocol}://${host}/claim/${gift.publicId}`;
+      }
       
       await sendGiftEmail(gift.recipientEmail, claimLink, gift.amount, gift.message);
       

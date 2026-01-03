@@ -41,3 +41,13 @@ author = "agent"
 task = "shell.exec"
 args = "npm run dev"
 waitForPort = 5000
+
+[userenv]
+
+[userenv.shared]
+BASE_URL = "https://thankumail.com"
+FROM_NAME = "ThankuMail"
+BREVO_SMTP_USER = "apikey"
+FROM_EMAIL = "noreply@thankumail.com"
+BREVO_SMTP_HOST = "smtp-relay.brevo.com"
+BREVO_SMTP_PORT = "587"

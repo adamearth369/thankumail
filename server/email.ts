@@ -1,11 +1,11 @@
 import nodemailer from 'nodemailer';
 
 const transporter = nodemailer.createTransport({
-  host: 'smtp-relay.brevo.com',
-  port: 587,
+  host: process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
+  port: parseInt(process.env.BREVO_SMTP_PORT || '587'),
   secure: false,
   auth: {
-    user: process.env.BREVO_EMAIL,
+    user: process.env.BREVO_SMTP_USER || process.env.BREVO_EMAIL,
     pass: process.env.BREVO_SMTP_KEY
   },
   tls: {
@@ -14,14 +14,17 @@ const transporter = nodemailer.createTransport({
 });
 
 export async function sendGiftEmail(recipientEmail: string, claimLink: string, amount: number, message?: string) {
-  if (!process.env.BREVO_EMAIL || !(process.env.BREVO_SMTP_KEY || process.env.BREVO_API_KEY)) {
+  const fromEmail = process.env.FROM_EMAIL || process.env.BREVO_EMAIL;
+  const fromName = process.env.FROM_NAME || "ThanküMail";
+  
+  if (!fromEmail || !process.env.BREVO_SMTP_KEY) {
     console.warn("Email credentials missing, skipping email sending");
     return;
   }
 
   const amountFormatted = (amount / 100).toFixed(2);
   const mailOptions = {
-    from: `"ThanküMail" <${process.env.BREVO_EMAIL}>`,
+    from: `"${fromName}" <${fromEmail}>`,
     to: recipientEmail,
     subject: 'You have a gift waiting 🎁',
     text: `You received an anonymous gift of $${amountFormatted}.
