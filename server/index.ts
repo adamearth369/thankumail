@@ -1,42 +1,61 @@
-import express from "express";
+import express, { type Request, Response, NextFunction } from "express";
+import { createServer } from "http";
+import { registerRoutes } from "./routes";
+import { setupVite, serveStatic } from "./vite";
 
 const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-/* BASIC HEALTH CHECK & EMAIL TEST */
-app.get("/__email_test", async (req, res) => {
-  try {
-    const to = String(req.query.to || "");
-    if (!to) return res.status(400).send("Missing ?to=email");
+app.use((req, res, next) => {
+  const start = Date.now();
+  const path = req.path;
+  let resBody: any = undefined;
 
-    const r = await fetch("https://api.brevo.com/v3/smtp/email", {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        "api-key": process.env.BREVO_API_KEY || "",
-      },
-      body: JSON.stringify({
-        sender: {
-          name: process.env.FROM_NAME || "ThankuMail",
-          email: process.env.FROM_EMAIL || "noreply@thankumail.com",
-        },
-        to: [{ email: to }],
-        subject: "ThankuMail API test",
-        textContent: "If you received this, Brevo API sending works.",
-      }),
-    });
+  const originalResJson = res.json;
+  res.json = function (body) {
+    resBody = body;
+    return originalResJson.apply(res, arguments as any);
+  };
 
-    const body = await r.text();
-    if (!r.ok) return res.status(500).send(`BREVO_API_ERROR ${r.status}: ${body}`);
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    if (path.startsWith("/api")) {
+      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      if (resBody) {
+        logLine += ` :: ${JSON.stringify(resBody)}`;
+      }
 
-    return res.send(`SENT_OK: ${body}`);
-  } catch (e: any) {
-    return res.status(500).send(String(e?.message || e));
+      if (logLine.length > 100) {
+        logLine = logLine.substring(0, 97) + "...";
+      }
+
+      console.log(logLine);
+    }
+  });
+
+  next();
+});
+
+(async () => {
+  const server = await registerRoutes(createServer(app), app);
+
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    const status = err.status || err.statusCode || 500;
+    const message = err.message || "Internal Server Error";
+
+    res.status(status).json({ message });
+    throw err;
+  });
+
+  if (app.get("env") === "development") {
+    await setupVite(server, app);
+  } else {
+    serveStatic(app);
   }
-});
 
-/* REQUIRED FOR REPLIT */
-const PORT = Number(process.env.PORT) || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
-});
+  const PORT = Number(process.env.PORT) || 5000;
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`serving on port ${PORT}`);
+  });
+})();
