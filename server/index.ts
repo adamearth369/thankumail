@@ -12,11 +12,14 @@ app.get("/", (_req, res) => {
 const transporter = nodemailer.createTransport({
   host: process.env.BREVO_SMTP_HOST || "smtp-relay.brevo.com",
   port: Number(process.env.BREVO_SMTP_PORT || 587),
-  secure: false,
+  secure: Number(process.env.BREVO_SMTP_PORT) === 465,
   auth: {
     user: process.env.BREVO_SMTP_USER || "apikey",
     pass: process.env.BREVO_SMTP_KEY,
   },
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 /* EMAIL TEST ENDPOINT */
