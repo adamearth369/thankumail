@@ -93,21 +93,33 @@ export async function registerRoutes(
 
   app.get("/__email_test", async (req, res) => {
     try {
-      const to = req.query.to as string;
+      const to = String(req.query.to || "");
       if (!to) return res.status(400).send("Missing ?to=email");
 
-      const { transporter } = await import("./email");
-
-      const info = await transporter.sendMail({
-        from: `"${process.env.FROM_NAME}" <${process.env.FROM_EMAIL}>`,
-        to,
-        subject: "ThankuMail SMTP test",
-        text: "If you received this, SMTP works.",
+      const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "api-key": process.env.BREVO_API_KEY || "",
+        },
+        body: JSON.stringify({
+          sender: {
+            name: process.env.FROM_NAME || "ThankuMail",
+            email: process.env.FROM_EMAIL || "noreply@thankumail.com",
+          },
+          to: [{ email: to }],
+          subject: "ThankuMail API test",
+          textContent: "If you received this, Brevo API sending works.",
+        }),
       });
 
-      res.send(`SENT: ${info.messageId}`);
-    } catch (err) {
-      res.status(500).send(String(err));
+      const body = await r.text();
+      if (!r.ok) return res.status(500).send(`BREVO_API_ERROR ${r.status}: ${body}`);
+
+      return res.send(`SENT_OK: ${body}`);
+    } catch (e: any) {
+      return res.status(500).send(String(e?.message || e));
     }
   });
 
