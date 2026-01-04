@@ -202,7 +202,7 @@ export function CreateGiftForm() {
               )}
             </button>
             <p className="text-center text-xs font-medium text-slate-400">
-              Anonymous by default • No signup required
+              Anonymous by default • Anonymous by default • No signup required
             </p>
           </div>
           {createGift.isError && (

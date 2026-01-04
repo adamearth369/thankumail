@@ -117,7 +117,7 @@ export default function ClaimGift() {
 
               <div className="bg-amber-50 rounded-xl p-6 relative">
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-amber-100 px-3 py-1 rounded-full text-[10px] font-bold text-amber-600 uppercase tracking-wide">
-                  Message
+                  Your message (what do you want to say?)
                 </div>
                 <p className="font-hand text-2xl text-slate-800 leading-relaxed">
                   "{gift.message}"
