@@ -74,7 +74,7 @@ export function CreateGiftForm() {
         </div>
         
         <div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2 font-display">Gift Created Successfully!</h2>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2 font-display">Your thank-you has been sent 💙</h2>
           <p className="text-gray-500">Share this magic link with your friend.</p>
         </div>
 
@@ -126,7 +126,7 @@ export function CreateGiftForm() {
             name="amount"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-gray-700 font-bold ml-1">Gift Amount</FormLabel>
+                <FormLabel className="text-gray-700 font-bold ml-1">Optional gift amount</FormLabel>
                 <FormControl>
                   <div className="relative group">
                     <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-primary transition-colors" />
@@ -150,7 +150,7 @@ export function CreateGiftForm() {
             name="recipientEmail"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-gray-700 font-bold ml-1">Recipient Email</FormLabel>
+                <FormLabel className="text-gray-700 font-bold ml-1">Recipient’s email</FormLabel>
                 <FormControl>
                   <Input placeholder="friend@example.com" className="font-medium" {...field} />
                 </FormControl>
@@ -164,36 +164,52 @@ export function CreateGiftForm() {
             name="message"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-gray-700 font-bold ml-1">Your Message</FormLabel>
+                <FormLabel className="text-gray-700 font-bold ml-1">Your message (what do you want to say?)</FormLabel>
                 <FormControl>
-                  <Textarea 
-                    placeholder="Thanks for being awesome! Here's a little treat for you..." 
-                    className="min-h-[120px] resize-none font-hand text-xl leading-relaxed bg-amber-50/30 border-amber-100 focus:border-amber-300 focus:ring-amber-100" 
-                    {...field} 
-                  />
+                  <div className="space-y-2">
+                    <Textarea 
+                      placeholder="Thanks for being awesome! Here's a little treat for you..." 
+                      className="min-h-[120px] resize-none font-hand text-xl leading-relaxed bg-amber-50/30 border-amber-100 focus:border-amber-300 focus:ring-amber-100" 
+                      {...field} 
+                    />
+                    <div className="flex justify-between text-xs font-medium">
+                      <span className="text-slate-400">Keep it short and sincere. This will be delivered exactly as written.</span>
+                      <span className="text-slate-400">Up to 500 characters</span>
+                    </div>
+                  </div>
                 </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
 
-          <button
-            type="submit"
-            disabled={createGift.isPending}
-            className="w-full btn-primary py-4 text-lg flex items-center justify-center gap-2 group"
-          >
-            {createGift.isPending ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Wrapping Gift...
-              </>
-            ) : (
-              <>
-                Create Gift Link 
-                <Gift className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-              </>
-            )}
-          </button>
+          <div className="space-y-3">
+            <button
+              type="submit"
+              disabled={createGift.isPending}
+              className="w-full btn-primary py-4 text-lg flex items-center justify-center gap-2 group"
+            >
+              {createGift.isPending ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Sending…
+                </>
+              ) : (
+                <>
+                  Send a Thank You
+                  <Gift className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+                </>
+              )}
+            </button>
+            <p className="text-center text-xs font-medium text-slate-400">
+              Anonymous by default • No signup required
+            </p>
+          </div>
+          {createGift.isError && (
+            <p className="text-center text-sm font-medium text-destructive">
+              Something went wrong. Please try again in a moment.
+            </p>
+          )}
         </form>
       </Form>
     </div>

@@ -38,17 +38,12 @@ export default function Home() {
             </div>
             
             <h1 className="text-5xl md:text-7xl font-extrabold font-display leading-[1.1] text-gray-900">
-              Send a little <br/>
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent relative">
-                happiness.
-                <svg className="absolute w-full h-3 -bottom-1 left-0 text-secondary/30 -z-10" viewBox="0 0 100 10" preserveAspectRatio="none">
-                  <path d="M0 5 Q 50 10 100 5" stroke="currentColor" strokeWidth="8" fill="none" />
-                </svg>
-              </span>
+              Send a little happiness.
             </h1>
             
             <p className="text-xl text-slate-600 leading-relaxed max-w-lg">
-              Create a digital gift card in seconds. Send money with a personal note to anyone, anywhere. No account required.
+              Create an anonymous thank-you with a personal note and an optional gift.
+              No account. No pressure. Just appreciation.
             </p>
 
             <div className="flex items-center gap-6 pt-4">
@@ -105,6 +100,10 @@ export default function Home() {
 
         </div>
       </main>
+      
+      <footer className="max-w-6xl mx-auto px-4 py-8 border-t text-center text-sm text-slate-400">
+        © 2026 ThankuMail • Privacy • Terms
+      </footer>
       
       {/* Background blobs */}
       <div className="fixed top-20 left-10 w-72 h-72 bg-primary/10 rounded-full blur-[100px] -z-10 animate-float" />
