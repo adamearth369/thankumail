@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
-import fs from "fs";
 import { createServer } from "http";
+import fs from "fs";
 import Stripe from "stripe";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
@@ -10,7 +10,7 @@ const app = express();
 
 /* =========================
    1) STRIPE WEBHOOK (RAW)
-   MUST be before express.json()
+   MUST be BEFORE express.json()
    ========================= */
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2019-09-09",
@@ -53,21 +53,21 @@ app.get("/__health", (_req: Request, res: Response) => res.status(200).json({ ok
 app.get("/health", (_req: Request, res: Response) => res.status(200).json({ ok: true }));
 
 /* =========================
-   4) SERVER + ROUTES
+   4) HTTP SERVER + ROUTES
    ========================= */
-(async () => {
-  const server = createServer(app);
+const server = createServer(app);
 
+(async () => {
   try {
-    // IMPORTANT: routes.ts expects (httpServer, app)
-    await registerRoutes(server, app);
+    // routes.ts expects (httpServer, app)
+    await registerRoutes(server as any, app as any);
   } catch (e) {
-    console.error("Routes loaded with warnings:", e);
+    console.error("Route registration failed:", e);
   }
 
   /* =========================
      5) STATIC + FALLBACK
-     (avoids ENOENT if dist/public not built yet)
+     - Prevent ENOENT if dist/public missing on Render
      ========================= */
   const publicDir = path.resolve(process.cwd(), "dist", "public");
   const indexHtml = path.join(publicDir, "index.html");
@@ -79,14 +79,11 @@ app.get("/health", (_req: Request, res: Response) => res.status(200).json({ ok: 
   app.get("*", (req: Request, res: Response) => {
     if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found" });
 
-    // If the frontend build is missing on Render, don't crash—return a clear message
-    if (!fs.existsSync(indexHtml)) {
-      return res
-        .status(503)
-        .send("Frontend not built yet (missing dist/public/index.html). Fix Render build to generate it.");
+    if (fs.existsSync(indexHtml)) {
+      return res.sendFile(indexHtml);
     }
 
-    return res.sendFile(indexHtml);
+    return res.status(404).send("Client not built (missing dist/public/index.html)");
   });
 
   /* =========================
@@ -102,6 +99,9 @@ app.get("/health", (_req: Request, res: Response) => res.status(200).json({ ok: 
      ========================= */
   const PORT = Number(process.env.PORT || 10000);
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server listening on ${PORT}`);
+    console.log(`serving on port ${PORT}`);
   });
-})();
+})().catch((e) => {
+  console.error("Fatal startup error:", e);
+  process.exit(1);
+});
