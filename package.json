@@ -4,19 +4,19 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "build": "npm ci && npm run build:server",
-    "build:server": "npx esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs --packages=external",
+    "build": "npm run build:server",
+    "build:server": "node -e \"const fs=require('fs');const entry=fs.existsSync('server/index.ts')?'server/index.ts':(fs.existsSync('src/index.ts')?'src/index.ts':null);if(!entry){console.error('Missing entry: server/index.ts or src/index.ts');process.exit(1)};console.log('Building:',entry)\" && npx esbuild $(node -e \"const fs=require('fs');process.stdout.write(fs.existsSync('server/index.ts')?'server/index.ts':'src/index.ts')\") --bundle --platform=node --format=cjs --outfile=dist/index.cjs --packages=external",
     "start": "node dist/index.cjs"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "zod": "^3.23.8",
-    "nodemailer": "^6.9.13",
-    "pg": "^8.12.0",
-    "drizzle-orm": "^0.33.0"
+    "drizzle-orm": "^0.44.0",
+    "express": "^4.19.2",
+    "nodemailer": "^7.0.0",
+    "pg": "^8.13.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
