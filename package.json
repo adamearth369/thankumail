@@ -1,8 +1,11 @@
 {
   "name": "thankumail",
+  "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "npm run build:app",
+    "build:app": "tsc -p tsconfig.json",
     "start": "node dist/index.cjs"
   },
   "engines": {
