@@ -1,14 +1,5 @@
-{
-  "name": "thankumail",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
 "scripts": {
-  "build": "npm run build:app",
-  "build:app": "node -e \"console.log('build step placeholder')\"",
+  "build": "npm run build:server",
+  "build:server": "node -e \"const fs=require('fs');const path=require('path');const entry=fs.existsSync('server/index.ts')?'server/index.ts':(fs.existsSync('src/index.ts')?'src/index.ts':null);if(!entry){console.error('Missing entry: server/index.ts or src/index.ts');process.exit(1)};console.log('Building',entry);\" && npx esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs || npx esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs",
   "start": "node dist/index.cjs"
-},
-  "engines": {
-    "node": ">=18"
-  }
 }
