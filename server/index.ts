@@ -1,3 +1,6 @@
+// === RENDER SAFE-BOOT (NO DB REQUIRED) ===
+process.env.SKIP_DB = process.env.SKIP_DB || "1";
+
 import express, { type Request, Response, NextFunction } from "express";
 import { createServer } from "http";
 import { registerRoutes } from "./routes";
