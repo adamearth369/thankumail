@@ -5,11 +5,18 @@
   "type": "commonjs",
   "scripts": {
     "build": "npm run build:server",
-    "build:server": "node -e \"const fs=require('fs');const hasServer=fs.existsSync('server/index.ts');const hasSrc=fs.existsSync('src/index.ts');if(!hasServer&&!hasSrc){console.error('Missing entry: server/index.ts or src/index.ts');process.exit(1)}\" && (npx esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs || npx esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs)",
+    "build:server": "npx esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs",
     "start": "node dist/index.cjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.33.0",
+    "express": "^4.19.2",
+    "nodemailer": "^6.9.16",
+    "pg": "^8.12.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
