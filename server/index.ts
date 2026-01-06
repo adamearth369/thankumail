@@ -1,107 +1,54 @@
-import express from "express";
-import path from "path";
+import express, { type Request, Response, NextFunction } from "express";
 import { createServer } from "http";
-import fs from "fs";
-import Stripe from "stripe";
-import type { Request, Response, NextFunction } from "express";
+import path from "path";
 import { registerRoutes } from "./routes";
 
 const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-/* =========================
-   1) STRIPE WEBHOOK (RAW)
-   MUST be BEFORE express.json()
-   ========================= */
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2019-09-09",
+// Project root
+const ROOT_DIR = process.cwd();
+
+// Built frontend location
+const publicDir = path.join(ROOT_DIR, "dist", "public");
+
+// FAST health endpoint for deploy checks
+app.get("/", (_req, res) => {
+  res.status(200).send("OK");
 });
 
-app.post(
-  "/api/webhooks/stripe",
-  express.raw({ type: "application/json" }),
-  (req: Request, res: Response) => {
-    const sig = req.headers["stripe-signature"];
-
-    if (!sig || Array.isArray(sig)) {
-      return res.status(400).send("missing_signature");
-    }
-
-    try {
-      stripe.webhooks.constructEvent(
-        req.body, // raw Buffer
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET as string
-      );
-    } catch {
-      return res.status(400).send("invalid_signature");
-    }
-
-    return res.status(200).send("ok");
-  }
-);
-
-/* =========================
-   2) BODY PARSERS (JSON)
-   ========================= */
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
-
-/* =========================
-   3) HEALTH (BEFORE STATIC)
-   ========================= */
-app.get("/__health", (_req: Request, res: Response) => res.status(200).json({ ok: true }));
-app.get("/health", (_req: Request, res: Response) => res.status(200).json({ ok: true }));
-
-/* =========================
-   4) HTTP SERVER + ROUTES
-   ========================= */
-const server = createServer(app);
+// Debug endpoint
+app.get("/__where", (_req, res) => {
+  res.json({ publicDir, ROOT_DIR });
+});
 
 (async () => {
-  try {
-    // routes.ts expects (httpServer, app)
-    await registerRoutes(server as any, app as any);
-  } catch (e) {
-    console.error("Route registration failed:", e);
-  }
+  const server = createServer(app);
+  const PORT = Number(process.env.PORT) || 10000;
 
-  /* =========================
-     5) STATIC + FALLBACK
-     - Prevent ENOENT if dist/public missing on Render
-     ========================= */
-  const publicDir = path.resolve(process.cwd(), "dist", "public");
-  const indexHtml = path.join(publicDir, "index.html");
-
-  if (fs.existsSync(publicDir)) {
-    app.use(express.static(publicDir));
-  }
-
-  app.get("*", (req: Request, res: Response) => {
-    if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found" });
-
-    if (fs.existsSync(indexHtml)) {
-      return res.sendFile(indexHtml);
-    }
-
-    return res.status(404).send("Client not built (missing dist/public/index.html)");
-  });
-
-  /* =========================
-     6) ERROR HANDLER (LAST)
-     ========================= */
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    console.error("Unhandled error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
-  });
-
-  /* =========================
-     7) LISTEN (RENDER)
-     ========================= */
-  const PORT = Number(process.env.PORT || 10000);
+  // START LISTENING FIRST (do not block deploy health checks)
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`serving on port ${PORT}`);
   });
-})().catch((e) => {
-  console.error("Fatal startup error:", e);
-  process.exit(1);
-});
+
+  // Initialize API routes AFTER listen (do not await)
+  registerRoutes(server, app).catch((err) =>
+    console.error("registerRoutes failed:", err),
+  );
+
+  // Serve built React frontend
+  app.use(express.static(publicDir));
+
+  // SPA fallback (anything not /api goes to index.html)
+  app.get(/^\/(?!api).*/, (_req, res) => {
+    res.sendFile(path.join(publicDir, "index.html"));
+  });
+
+  // Error handler last
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    const status = err.status || err.statusCode || 500;
+    const message = err.message || "Internal Server Error";
+    res.status(status).json({ message });
+  });
+})();

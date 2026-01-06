@@ -1,56 +1,8 @@
-modules = ["nodejs-20", "web", "postgresql-16", "python-3.11"]
-run = "npm run dev"
-hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
+run = "bash -lc 'node dist/index.cjs'"
 
-[nix]
-channel = "stable-24_05"
-
-[[ports]]
-localPort = 3000
-externalPort = 3001
-
-[[ports]]
-localPort = 5000
-externalPort = 80
+[deployment]
+run = ["bash", "-lc", "node dist/index.cjs"]
 
 [[ports]]
 localPort = 10000
-externalPort = 3000
-
-[env]
-PORT = "5000"
-
-[deployment]
-deploymentTarget = "autoscale"
-run = ["node", "./dist/index.cjs"]
-build = ["npm", "run", "build"]
-
-[workflows]
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start application"
-
-[[workflows.workflow]]
-name = "Start application"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "npm run dev"
-waitForPort = 5000
-
-[userenv]
-
-[userenv.shared]
-BASE_URL = "https://thankumail.com"
-FROM_NAME = "ThankuMail"
-BREVO_SMTP_USER = "apikey"
-FROM_EMAIL = "noreply@thankumail.com"
-BREVO_SMTP_HOST = "smtp-relay.brevo.com"
-BREVO_SMTP_PORT = "465"
+externalPort = 80
