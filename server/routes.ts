@@ -26,10 +26,12 @@ async function seed() {
   }
 }
 
-export async function registerRoutes(
-  httpServer: Server,
-  app: Express
-): Promise<Server> {
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // ROOT FALLBACK (prevents "Cannot GET /")
+  app.get("/", (_req, res) => {
+    res.status(200).send("ThankuMail is live ✅");
+  });
+
   // SIMPLE WORKAROUND: never crash deploy if DB/table isn't ready
   try {
     await seed();
@@ -43,15 +45,15 @@ export async function registerRoutes(
       const { recipientEmail, message, amount } = req.body;
 
       if (!recipientEmail || amount === undefined) {
-        return res
-          .status(400)
-          .json({ error: "Missing required fields: recipientEmail or amount" });
+        return res.status(400).json({
+          error: "Missing required fields: recipientEmail or amount",
+        });
       }
 
       if (message && message.length > 3000) {
-        return res
-          .status(400)
-          .json({ error: "Message too long (max 3000 characters)" });
+        return res.status(400).json({
+          error: "Message too long (max 3000 characters)",
+        });
       }
 
       const input = api.gifts.create.input.parse({
@@ -63,22 +65,14 @@ export async function registerRoutes(
       const gift = await storage.createGift(input);
 
       const baseUrl = process.env.BASE_URL;
-      let claimLink: string;
+      const protocol = (req.headers["x-forwarded-proto"] as string) || "http";
+      const host = req.headers["host"];
 
-      if (baseUrl) {
-        claimLink = `${baseUrl.replace(/\/$/, "")}/claim/${gift.publicId}`;
-      } else {
-        const protocol = req.headers["x-forwarded-proto"] || "http";
-        const host = req.headers["host"];
-        claimLink = `${protocol}://${host}/claim/${gift.publicId}`;
-      }
+      const claimLink = baseUrl
+        ? `${baseUrl.replace(/\/$/, "")}/claim/${gift.publicId}`
+        : `${protocol}://${host}/claim/${gift.publicId}`;
 
-      await sendGiftEmail(
-        gift.recipientEmail,
-        claimLink,
-        gift.amount,
-        gift.message
-      );
+      await sendGiftEmail(gift.recipientEmail, claimLink, gift.amount, gift.message);
 
       res.status(201).json({
         success: true,
@@ -146,21 +140,15 @@ export async function registerRoutes(
 
   app.get(api.gifts.get.path, async (req, res) => {
     const gift = await storage.getGift(req.params.publicId);
-    if (!gift) {
-      return res.status(404).json({ message: "Gift not found" });
-    }
+    if (!gift) return res.status(404).json({ message: "Gift not found" });
     res.json(gift);
   });
 
   app.post(api.gifts.claim.path, async (req, res) => {
     try {
       const gift = await storage.getGift(req.params.publicId);
-      if (!gift) {
-        return res.status(404).send("<h2>Gift not found</h2>");
-      }
-      if (gift.isClaimed) {
-        return res.status(400).send("<h2>This gift has already been claimed 🎁</h2>");
-      }
+      if (!gift) return res.status(404).send("<h2>Gift not found</h2>");
+      if (gift.isClaimed) return res.status(400).send("<h2>This gift has already been claimed 🎁</h2>");
 
       const claimedGift = await storage.claimGift(req.params.publicId);
 
@@ -182,13 +170,3 @@ export async function registerRoutes(
 
   return httpServer;
 }
-// ROOT FALLBACK (prevents "Cannot GET /")
-app.get("/", (_req, res) => {
-  res.status(200).send("ThankuMail is live ✅");
-});
-
-const PORT = Number(process.env.PORT) || 5000;
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Listening on http://0.0.0.0:${PORT}`);
-});
-
