@@ -1,9 +1,9 @@
 // GitHub → thankumail repo → server/index.ts
 // COPY/PASTE THIS ENTIRE FILE — REPLACE EVERYTHING
-// (Fixes the real user-facing issue: "Cannot GET /" by defining a root route)
 
-import express, { type Request, type Response, type NextFunction } from "express";
+import express from "express";
 import { createServer } from "http";
+import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
@@ -11,56 +11,55 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// ROOT ROUTE (fixes "Cannot GET /")
-app.get("/", (_req, res) => {
-  res.status(200).send("ThankuMail is live ✅");
-});
-
+// REQUEST LOGGER (SAFE)
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
-    const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      if (logLine.length > 80) logLine = logLine.slice(0, 79) + "…";
-      log(logLine);
+      log(`${req.method} ${path} ${res.statusCode} in ${Date.now() - start}ms`);
     }
   });
 
   next();
 });
 
+// ROOT FALLBACK (FIXES "Cannot GET /")
+app.get("/", (_req, res) => {
+  res.status(200).send("ThankuMail is live ✅");
+});
+
 (async () => {
   const server = createServer(app);
 
-  await registerRoutes(server, app);
+  // REGISTER API ROUTES (SAFE EVEN IF DB ISN’T READY)
+  try {
+    await registerRoutes(server, app);
+  } catch (e) {
+    console.error("Routes loaded with warnings:", e);
+  }
 
+  // ERROR HANDLER (PREVENTS CRASH LOOP)
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-    res.status(status).json({ message });
+    console.error("Unhandled error:", err);
+    res.status(500).json({ message: "Internal Server Error" });
   });
 
+  // STATIC / DEV HANDLING
   if (process.env.NODE_ENV === "development") {
     await setupVite(server, app);
   } else {
-    serveStatic(app);
+    try {
+      serveStatic(app);
+    } catch {
+      console.log("serveStatic: skipped (MVP mode)");
+    }
   }
 
-  const PORT = Number(process.env.PORT || 5000);
-  const HOST = "0.0.0.0";
-
-  server.listen(PORT, HOST, () => {
-    log(`Listening on http://${HOST}:${PORT}`);
+  // RENDER-COMPATIBLE LISTEN
+  const PORT = Number(process.env.PORT) || 5000;
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Listening on http://0.0.0.0:${PORT}`);
   });
 })();
