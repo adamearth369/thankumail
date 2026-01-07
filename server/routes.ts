@@ -1,18 +1,20 @@
 // GitHub → thankumail repo → server/routes.ts
 // COPY/PASTE THIS ENTIRE FILE — REPLACE EVERYTHING
-// (This removes the noisy "seed skipped" DB error by skipping seed unless explicitly enabled.)
 
-import { ensureTables } from "./db";
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { sendGiftEmail } from "./email";
+import { ensureTables } from "./db";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // DB SEED: OFF BY DEFAULT (NO LOG SPAM, NO DB CRASH/ERRORS)
-  // To enable later, set Render ENV: ENABLE_DB_SEED=1 and ensure migrations created the "gifts" table.
+  // ✅ AUTO-CREATE TABLES (NO SHELL REQUIRED)
+  await ensureTables();
+
+  // DB SEED: OFF BY DEFAULT
+  // To enable later, set Render ENV: ENABLE_DB_SEED=1
   if (process.env.ENABLE_DB_SEED === "1") {
     try {
       const { db } = await import("./db");
@@ -31,8 +33,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
         console.log(`Seeded! Claim link: /claim/${publicId}`);
       }
-    } catch (e) {
-      // Don't spam logs with full stack; keep it minimal
+    } catch {
       console.log("Seed skipped (DB not ready).");
     }
   }
