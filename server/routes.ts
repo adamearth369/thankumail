@@ -8,52 +8,37 @@ import { gifts } from "@shared/schema";
 import { sendGiftEmail } from "./email";
 
 async function seed() {
-  // SIMPLE WORKAROUND: skip DB seed entirely when toggled on
   if (process.env.SKIP_DB === "1") return;
 
   const existing = await db.query.gifts.findFirst();
   if (!existing) {
-    console.log("Seeding database with example gift...");
     const publicId = "demo-gift";
     await db.insert(gifts).values({
       publicId,
       recipientEmail: "demo@example.com",
       message: "Here's a little thank you for trying out ThanküMail! 🎁",
-      amount: 1000, // $10.00
+      amount: 1000,
       isClaimed: false,
     });
-    console.log(`Seeded! Claim link: /claim/${publicId}`);
   }
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // ROOT FALLBACK (prevents "Cannot GET /")
-  app.get("/", (_req, res) => {
-    res.status(200).send("ThankuMail is live ✅");
-  });
+  // MUST BE INSIDE registerRoutes (fixes "Cannot GET /")
+  app.get("/", (_req, res) => res.status(200).send("ThankuMail is live ✅"));
 
-  // SIMPLE WORKAROUND: never crash deploy if DB/table isn't ready
-  try {
-    await seed();
-  } catch (e) {
-    console.error("seed skipped:", e);
-  }
+  // never crash deploy if DB/table isn't ready
+  try { await seed(); } catch (e) { console.error("seed skipped:", e); }
 
   app.post(api.gifts.create.path, async (req, res) => {
     try {
-      console.log("Create gift request body:", req.body);
       const { recipientEmail, message, amount } = req.body;
 
       if (!recipientEmail || amount === undefined) {
-        return res.status(400).json({
-          error: "Missing required fields: recipientEmail or amount",
-        });
+        return res.status(400).json({ error: "Missing required fields: recipientEmail or amount" });
       }
-
       if (message && message.length > 3000) {
-        return res.status(400).json({
-          error: "Message too long (max 3000 characters)",
-        });
+        return res.status(400).json({ error: "Message too long (max 3000 characters)" });
       }
 
       const input = api.gifts.create.input.parse({
@@ -74,67 +59,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       await sendGiftEmail(gift.recipientEmail, claimLink, gift.amount, gift.message);
 
-      res.status(201).json({
-        success: true,
-        giftId: gift.publicId,
-        claimLink: `/claim/${gift.publicId}`,
-      });
+      res.status(201).json({ success: true, giftId: gift.publicId, claimLink: `/claim/${gift.publicId}` });
     } catch (err) {
-      console.error(err);
       if (err instanceof z.ZodError) {
-        return res.status(400).json({
-          message: err.errors[0].message,
-          field: err.errors[0].path.join("."),
-        });
+        return res.status(400).json({ message: err.errors[0].message, field: err.errors[0].path.join(".") });
       }
       res.status(500).json({ error: "Email failed to send" });
-    }
-  });
-
-  app.post("/api/send", async (req, res) => {
-    try {
-      const { to, subject, message } = req.body;
-      if (!to || !subject || !message) {
-        return res.status(400).json({ error: "Missing to, subject, or message" });
-      }
-
-      await sendGiftEmail(to, "http://localhost:5000/claim/test", 0, message);
-      res.json({ success: true, message: "Test email sent" });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Test email failed" });
-    }
-  });
-
-  app.get("/__email_test", async (req, res) => {
-    try {
-      const to = String(req.query.to || "");
-      if (!to) return res.status(400).send("Missing ?to=email");
-
-      const r = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-          "api-key": process.env.BREVO_API_KEY || "",
-        },
-        body: JSON.stringify({
-          sender: {
-            name: process.env.FROM_NAME || "ThankuMail",
-            email: process.env.FROM_EMAIL || "noreply@thankumail.com",
-          },
-          to: [{ email: to }],
-          subject: "ThankuMail API test",
-          textContent: "If you received this, Brevo API sending works.",
-        }),
-      });
-
-      const body = await r.text();
-      if (!r.ok) return res.status(500).send(`BREVO_API_ERROR ${r.status}: ${body}`);
-
-      return res.send(`SENT_OK: ${body}`);
-    } catch (e: any) {
-      return res.status(500).send(String(e?.message || e));
     }
   });
 
@@ -162,11 +92,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           <a href="/" style="display: inline-block; margin-top: 20px; color: #7c3aed; text-decoration: none; font-weight: bold;">Send a gift yourself &rarr;</a>
         </div>
       `);
-    } catch (err) {
-      console.error(err);
+    } catch {
       res.status(500).send("<h2>Internal server error</h2>");
     }
   });
+
+  // TEMP: prove API is mounted
+  app.get("/__health", (_req, res) => res.status(200).json({ ok: true }));
 
   return httpServer;
 }
