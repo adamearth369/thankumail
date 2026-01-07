@@ -2,6 +2,7 @@
 // COPY/PASTE THIS ENTIRE FILE — REPLACE EVERYTHING
 // (This removes the noisy "seed skipped" DB error by skipping seed unless explicitly enabled.)
 
+import { ensureTables } from "./db";
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
