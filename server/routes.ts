@@ -182,3 +182,13 @@ export async function registerRoutes(
 
   return httpServer;
 }
+// ROOT FALLBACK (prevents "Cannot GET /")
+app.get("/", (_req, res) => {
+  res.status(200).send("ThankuMail is live ✅");
+});
+
+const PORT = Number(process.env.PORT) || 5000;
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Listening on http://0.0.0.0:${PORT}`);
+});
+
