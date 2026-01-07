@@ -248,4 +248,176 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ---- CREATE GIFT ----
-  app.post(api.gifts.create.path, async (req
+  app.post(api.gifts.create.path, async (req: any, res) => {
+    try {
+      const { recipientEmail, message, amount, turnstileToken } = req.body;
+
+      const turnstile = await verifyTurnstile(String(turnstileToken || ""), req.ip);
+      if (!turnstile.ok) {
+        logEvent("turnstile_failed", { ip: req.ip, reason: turnstile?.reason || "fail" });
+        return res.status(400).json({ message: "Captcha verification failed.", field: "turnstileToken" });
+      }
+
+      const ipKey = String(req.ip || "unknown");
+      if (!hitCounter(ipDaily, ipKey, DAILY_MAX_PER_IP).ok) {
+        logEvent("daily_ip_limit", { ip: ipKey });
+        return res.status(429).json({ message: "Daily send limit reached (IP)." });
+      }
+
+      if (!recipientEmail || amount === undefined) {
+        return res.status(400).json({ error: "Missing required fields: recipientEmail or amount" });
+      }
+
+      const email = String(recipientEmail).trim().toLowerCase();
+      if (!hitCounter(emailDaily, email, DAILY_MAX_PER_EMAIL).ok) {
+        logEvent("daily_email_limit", { email });
+        return res.status(429).json({ message: "Daily send limit reached (email)." });
+      }
+
+      if (isDisposableEmail(email)) {
+        return res.status(400).json({ message: "Please use a real email address.", field: "recipientEmail" });
+      }
+
+      const amt = Number(amount);
+
+      if (!Number.isFinite(amt) || !Number.isInteger(amt) || amt <= 0) {
+        return res.status(400).json({ message: "Invalid amount.", field: "amount" });
+      }
+
+      if (amt < MIN_AMOUNT_CENTS) {
+        return res.status(400).json({ message: "Minimum amount is $10", field: "amount" });
+      }
+
+      if (ENFORCE_PRICE_TIERS && !PRICE_TIERS_CENTS.includes(amt)) {
+        return res.status(400).json({
+          message: "Invalid amount selection.",
+          field: "amount",
+        });
+      }
+
+      if (message && String(message).length > 3000) {
+        return res.status(400).json({ error: "Message too long (max 3000 characters)" });
+      }
+
+      const input = api.gifts.create.input.parse({
+        recipientEmail: email,
+        message: (message || "").trim(),
+        amount: amt,
+      });
+
+      const gift = await storage.createGift(input);
+
+      logEvent("gift_created", {
+        publicId: (gift as any).publicId,
+        amount: (gift as any).amount,
+        recipientEmail: (gift as any).recipientEmail,
+        ip: req.ip,
+      });
+
+      const baseUrl = process.env.BASE_URL;
+      const protocol = (req.headers["x-forwarded-proto"] as string) || "http";
+      const host = req.headers["host"];
+
+      const claimLink = baseUrl
+        ? `${baseUrl.replace(/\/$/, "")}/claim/${(gift as any).publicId}`
+        : `${protocol}://${host}/claim/${(gift as any).publicId}`;
+
+      await sendGiftEmail((gift as any).recipientEmail, claimLink, (gift as any).amount, (gift as any).message);
+      logEvent("email_sent", { publicId: (gift as any).publicId, recipientEmail: (gift as any).recipientEmail });
+
+      return res.status(201).json({
+        success: true,
+        giftId: (gift as any).publicId,
+        claimLink: `/claim/${(gift as any).publicId}`,
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message, field: err.errors[0].path.join(".") });
+      }
+      logEvent("gift_create_error", { error: err?.message || String(err) });
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  // ---- GET GIFT ----
+  app.get(api.gifts.get.path, async (req, res) => {
+    try {
+      const publicId = String(req.params.publicId || "");
+      const gift = await storage.getGift(publicId);
+      if (!gift) return res.status(404).json({ message: "Gift not found" });
+      return res.json(gift);
+    } catch (err: any) {
+      logEvent("gift_get_error", { error: err?.message || String(err) });
+      return res.status(500).json({ message: "Internal Server Error" });
+    }
+  });
+
+  // ---- PROGRAMMATIC CLAIM ----
+  app.post(api.gifts.claim.path, async (req, res) => {
+    const publicId = String(req.params.publicId || "");
+    logEvent("claim_api_attempt", { publicId, ip: (req as any).ip });
+
+    try {
+      const gift = await storage.getGift(publicId);
+      if (!gift) return res.status(404).json({ message: "Gift not found" });
+      if (gift.isClaimed) return res.status(409).json({ message: "Already claimed" });
+
+      const createdAt =
+        (gift as any).createdAt ||
+        (gift as any).created_at ||
+        (gift as any).created;
+
+      const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
+      if (!Number.isNaN(createdMs)) {
+        const age = Date.now() - createdMs;
+        if (age < MIN_CLAIM_DELAY_MS) {
+          return res.status(429).json({ message: "Please wait a moment before claiming.", field: "claimDelay" });
+        }
+      }
+
+      const claimedGift = await storage.claimGift(publicId);
+      logEvent("claim_api_completed", { publicId, ip: (req as any).ip });
+      return res.json(claimedGift);
+    } catch (err: any) {
+      logEvent("claim_api_error", { publicId, error: err?.message || String(err) });
+      return res.status(500).json({ message: "Internal Server Error" });
+    }
+  });
+
+  // ---- EMAIL TEST ----
+  app.get("/__email_test", async (req, res) => {
+    try {
+      const to = String(req.query.to || "");
+      if (!to) return res.status(400).send("Missing ?to=email");
+
+      const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "api-key": process.env.BREVO_API_KEY || "",
+        },
+        body: JSON.stringify({
+          sender: {
+            name: process.env.FROM_NAME || "ThankuMail",
+            email: process.env.FROM_EMAIL || "noreply@thankumail.com",
+          },
+          to: [{ email: to }],
+          subject: "ThankuMail API test",
+          textContent: "If you received this, Brevo API sending works.",
+        }),
+      });
+
+      const body = await r.text();
+      if (!r.ok) return res.status(500).send(`BREVO_API_ERROR ${r.status}: ${body}`);
+
+      logEvent("email_test_sent", { to, ip: (req as any).ip });
+      return res.send(`SENT_OK: ${body}`);
+    } catch (e: any) {
+      logEvent("email_test_error", { error: e?.message || String(e) });
+      return res.status(500).send(String(e?.message || e));
+    }
+  });
+
+  return httpServer;
+}
