@@ -5,7 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "build": "npm run build:client && npm run build:server",
-    "build:client": "npx vite build --outDir dist/public",
+    "build:client": "node -e \"const fs=require('fs');const cp=require('child_process');const candidates=['.','client','frontend','web','app','src','src/client','public'];let root=null;for(const d of candidates){if(fs.existsSync(d+'/index.html')){root=d;break;}}if(!root){console.error('Vite build failed: could not find index.html in any of: '+candidates.join(', '));process.exit(1);}console.log('Vite root:',root);cp.execSync('npx vite build --root '+root+' --outDir dist/public',{stdio:'inherit'});\"",
     "build:server": "node -e \"const fs=require('fs');const entry=fs.existsSync('server/index.ts')?'server/index.ts':(fs.existsSync('src/index.ts')?'src/index.ts':null);if(!entry){console.error('Missing entry: server/index.ts or src/index.ts');process.exit(1)};console.log('Building:',entry)\" && npx esbuild $(node -e \"const fs=require('fs');process.stdout.write(fs.existsSync('server/index.ts')?'server/index.ts':'src/index.ts')\") --bundle --platform=node --format=cjs --outfile=dist/index.cjs --packages=external",
     "start": "node dist/index.cjs"
   },
@@ -13,14 +13,17 @@
     "node": ">=22"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "zod": "^3.23.8",
-    "nodemailer": "^6.9.14",
-    "pg": "^8.12.0",
     "drizzle-orm": "^0.44.7",
     "drizzle-zod": "^0.7.0",
-    "vite": "^7.3.0",
+    "express": "^4.19.2",
+    "nodemailer": "^6.9.14",
+    "pg": "^8.12.0",
+    "stripe": "^16.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
     "esbuild": "^0.25.0",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vite": "^7.3.1"
   }
 }
