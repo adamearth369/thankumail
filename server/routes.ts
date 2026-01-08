@@ -1,3 +1,5 @@
+// server/routes.ts
+
 import type { Express } from "express";
 import type { Server } from "http";
 import crypto from "crypto";
@@ -9,14 +11,12 @@ import { sendGiftEmail } from "./email";
 const MIN_AMOUNT_CENTS = 1000; // $10.00
 const MIN_CLAIM_DELAY_MS = 60_000; // 60 seconds
 
-// ---- OPTIONAL SERVER-AUTHORITATIVE PRICING (DEFAULT OFF) ----
+// Optional server-authoritative pricing tiers
 const ENFORCE_PRICE_TIERS =
   String(process.env.ENFORCE_PRICE_TIERS || "").toLowerCase() === "true";
-
-// Edit tiers anytime; defaults are safe/common
 const PRICE_TIERS_CENTS = [1000, 2000, 5000, 10000, 20000, 50000];
 
-// ---- DAILY LIMITS (SAFE IN-MEMORY, AUTO-RESET) ----
+// Daily limits (in-memory)
 const DAILY_MAX_PER_IP = 20;
 const DAILY_MAX_PER_EMAIL = 10;
 
@@ -42,13 +42,10 @@ const hitCounter = (map: Map<string, Counter>, key: string, max: number) => {
   return { ok: true };
 };
 
-// ---- LOGGING ----
 const logEvent = (type: string, data: Record<string, any> = {}) => {
   try {
     console.log(JSON.stringify({ time: new Date().toISOString(), type, ...data }));
-  } catch {
-    // never throw from logging
-  }
+  } catch {}
 };
 
 const getDomain = (email: string) => {
@@ -94,7 +91,7 @@ const escapeHtml = (s: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
-// ---- TURNSTILE ----
+// ---- Turnstile ----
 async function verifyTurnstile(token: string, ip?: string) {
   const secret = process.env.TURNSTILE_SECRET_KEY || "";
   if (!secret) return { ok: true, skipped: true as const };
@@ -115,13 +112,11 @@ async function verifyTurnstile(token: string, ip?: string) {
   return { ok: Boolean(data?.success), data };
 }
 
-// ---- STRIPE WEBHOOK VERIFICATION (SAFE: INACTIVE UNLESS SECRET SET) ----
+// ---- Stripe webhook signature verification ----
 function verifyStripeSignature(rawBody: Buffer, signatureHeader: string, secret: string) {
-  // Stripe-Signature: t=timestamp,v1=signature[,v1=...]
   const parts = signatureHeader.split(",").map((p) => p.trim());
   const t = parts.find((p) => p.startsWith("t="))?.slice(2);
   const v1s = parts.filter((p) => p.startsWith("v1=")).map((p) => p.slice(3));
-
   if (!t || v1s.length === 0) return false;
 
   const payload = `${t}.${rawBody.toString("utf8")}`;
@@ -132,22 +127,62 @@ function verifyStripeSignature(rawBody: Buffer, signatureHeader: string, secret:
       const a = Buffer.from(v1, "hex");
       const b = Buffer.from(expected, "hex");
       if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
   return false;
 }
 
+// ---- Stripe PaymentIntent creation (no SDK required) ----
+async function stripeCreatePaymentIntent(params: {
+  amount: number;
+  currency: string;
+  metadata?: Record<string, string>;
+  receipt_email?: string;
+  idempotencyKey?: string;
+}) {
+  const key = process.env.STRIPE_SECRET_KEY || "";
+  if (!key) throw new Error("Missing STRIPE_SECRET_KEY");
+
+  const body = new URLSearchParams();
+  body.set("amount", String(params.amount));
+  body.set("currency", params.currency);
+  body.set("automatic_payment_methods[enabled]", "true");
+
+  if (params.receipt_email) body.set("receipt_email", params.receipt_email);
+
+  if (params.metadata) {
+    for (const [k, v] of Object.entries(params.metadata)) {
+      body.set(`metadata[${k}]`, v);
+    }
+  }
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+
+  if (params.idempotencyKey) headers["Idempotency-Key"] = params.idempotencyKey;
+
+  const r = await fetch("https://api.stripe.com/v1/payment_intents", {
+    method: "POST",
+    headers,
+    body: body.toString(),
+  });
+
+  const json: any = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = json?.error?.message || `Stripe error ${r.status}`;
+    throw new Error(msg);
+  }
+
+  return json as { id: string; client_secret: string };
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // ---- STRIPE WEBHOOK (OPTIONAL) ----
-  // WHERE TO CALL: Stripe Dashboard → Developers → Webhooks → add endpoint:
-  //   https://thankumail.com/api/webhooks/stripe
+  // ---- Stripe webhook endpoint ----
   app.post("/api/webhooks/stripe", async (req: any, res) => {
     try {
       const secret = process.env.STRIPE_WEBHOOK_SECRET || "";
-
-      // If not configured, accept but log (non-breaking)
       if (!secret) {
         logEvent("stripe_webhook_skipped_no_secret", { ip: req.ip });
         return res.status(200).send("ok");
@@ -168,9 +203,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const event = req.body;
-      logEvent("stripe_webhook_received", { type: event?.type, id: event?.id });
+      const type = String(event?.type || "");
+      const id = String(event?.id || "");
+      logEvent("stripe_webhook_received", { type, id });
 
-      // TODO (later): map event to gift/payment state in storage
+      // MVP: log-only (non-breaking). Later you will map this to gift activation.
+      if (type === "payment_intent.succeeded") {
+        const pi = event?.data?.object;
+        logEvent("payment_intent_succeeded", {
+          payment_intent_id: pi?.id,
+          amount: pi?.amount,
+          currency: pi?.currency,
+          metadata: pi?.metadata || {},
+        });
+      }
+
+      if (type === "payment_intent.payment_failed") {
+        const pi = event?.data?.object;
+        logEvent("payment_intent_failed", {
+          payment_intent_id: pi?.id,
+          amount: pi?.amount,
+          currency: pi?.currency,
+          metadata: pi?.metadata || {},
+        });
+      }
+
       return res.status(200).send("ok");
     } catch (e: any) {
       logEvent("stripe_webhook_error", { error: e?.message || String(e) });
@@ -178,7 +235,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // ---- PUBLIC CLAIM PAGE ----
+  // ---- Create PaymentIntent (server-authoritative) ----
+  // Client calls this first to get clientSecret, then confirms payment on frontend.
+  app.post("/api/payments/create-intent", async (req: any, res) => {
+    try {
+      const { amount, recipientEmail, giftPublicId } = req.body || {};
+
+      const amt = Number(amount);
+      if (!Number.isFinite(amt) || !Number.isInteger(amt) || amt <= 0) {
+        return res.status(400).json({ message: "Invalid amount.", field: "amount" });
+      }
+      if (amt < MIN_AMOUNT_CENTS) {
+        return res.status(400).json({ message: "Minimum amount is $10", field: "amount" });
+      }
+      if (ENFORCE_PRICE_TIERS && !PRICE_TIERS_CENTS.includes(amt)) {
+        return res.status(400).json({ message: "Invalid amount selection.", field: "amount" });
+      }
+
+      const email = recipientEmail ? String(recipientEmail).trim().toLowerCase() : "";
+      if (email && isDisposableEmail(email)) {
+        return res.status(400).json({ message: "Please use a real email address.", field: "recipientEmail" });
+      }
+
+      const idempotencyKey =
+        String(req.headers["x-idempotency-key"] || "") ||
+        crypto.randomUUID();
+
+      const pi = await stripeCreatePaymentIntent({
+        amount: amt,
+        currency: "usd",
+        receipt_email: email || undefined,
+        metadata: {
+          app: "thankumail",
+          giftPublicId: giftPublicId ? String(giftPublicId) : "",
+        },
+        idempotencyKey,
+      });
+
+      logEvent("payment_intent_created", {
+        payment_intent_id: pi.id,
+        amount: amt,
+        ip: req.ip,
+      });
+
+      return res.json({ paymentIntentId: pi.id, clientSecret: pi.client_secret });
+    } catch (e: any) {
+      logEvent("payment_intent_create_error", { error: e?.message || String(e) });
+      return res.status(500).json({ message: "Payment setup failed." });
+    }
+  });
+
+  // ---- Public claim page ----
   app.get("/claim/:publicId", async (req, res) => {
     const publicId = String(req.params.publicId || "");
     logEvent("claim_page_view", { publicId, ip: req.ip });
@@ -247,20 +354,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // ---- CREATE GIFT ----
+  // ---- Create gift ----
   app.post(api.gifts.create.path, async (req: any, res) => {
     try {
       const { recipientEmail, message, amount, turnstileToken } = req.body;
 
       const turnstile = await verifyTurnstile(String(turnstileToken || ""), req.ip);
       if (!turnstile.ok) {
-        logEvent("turnstile_failed", { ip: req.ip, reason: turnstile?.reason || "fail" });
         return res.status(400).json({ message: "Captcha verification failed.", field: "turnstileToken" });
       }
 
       const ipKey = String(req.ip || "unknown");
       if (!hitCounter(ipDaily, ipKey, DAILY_MAX_PER_IP).ok) {
-        logEvent("daily_ip_limit", { ip: ipKey });
         return res.status(429).json({ message: "Daily send limit reached (IP)." });
       }
 
@@ -270,7 +375,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const email = String(recipientEmail).trim().toLowerCase();
       if (!hitCounter(emailDaily, email, DAILY_MAX_PER_EMAIL).ok) {
-        logEvent("daily_email_limit", { email });
         return res.status(429).json({ message: "Daily send limit reached (email)." });
       }
 
@@ -279,7 +383,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const amt = Number(amount);
-
       if (!Number.isFinite(amt) || !Number.isInteger(amt) || amt <= 0) {
         return res.status(400).json({ message: "Invalid amount.", field: "amount" });
       }
@@ -289,10 +392,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       if (ENFORCE_PRICE_TIERS && !PRICE_TIERS_CENTS.includes(amt)) {
-        return res.status(400).json({
-          message: "Invalid amount selection.",
-          field: "amount",
-        });
+        return res.status(400).json({ message: "Invalid amount selection.", field: "amount" });
       }
 
       if (message && String(message).length > 3000) {
@@ -323,7 +423,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : `${protocol}://${host}/claim/${(gift as any).publicId}`;
 
       await sendGiftEmail((gift as any).recipientEmail, claimLink, (gift as any).amount, (gift as any).message);
+
       logEvent("email_sent", { publicId: (gift as any).publicId, recipientEmail: (gift as any).recipientEmail });
+
+      returnorial: any = undefined;
 
       return res.status(201).json({
         success: true,
@@ -339,7 +442,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // ---- GET GIFT ----
+  // ---- Get gift ----
   app.get(api.gifts.get.path, async (req, res) => {
     try {
       const publicId = String(req.params.publicId || "");
@@ -352,7 +455,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // ---- PROGRAMMATIC CLAIM ----
+  // ---- Programmatic claim ----
   app.post(api.gifts.claim.path, async (req, res) => {
     const publicId = String(req.params.publicId || "");
     logEvent("claim_api_attempt", { publicId, ip: (req as any).ip });
@@ -384,7 +487,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // ---- EMAIL TEST ----
+  // ---- Email test ----
   app.get("/__email_test", async (req, res) => {
     try {
       const to = String(req.query.to || "");
