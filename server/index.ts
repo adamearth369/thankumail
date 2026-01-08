@@ -1,110 +1,73 @@
+// WHERE TO PASTE: server/index.ts
 import express from "express";
-import { createServer } from "http";
+import path from "path";
+import Stripe from "stripe";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
-import Stripe from "stripe";
 
 const app = express();
 
 /**
- * STRIPE WEBHOOK (MUST BE BEFORE express.json())
- * - Uses raw body
- * - Verifies signature
- * - Returns 200 quickly
+ * Stripe Webhook MUST be registered BEFORE express.json()
+ * so we can validate the raw body signature.
  */
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-  apiVersion: "2025-01-27.acacia",
-});
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, { apiVersion: "2019-09-09" });
 
-app.post("/api/webhooks/stripe", express.raw({ type: "*/*" }), (req, res) => {
-  const sig = req.headers["stripe-signature"];
+app.post(
+  "/api/webhooks/stripe",
+  express.raw({ type: "application/json" }),
+  (req: Request, res: Response) => {
+    const sig = req.headers["stripe-signature"];
 
-  if (!sig || !process.env.STRIPE_WEBHOOK_SECRET) {
-    return res.status(400).send("Missing Stripe signature/secret");
-  }
-
-  let event: Stripe.Event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig as string,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-  } catch (err: any) {
-    console.error("Stripe webhook signature verify failed:", err?.message || err);
-    return res.status(400).send("Invalid signature");
-  }
-
-  // Minimal handling for now — just acknowledge receipt
-  // (You can expand this later to fulfill gifts/payments, etc.)
-  try {
-    if (event.type === "payment_intent.succeeded") {
-      // You can inspect event.data.object as Stripe.PaymentIntent
-      // const pi = event.data.object as Stripe.PaymentIntent;
-      // TODO: connect to your gift fulfillment logic
+    if (!sig || Array.isArray(sig)) {
+      return res.status(400).send("missing_signature");
     }
-    return res.status(200).json({ received: true });
-  } catch (err: any) {
-    console.error("Stripe webhook handler error:", err?.message || err);
-    // Still return 200 to avoid retries while you iterate (Stripe best practice during rollout)
-    return res.status(200).json({ received: true });
-  }
-});
 
-// Normal parsers AFTER webhook
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
-
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-
-  res.on("finish", () => {
-    if (path.startsWith("/api")) {
-      log(`${req.method} ${path} ${res.statusCode} in ${Date.now() - start}ms`);
-    }
-  });
-
-  next();
-});
-
-app.get("/", (_req, res) => {
-  res.status(200).send("ThankuMail is live ✅");
-});
-
-app.get("/__health", (_req, res) => {
-  res.status(200).json({ ok: true });
-});
-
-(async () => {
-  const server = createServer(app);
-
-  // Register app routes (includes /api/*)
-  try {
-    await registerRoutes(server, app);
-  } catch (e) {
-    console.error("Routes loaded with warnings:", e);
-  }
-
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    console.error("Unhandled error:", err);
-    res.status(500).json({ message: "Internal Server Error" });
-  });
-
-  if (process.env.NODE_ENV === "development") {
-    await setupVite(server, app);
-  } else {
     try {
-      serveStatic(app);
+      stripe.webhooks.constructEvent(
+        req.body, // raw Buffer
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET as string
+      );
     } catch {
-      console.log("serveStatic: skipped (MVP mode)");
+      return res.status(400).send("invalid_signature");
     }
-  }
 
-  const PORT = Number(process.env.PORT) || 5000;
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Listening on http://0.0.0.0:${PORT}`);
-  });
-})();
+    return res.status(200).send("ok");
+  }
+);
+
+// Normal JSON parsing for the rest of the app
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+// Health check
+app.get("/health", (_req: Request, res: Response) => res.status(200).json({ ok: true }));
+
+// API routes (safe registration)
+try {
+  registerRoutes(app);
+} catch (e) {
+  console.error("Route registration failed:", e);
+}
+
+// Static + root fallback
+const publicDir = path.resolve(process.cwd(), "dist", "public");
+app.use(express.static(publicDir));
+
+app.get("*", (req: Request, res: Response) => {
+  if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found" });
+  return res.sendFile(path.join(publicDir, "index.html"));
+});
+
+// Error handler (last)
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("Unhandled error:", err);
+  return res.status(500).json({ error: "Internal Server Error" });
+});
+
+// Render-compatible listen
+const PORT = Number(process.env.PORT || 10000);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server listening on ${PORT}`);
+});
