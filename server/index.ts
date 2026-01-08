@@ -1,3 +1,5 @@
+// server/index.ts
+
 import express from "express";
 import { createServer } from "http";
 import type { Request, Response, NextFunction } from "express";
@@ -6,7 +8,7 @@ import { setupVite, serveStatic, log } from "./vite";
 
 const app = express();
 
-// ---- JSON WITH RAW BODY CAPTURE (FOR WEBHOOK SIGNATURE VERIFICATION) ----
+// JSON + raw body capture (required for Stripe webhook signature verification)
 app.use(
   express.json({
     verify: (req: any, _res, buf) => {
@@ -39,7 +41,10 @@ function createRateLimiter(opts: RateLimitOptions) {
 
     current.count += 1;
     if (current.count > opts.max) {
-      const retryAfterSec = Math.max(1, Math.ceil((current.resetAt - now) / 1000));
+      const retryAfterSec = Math.max(
+        1,
+        Math.ceil((current.resetAt - now) / 1000)
+      );
       res.setHeader("Retry-After", String(retryAfterSec));
       return res.status(429).json(opts.message);
     }
@@ -60,10 +65,11 @@ const claimLimiter = createRateLimiter({
   message: { error: "Too many attempts. Please slow down." },
 });
 
-// Apply by path so it works regardless of how routes are registered
+// Applies regardless of how routes are registered
 app.use("/api/gifts", giftLimiter);
 app.use("/api/claim", claimLimiter);
 app.use("/api/claim/", claimLimiter);
+app.use("/api/payments", giftLimiter);
 
 // ---- STRUCTURED EVENT LOGGING (SAFE) ----
 const logEvent = (type: string, data: Record<string, any> = {}) => {
@@ -113,12 +119,13 @@ app.get("/__health", (_req, res) => {
 (async () => {
   const server = createServer(app);
 
-  // Register app routes (includes /api/*)
   try {
     await registerRoutes(server, app);
   } catch (e) {
     console.error("Routes loaded with warnings:", e);
-    logEvent("routes_loaded_with_warnings", { error: (e as any)?.message || String(e) });
+    logEvent("routes_loaded_with_warnings", {
+      error: (e as any)?.message || String(e),
+    });
   }
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
