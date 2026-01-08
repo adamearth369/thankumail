@@ -1,4 +1,5 @@
 run = "bash -lc 'node dist/index.cjs'"
+modules = ["nodejs-20"]
 
 [deployment]
 run = ["bash", "-lc", "node dist/index.cjs"]
