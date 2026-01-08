@@ -88,8 +88,9 @@ app.get("/health", (_req: Request, res: Response) => res.status(200).json({ ok: 
   /* =========================
      7) LISTEN (RENDER)
      ========================= */
-  const PORT = Number(process.env.PORT) || 5000;
+  const PORT = Number(process.env.PORT || 10000);
+
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`serving on port ${PORT}`);
+    console.log(`Server listening on ${PORT}`);
   });
 })();
