@@ -1,40 +1,37 @@
 import { defineConfig } from "vite";
-
-// NOTE: We intentionally avoid top-level await here because Render loads Vite config
-// through an esbuild CJS transform, and top-level await breaks in that mode.
+import react from "@vitejs/plugin-react";
+import path from "path";
+import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
 export default defineConfig(async () => {
-  const plugins: any[] = [];
+  const plugins: any[] = [react(), runtimeErrorOverlay()];
 
-  // Only load Replit-only plugins when running inside Replit
-  const isReplit = Boolean(process.env.REPL_ID || process.env.REPLIT_ENVIRONMENT);
-
-  if (isReplit) {
-    try {
-      const cartographer = await import("@replit/vite-plugin-cartographer").then(
-        (m: any) => m.cartographer?.()
-      );
-      if (cartographer) plugins.push(cartographer);
-    } catch {
-      // ignore if not installed
-    }
-
-    try {
-      const devBanner = await import("@replit/vite-plugin-dev-banner").then(
-        (m: any) => m.devBanner?.()
-      );
-      if (devBanner) plugins.push(devBanner);
-    } catch {
-      // ignore if not installed
-    }
+  // Only load Replit-only plugins in Replit dev
+  if (process.env.NODE_ENV !== "production" && process.env.REPL_ID !== undefined) {
+    const carto = await import("@replit/vite-plugin-cartographer");
+    const banner = await import("@replit/vite-plugin-dev-banner");
+    plugins.push(carto.cartographer(), banner.devBanner());
   }
 
   return {
     plugins,
+    resolve: {
+      alias: {
+        "@": path.resolve(import.meta.dirname, "client", "src"),
+        "@shared": path.resolve(import.meta.dirname, "shared"),
+        "@assets": path.resolve(import.meta.dirname, "attached_assets"),
+      },
+    },
+    root: path.resolve(import.meta.dirname, "client"),
+    build: {
+      outDir: path.resolve(import.meta.dirname, "dist/public"),
+      emptyOutDir: true,
+    },
     server: {
-      host: "0.0.0.0",
-      port: 5173,
-      strictPort: true
-    }
+      fs: {
+        strict: true,
+        deny: ["**/.*"],
+      },
+    },
   };
 });
