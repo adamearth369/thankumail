@@ -20,7 +20,9 @@ async function buildServer() {
     platform: "node",
     format: "cjs",
     outfile: "dist/index.cjs",
-    // Do NOT externalize runtime deps like cors
+
+    // 🔒 IMPORTANT: leave runtime deps unbundled
+    external: ["cors", "@getbrevo/brevo"],
   });
 }
 
