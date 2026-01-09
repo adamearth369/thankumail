@@ -2,11 +2,13 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { createServer } from "http";
+import fs from "fs";
 
 import { registerRoutes } from "../server/routes";
 
-const app = express();
+const BUILD_MARKER = "IDX_v2_emailtest_2026-01-09_17:40";
 
+const app = express();
 app.set("trust proxy", 1);
 
 app.use(cors());
@@ -16,20 +18,29 @@ app.use(express.urlencoded({ extended: true }));
 const publicDir = path.join(process.cwd(), "dist", "public");
 const indexPath = path.join(publicDir, "index.html");
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
-app.get("/__health", (_req, res) => res.json({ ok: true }));
+// PROOF endpoint (must return plain text)
+app.get("/__marker", (_req, res) => {
+  res.type("text/plain").send(BUILD_MARKER);
+});
 
+// Health
+app.get("/health", (_req, res) => res.json({ ok: true, marker: BUILD_MARKER }));
+app.get("/__health", (_req, res) => res.json({ ok: true, marker: BUILD_MARKER }));
+
+// Diagnostics
 app.get("/__where", (_req, res) => {
   res.json({
+    marker: BUILD_MARKER,
     cwd: process.cwd(),
     publicDir,
     indexPath,
-    publicDirExists: require("fs").existsSync(publicDir),
-    indexExists: require("fs").existsSync(indexPath),
+    publicDirExists: fs.existsSync(publicDir),
+    indexExists: fs.existsSync(indexPath),
     renderCommit: process.env.RENDER_GIT_COMMIT || null,
   });
 });
 
+// Email diagnostic (Brevo API)
 app.get("/__email_test", async (req, res) => {
   try {
     const to = String(req.query.to || "");
@@ -64,6 +75,7 @@ app.get("/__email_test", async (req, res) => {
   }
 });
 
+// Static client
 app.use(express.static(publicDir));
 
 const httpServer = createServer(app);
@@ -75,7 +87,7 @@ async function main() {
     console.error("registerRoutes failed:", e);
   }
 
-  // IMPORTANT: don't let SPA fallback swallow /api or /__ routes
+  // SPA fallback: do NOT swallow /api or /__ routes
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/__")) return next();
     return res.sendFile(indexPath);
@@ -83,7 +95,7 @@ async function main() {
 
   const port = Number(process.env.PORT || 5000);
   httpServer.listen(port, "0.0.0.0", () => {
-    console.log(`ThankuMail server running on port ${port}`);
+    console.log(`ThankuMail server running on port ${port} (${BUILD_MARKER})`);
   });
 }
 
