@@ -7,24 +7,16 @@ import { registerRoutes } from "../server/routes";
 
 const app = express();
 
-/* -------------------- middleware -------------------- */
 app.use(cors());
 app.use(express.json());
 
-/* -------------------- static + spa fallback -------------------- */
-/**
- * IMPORTANT:
- * When bundled, this file becomes dist/index.cjs.
- * At runtime, __dirname === /opt/render/project/src/dist
- * Built client lives in dist/public/*
- */
 const publicDir = path.join(__dirname, "public");
 const indexPath = path.join(publicDir, "index.html");
 
-// Serve static assets if they exist
+// Serve static assets
 app.use(express.static(publicDir));
 
-// Helpful diagnostics
+// Diagnostics (always available)
 app.get("/__where", (req, res) => {
   res.json({
     __dirname,
@@ -36,40 +28,24 @@ app.get("/__where", (req, res) => {
   });
 });
 
-// If the frontend isn't built, return a clear message (prevents confusing 404s)
-app.get("/__frontend", (req, res) => {
-  if (!fs.existsSync(indexPath)) {
-    return res
-      .status(500)
-      .send(
-        "Frontend not built yet (missing dist/public/index.html). Fix Render build to generate it.",
-      );
-  }
-  return res.sendFile(indexPath);
-});
-
 async function main() {
-  // Register API routes
-  // NOTE: registerRoutes signature in your code is (httpServer, app)
-  // but it only uses app; pass a dummy server as any to keep it simple.
+  // Register API routes FIRST
   await registerRoutes({} as any, app as any);
 
-  // SPA fallback (only if built)
+  // Health routes AFTER registerRoutes, BEFORE SPA fallback (cannot be swallowed)
+  app.get("/health", (req, res) => res.json({ ok: true }));
+  app.get("/__health", (req, res) => res.json({ ok: true }));
+
+  // SPA fallback LAST
   app.get("*", (req, res) => {
     if (!fs.existsSync(indexPath)) {
-      return res
-        .status(500)
-        .send(
-          "Frontend not built yet (missing dist/public/index.html). Fix Render build to generate it.",
-        );
+      return res.status(500).send("Frontend not built yet (missing dist/public/index.html).");
     }
     return res.sendFile(indexPath);
   });
 
   const PORT = process.env.PORT || 10000;
-  app.listen(PORT, () => {
-    console.log(`ThankuMail server running on port ${PORT}`);
-  });
+  app.listen(PORT, () => console.log(`ThankuMail server running on port ${PORT}`));
 }
 
 main().catch((err) => {
