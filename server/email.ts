@@ -1,48 +1,65 @@
-import nodemailer from 'nodemailer';
+import brevo from "@getbrevo/brevo";
 
-export const transporter = nodemailer.createTransport({
-  host: process.env.BREVO_SMTP_HOST,
-  port: Number(process.env.BREVO_SMTP_PORT),
-  secure: Number(process.env.BREVO_SMTP_PORT) === 465,
-  auth: {
-    user: process.env.BREVO_SMTP_USER,
-    pass: process.env.BREVO_SMTP_KEY,
-  },
-});
+/**
+ * Sends a gift email via Brevo Transactional Email API.
+ * Uses these env vars (Render + Replit Secrets):
+ * - BREVO_API_KEY   (required)
+ * - FROM_EMAIL      (required)
+ * - FROM_NAME       (optional)
+ */
+export async function sendGiftEmail(
+  to: string,
+  claimLink: string,
+  amountCents: number,
+  message: string
+) {
+  const apiKey = process.env.BREVO_API_KEY || "";
+  const fromEmail = process.env.FROM_EMAIL || "";
+  const fromName = process.env.FROM_NAME || "ThankuMail";
 
-export async function sendGiftEmail(recipientEmail: string, claimLink: string, amount: number, message?: string) {
-  const fromEmail = process.env.FROM_EMAIL || process.env.BREVO_EMAIL;
-  const fromName = process.env.FROM_NAME || "ThanküMail";
-  
-  if (!fromEmail || !process.env.BREVO_SMTP_KEY) {
-    console.warn("Email credentials missing, skipping email sending");
-    return;
-  }
+  if (!apiKey) throw new Error("Missing BREVO_API_KEY");
+  if (!fromEmail) throw new Error("Missing FROM_EMAIL");
 
-  const amountFormatted = (amount / 100).toFixed(2);
-  const mailOptions = {
-    from: `"${fromName}" <${fromEmail}>`,
-    to: recipientEmail,
-    subject: 'You have a gift waiting 🎁',
-    text: `You received an anonymous gift of $${amountFormatted}.
+  const amount = `$${(Number(amountCents || 0) / 100).toFixed(2)}`;
 
-${message ? `Message:
-"${message}"` : ''}
+  const subject = `You received a ThankuMail gift (${amount})`;
 
-Claim it here:
-${claimLink}`,
-    html: `
-      <h2>You received a gift 🎁</h2>
-      <p><strong>Amount:</strong> $${amountFormatted}</p>
-      ${message ? `<p><strong>Message:</strong></p><p>${message}</p>` : ''}
-      <p><a href="${claimLink}">👉 Claim your gift</a></p>
-    `
-  };
+  // Plain text (safe, deliverability-friendly)
+  const textContent =
+    `You received a ThankuMail gift.\n\n` +
+    `Claim it here:\n${claimLink}\n\n` +
+    `Message:\n${(message || "").trim() || "(no message)"}\n`;
 
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`Email sent successfully: ${info.messageId}`);
-  } catch (error) {
-    console.error("Error sending email via nodemailer:", error);
-  }
+  // HTML (simple, safe)
+  const htmlContent = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.5;color:#111;">
+      <h2 style="margin:0 0 12px;">You received a ThankuMail gift (${amount})</h2>
+      <p style="margin:0 0 12px;">Click below to claim it:</p>
+      <p style="margin:0 0 16px;">
+        <a href="${claimLink}" style="display:inline-block;padding:10px 14px;border-radius:10px;background:#7c3aed;color:#fff;text-decoration:none;font-weight:700;">
+          Claim your gift
+        </a>
+      </p>
+      <p style="margin:0 0 8px;"><strong>Message:</strong></p>
+      <div style="padding:12px;border:1px solid #eee;border-radius:12px;background:#fafafa;">
+        ${(message || "").trim() ? (message || "").trim().replace(/</g, "&lt;").replace(/>/g, "&gt;") : "(no message)"}
+      </div>
+      <p style="margin:16px 0 0;color:#666;font-size:12px;">
+        If you did not expect this email, you can ignore it.
+      </p>
+    </div>
+  `;
+
+  const client = brevo.ApiClient.instance;
+  client.authentications["api-key"].apiKey = apiKey;
+
+  const apiInstance = new brevo.TransactionalEmailsApi();
+
+  await apiInstance.sendTransacEmail({
+    sender: { email: fromEmail, name: fromName },
+    to: [{ email: to }],
+    subject,
+    textContent,
+    htmlContent,
+  });
 }
