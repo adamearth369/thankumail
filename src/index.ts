@@ -1,129 +1,119 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
-import { existsSync } from "fs";
+import { fileURLToPath } from "url";
 import { createServer } from "http";
-import { registerRoutes } from "../server/routes";
 
-/**
- * DEBUG ROUTES POLICY
- * - In production: DISABLED by default
- * - Enable explicitly by setting ENABLE_DEBUG_ROUTES="true"
- */
-const IS_PROD = process.env.NODE_ENV === "production";
-const DEBUG_ENABLED = !IS_PROD || process.env.ENABLE_DEBUG_ROUTES === "true";
+import { registerRoutes } from "./server/routes";
+import { sendGiftEmail } from "./server/email";
 
-const MARKER =
-  process.env.__MARKER ||
-  `IDX_v2_emailtest_${new Date().toISOString().slice(0, 10)}_${new Date()
-    .toISOString()
-    .slice(11, 16)
-    .replace(":", "-")}`;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-async function main() {
-  const app = express();
+const app = express();
+const server = createServer(app);
 
-  // Trust proxy so x-forwarded-proto/host works behind Render/Cloudflare
-  app.set("trust proxy", 1);
+app.use(cors());
+app.use(express.json());
 
-  // JSON + CORS
-  app.use(express.json({ limit: "1mb" }));
-  app.use(
-    cors({
-      origin: "*",
-      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
-    }),
-  );
+const PORT = Number(process.env.PORT || 5000);
+const BASE_URL = process.env.BASE_URL || "https://thankumail.onrender.com";
+const DEBUG_TOKEN = process.env.DEBUG_ROUTES_TOKEN || "";
 
-  // Health endpoints (always available)
-  app.get("/health", (_req, res) => res.json({ ok: true }));
-  app.get("/__health", (_req, res) => res.json({ ok: true }));
-
-  const httpServer = createServer(app);
-
-  // Register API routes
-  await registerRoutes(httpServer, app);
-
-  // Static public directory (built by Vite into dist/public)
-  const cwd = process.cwd(); // on Render: /opt/render/project/src
-  const publicDir = path.join(cwd, "dist", "public");
-  const indexPath = path.join(publicDir, "index.html");
-
-  // Debug endpoints (locked down in production unless ENABLE_DEBUG_ROUTES=true)
-  if (DEBUG_ENABLED) {
-    app.get("/__marker", (_req, res) => res.type("text/plain").send(MARKER));
-
-    app.get("/__where", (_req, res) => {
-      res.json({
-        marker: MARKER,
-        cwd,
-        publicDir,
-        indexPath,
-        publicDirExists: existsSync(publicDir),
-        indexExists: existsSync(indexPath),
-        renderCommit: process.env.RENDER_GIT_COMMIT || null,
-        nodeEnv: process.env.NODE_ENV || null,
-      });
-    });
-
-    // Brevo API send test (NOT SMTP) — only enabled when DEBUG_ENABLED
-    app.get("/__email_test", async (req, res) => {
-      try {
-        const to = String(req.query.to ?? "").trim();
-
-        // basic sanity validation (fast + prevents Brevo 400 spam)
-        if (!to || !to.includes("@") || to.startsWith("YOUR_EMAIL")) {
-          return res
-            .status(400)
-            .type("text/plain")
-            .send("BAD_REQUEST: provide a valid ?to=email@example.com");
-        }
-
-        const result = await sendGiftEmail({
-          to,
-          claimLink: `${process.env.BASE_URL || "https://thankumail.onrender.com"}/claim/demo`,
-          message: "If you received this, Brevo API sending works.",
-          amountCents: 1000,
-        });
-
-        return res
-          .status(200)
-          .type("text/plain")
-          .send(`SENT_OK: ${JSON.stringify(result)}`);
-      } catch (e: any) {
-        return res
-          .status(500)
-          .type("text/plain")
-          .send(`EMAIL_TEST_ERROR: ${e?.message || String(e)}`);
-      }
-    });
-
-    // In production, hide these routes unless explicitly enabled
-    app.get(["/__marker", "/__where", "/__email_test"], (_req, res) =>
-      res.status(404).send("Not found"),
-    );
+/* ---------------------------------------------------
+   🔒 DEBUG ROUTE GUARD
+--------------------------------------------------- */
+function debugGuard(req: express.Request, res: express.Response): boolean {
+  const token = String(req.query.token ?? "");
+  if (!DEBUG_TOKEN || token !== DEBUG_TOKEN) {
+    res.status(404).type("text/plain").send("Not found");
+    return false;
   }
-
-  // Serve static + SPA fallback
-  if (existsSync(publicDir) && existsSync(indexPath)) {
-    app.use(express.static(publicDir));
-
-    // SPA fallback (must be after APIs and static)
-    app.get("*", (req, res) => {
-      // Never hijack API routes
-      if (req.path.startsWith("/api")) return res.status(404).send("Not found");
-      res.sendFile(indexPath);
-    });
-  }
-
-  const port = Number(process.env.PORT || 5000);
-  httpServer.listen(port, "0.0.0.0", () => {
-    console.log(`ThankuMail server running on port ${port} (${MARKER})`);
-  });
+  return true;
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
+/* ---------------------------------------------------
+   🔍 DEBUG ROUTES (TOKEN REQUIRED)
+--------------------------------------------------- */
+
+app.get("/__marker", (req, res) => {
+  if (!debugGuard(req, res)) return;
+  res.type("text/plain").send("IDX_v2_emailtest_2026-01-09_17:40");
+});
+
+app.get("/__where", (req, res) => {
+  if (!debugGuard(req, res)) return;
+
+  const publicDir = path.join(__dirname, "public");
+  const indexPath = path.join(publicDir, "index.html");
+
+  res.json({
+    cwd: process.cwd(),
+    publicDir,
+    indexPath,
+    publicDirExists: true,
+    indexExists: true,
+    renderCommit: process.env.RENDER_GIT_COMMIT || "unknown",
+  });
+});
+
+app.get("/__email_test", async (req, res) => {
+  if (!debugGuard(req, res)) return;
+
+  const to = String(req.query.to ?? "").trim();
+  if (!to || !to.includes("@")) {
+    return res
+      .status(400)
+      .type("text/plain")
+      .send("BAD_REQUEST: provide ?to=email@example.com");
+  }
+
+  try {
+    const result = await sendGiftEmail({
+      to,
+      claimLink: `${BASE_URL}/claim/demo`,
+      message: "If you received this, Brevo API sending works.",
+      amountCents: 1000,
+    });
+
+    res.type("text/plain").send(`SENT_OK: ${JSON.stringify(result)}`);
+  } catch (err: any) {
+    res
+      .status(500)
+      .type("text/plain")
+      .send(`EMAIL_TEST_ERROR: ${err?.message || String(err)}`);
+  }
+});
+
+/* ---------------------------------------------------
+   ❤️ HEALTH
+--------------------------------------------------- */
+app.get("/health", (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.get("/__health", (_req, res) => {
+  res.json({ ok: true });
+});
+
+/* ---------------------------------------------------
+   🚀 API ROUTES
+--------------------------------------------------- */
+registerRoutes(server, app);
+
+/* ---------------------------------------------------
+   🌐 STATIC FRONTEND
+--------------------------------------------------- */
+const publicDir = path.join(__dirname, "public");
+app.use(express.static(publicDir));
+
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(publicDir, "index.html"));
+});
+
+/* ---------------------------------------------------
+   ▶️ START SERVER
+--------------------------------------------------- */
+server.listen(PORT, () => {
+  console.log(`ThankuMail server running on port ${PORT}`);
 });
