@@ -1,54 +1,90 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
-import fs from "fs";
+import { createServer } from "http";
 
 import { registerRoutes } from "../server/routes";
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+app.set("trust proxy", 1);
 
-const publicDir = path.join(__dirname, "public");
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+const publicDir = path.join(process.cwd(), "dist", "public");
 const indexPath = path.join(publicDir, "index.html");
 
-// Serve static assets
-app.use(express.static(publicDir));
+app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/__health", (_req, res) => res.json({ ok: true }));
 
-// Diagnostics (always available)
-app.get("/__where", (req, res) => {
+app.get("/__where", (_req, res) => {
   res.json({
-    __dirname,
+    cwd: process.cwd(),
     publicDir,
     indexPath,
-    publicDirExists: fs.existsSync(publicDir),
-    indexExists: fs.existsSync(indexPath),
+    publicDirExists: require("fs").existsSync(publicDir),
+    indexExists: require("fs").existsSync(indexPath),
     renderCommit: process.env.RENDER_GIT_COMMIT || null,
   });
 });
 
+app.get("/__email_test", async (req, res) => {
+  try {
+    const to = String(req.query.to || "");
+    if (!to) return res.status(400).send("Missing ?to=email");
+
+    const apiKey = process.env.BREVO_API_KEY || "";
+    if (!apiKey) return res.status(500).send("Missing BREVO_API_KEY");
+
+    const senderEmail = process.env.FROM_EMAIL || "noreply@thankumail.com";
+    const senderName = process.env.FROM_NAME || "ThankuMail";
+
+    const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": apiKey,
+      },
+      body: JSON.stringify({
+        sender: { name: senderName, email: senderEmail },
+        to: [{ email: to }],
+        subject: "ThankuMail API test",
+        textContent: "If you received this, Brevo API sending works.",
+      }),
+    });
+
+    const body = await r.text();
+    if (!r.ok) return res.status(500).send(`BREVO_API_ERROR ${r.status}: ${body}`);
+    return res.send(`SENT_OK: ${body}`);
+  } catch (e: any) {
+    return res.status(500).send(String(e?.message || e));
+  }
+});
+
+app.use(express.static(publicDir));
+
+const httpServer = createServer(app);
+
 async function main() {
-  // Register API routes FIRST
-  await registerRoutes({} as any, app as any);
+  try {
+    await registerRoutes(httpServer, app);
+  } catch (e) {
+    console.error("registerRoutes failed:", e);
+  }
 
-  // Health routes AFTER registerRoutes, BEFORE SPA fallback (cannot be swallowed)
-  app.get("/health", (req, res) => res.json({ ok: true }));
-  app.get("/__health", (req, res) => res.json({ ok: true }));
-
-  // SPA fallback LAST
-  app.get("*", (req, res) => {
-    if (!fs.existsSync(indexPath)) {
-      return res.status(500).send("Frontend not built yet (missing dist/public/index.html).");
-    }
+  // IMPORTANT: don't let SPA fallback swallow /api or /__ routes
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api") || req.path.startsWith("/__")) return next();
     return res.sendFile(indexPath);
   });
 
-  const PORT = process.env.PORT || 10000;
-  app.listen(PORT, () => console.log(`ThankuMail server running on port ${PORT}`));
+  const port = Number(process.env.PORT || 5000);
+  httpServer.listen(port, "0.0.0.0", () => {
+    console.log(`ThankuMail server running on port ${port}`);
+  });
 }
 
-main().catch((err) => {
-  console.error("Fatal startup error:", err);
-  process.exit(1);
-});
+main();
