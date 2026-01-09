@@ -70,41 +70,35 @@ async function main() {
     // Brevo API send test (NOT SMTP) — only enabled when DEBUG_ENABLED
     app.get("/__email_test", async (req, res) => {
       try {
-        const to = String(req.query.to || "");
-        if (!to) return res.status(400).send("Missing ?to=email");
+        const to = String(req.query.to ?? "").trim();
 
-        const apiKey = process.env.BREVO_API_KEY || "";
-        if (!apiKey) return res.status(500).send("Missing BREVO_API_KEY");
-
-        const senderEmail = process.env.FROM_EMAIL || "noreply@thankumail.com";
-        const senderName = process.env.FROM_NAME || "ThankuMail";
-
-        const r = await fetch("https://api.brevo.com/v3/smtp/email", {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            "content-type": "application/json",
-            "api-key": apiKey,
-          },
-          body: JSON.stringify({
-            sender: { name: senderName, email: senderEmail },
-            to: [{ email: to }],
-            subject: "ThankuMail API test",
-            textContent: "If you received this, Brevo API sending works.",
-          }),
-        });
-
-        const body = await r.text();
-        if (!r.ok) {
-          return res.status(500).send(`BREVO_API_ERROR ${r.status}: ${body}`);
+        // basic sanity validation (fast + prevents Brevo 400 spam)
+        if (!to || !to.includes("@") || to.startsWith("YOUR_EMAIL")) {
+          return res
+            .status(400)
+            .type("text/plain")
+            .send("BAD_REQUEST: provide a valid ?to=email@example.com");
         }
 
-        return res.send(`SENT_OK: ${body}`);
+        const result = await sendGiftEmail({
+          to,
+          claimLink: `${process.env.BASE_URL || "https://thankumail.onrender.com"}/claim/demo`,
+          message: "If you received this, Brevo API sending works.",
+          amountCents: 1000,
+        });
+
+        return res
+          .status(200)
+          .type("text/plain")
+          .send(`SENT_OK: ${JSON.stringify(result)}`);
       } catch (e: any) {
-        return res.status(500).send(String(e?.message || e));
+        return res
+          .status(500)
+          .type("text/plain")
+          .send(`EMAIL_TEST_ERROR: ${e?.message || String(e)}`);
       }
     });
-  } else {
+
     // In production, hide these routes unless explicitly enabled
     app.get(["/__marker", "/__where", "/__email_test"], (_req, res) =>
       res.status(404).send("Not found"),
