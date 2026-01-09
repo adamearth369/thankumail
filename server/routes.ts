@@ -9,7 +9,7 @@ import { sendGiftEmail } from "./email";
 
 /* -------------------- SAFE SEED -------------------- */
 async function seed() {
-  // HARD GUARD: skip entirely if db query layer isn't ready
+  // Skip entirely if db query layer isn't ready
   if (!(db as any)?.query?.gifts?.findFirst) {
     console.log("Seeding skipped: db not ready");
     return;
@@ -41,6 +41,43 @@ export async function registerRoutes(
     console.error("seed skipped:", e);
   }
 
+  /* -------------------- EMAIL DIAGNOSTIC -------------------- */
+  // GET /__email_test?to=email@example.com
+  app.get("/__email_test", async (req, res) => {
+    try {
+      const to = String(req.query.to || "");
+      if (!to) return res.status(400).send("Missing ?to=email");
+
+      const apiKey = process.env.BREVO_API_KEY || "";
+      if (!apiKey) return res.status(500).send("Missing BREVO_API_KEY");
+
+      const senderEmail = process.env.FROM_EMAIL || "noreply@thankumail.com";
+      const senderName = process.env.FROM_NAME || "ThankuMail";
+
+      const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "api-key": apiKey,
+        },
+        body: JSON.stringify({
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: to }],
+          subject: "ThankuMail API test",
+          textContent: "If you received this, Brevo API sending works.",
+        }),
+      });
+
+      const body = await r.text();
+      if (!r.ok) return res.status(500).send(`BREVO_API_ERROR ${r.status}: ${body}`);
+      return res.send(`SENT_OK: ${body}`);
+    } catch (e) {
+      return res.status(500).send(String(e?.message || e));
+    }
+  });
+
+  /* -------------------- GIFTS API -------------------- */
   app.post(api.gifts.create.path, async (req, res) => {
     try {
       const { recipientEmail, message, amount } = req.body;
@@ -96,22 +133,16 @@ export async function registerRoutes(
 
   app.get(api.gifts.get.path, async (req, res) => {
     const gift = await storage.getGift(req.params.publicId);
-    if (!gift) {
-      return res.status(404).json({ message: "Gift not found" });
-    }
+    if (!gift) return res.status(404).json({ message: "Gift not found" });
     res.json(gift);
   });
 
   app.post(api.gifts.claim.path, async (req, res) => {
     try {
       const gift = await storage.getGift(req.params.publicId);
-      if (!gift) {
-        return res.status(404).send("<h2>Gift not found</h2>");
-      }
+      if (!gift) return res.status(404).send("<h2>Gift not found</h2>");
       if (gift.isClaimed) {
-        return res
-          .status(400)
-          .send("<h2>This gift has already been claimed 🎁</h2>");
+        return res.status(400).send("<h2>This gift has already been claimed 🎁</h2>");
       }
 
       const claimedGift = await storage.claimGift(req.params.publicId);
