@@ -20,7 +20,7 @@ async function buildServer() {
     platform: "node",
     format: "cjs",
     outfile: "dist/index.cjs",
-    external: ["cors"],
+    // Do NOT externalize runtime deps like cors
   });
 }
 
