@@ -3,6 +3,8 @@ import type { Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
+import pg from "pg";
+import connectPgSimple from "connect-pg-simple";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { eq } from "drizzle-orm";
@@ -46,25 +48,35 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-/* -------------------- RATE LIMITING -------------------- */
-/**
- * Render sits behind proxies; the most stable key order is:
- * 1) Cloudflare ray id (if present) => stable per request chain
- * 2) First IP in x-forwarded-for
- * 3) req.ip
- *
- * NOTE: cf-ray changes per request, so we do NOT use it alone.
- * We prefer x-forwarded-for first hop.
- */
+/* -------------------- RATE LIMITING (SHARED VIA POSTGRES) -------------------- */
 function getClientKey(req: any) {
   const xff = safeStr(req.headers["x-forwarded-for"]);
   const firstXff = xff ? xff.split(",")[0].trim() : "";
   const ip = safeStr(req.ip);
   const host = safeStr(req.headers["x-forwarded-host"] || req.headers.host || "");
-  // host included so if you ever add another domain behind same infra, buckets don't collide
-  const key = `${firstXff || ip || "unknown"}|${host || "unknown"}`;
-  return key;
+  return `${firstXff || ip || "unknown"}|${host || "unknown"}`;
 }
+
+// Optional shared store: Postgres (prevents "OK after 429" across instances)
+const PgSessionStore = connectPgSimple(undefined as any);
+
+// Create a dedicated pool for limiter store (do not reuse drizzle pool)
+const limiterPool =
+  process.env.DATABASE_URL
+    ? new pg.Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: false },
+      })
+    : null;
+
+// If DATABASE_URL not set, fall back to memory store (still works but may be inconsistent)
+const limiterStore = limiterPool
+  ? new PgSessionStore({
+      pool: limiterPool,
+      tableName: "rate_limit",
+      createTableIfMissing: true,
+    })
+  : undefined;
 
 const createGiftLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
@@ -72,6 +84,7 @@ const createGiftLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
+  store: limiterStore as any,
   handler: (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     logEvent("rate_limited_create_gift", { requestId, key: getClientKey(req) });
@@ -85,6 +98,7 @@ const claimGiftLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
+  store: limiterStore as any,
   handler: (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     logEvent("rate_limited_claim_gift", { requestId, key: getClientKey(req) });
@@ -132,7 +146,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v5_rate_limit_keyfix_2026-01-10",
+      routesMarker: "ROUTES_MARKER_v6_pg_rate_limit_store_2026-01-10",
+      rateLimitStore: limiterStore ? "postgres" : "memory",
     });
   });
 
