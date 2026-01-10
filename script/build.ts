@@ -2,7 +2,6 @@ import { build as viteBuild } from "vite";
 import esbuild from "esbuild";
 
 async function buildClient() {
-  // Runs Vite production build -> dist/public
   await viteBuild({
     root: "client",
     build: {
@@ -13,16 +12,18 @@ async function buildClient() {
 }
 
 async function buildServer() {
-  // Bundle server entry -> dist/index.cjs
   await esbuild.build({
     entryPoints: ["src/index.ts"],
     bundle: true,
     platform: "node",
     format: "cjs",
     outfile: "dist/index.cjs",
-
-    // 🔒 IMPORTANT: leave runtime deps unbundled
-    external: ["cors", "@getbrevo/brevo"],
+    external: [
+      "cors",
+      "nodemailer",
+      "@getbrevo/brevo",
+      "sib-api-v3-sdk",
+    ],
   });
 }
 
