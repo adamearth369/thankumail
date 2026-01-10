@@ -48,35 +48,46 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 
 /* -------------------- RATE LIMITING -------------------- */
 /**
- * Keying: use req.ip (trust proxy enabled in src/index.ts)
- * Add requestId fields for debugging.
+ * Render sits behind proxies; the most stable key order is:
+ * 1) Cloudflare ray id (if present) => stable per request chain
+ * 2) First IP in x-forwarded-for
+ * 3) req.ip
+ *
+ * NOTE: cf-ray changes per request, so we do NOT use it alone.
+ * We prefer x-forwarded-for first hop.
  */
-function limiterKey(req: any) {
-  return safeStr(req.ip || req.headers["x-forwarded-for"] || "unknown");
+function getClientKey(req: any) {
+  const xff = safeStr(req.headers["x-forwarded-for"]);
+  const firstXff = xff ? xff.split(",")[0].trim() : "";
+  const ip = safeStr(req.ip);
+  const host = safeStr(req.headers["x-forwarded-host"] || req.headers.host || "");
+  // host included so if you ever add another domain behind same infra, buckets don't collide
+  const key = `${firstXff || ip || "unknown"}|${host || "unknown"}`;
+  return key;
 }
 
 const createGiftLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 12, // 12 creates per 10 min per IP
+  windowMs: 10 * 60 * 1000,
+  max: 12,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: limiterKey,
+  keyGenerator: (req) => getClientKey(req),
   handler: (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
-    logEvent("rate_limited_create_gift", { requestId, ip: limiterKey(req) });
+    logEvent("rate_limited_create_gift", { requestId, key: getClientKey(req) });
     res.status(429).json({ error: "Too many requests", route: "POST /api/gifts" });
   },
 });
 
 const claimGiftLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 30, // 30 claim attempts per 10 min per IP
+  windowMs: 10 * 60 * 1000,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: limiterKey,
+  keyGenerator: (req) => getClientKey(req),
   handler: (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
-    logEvent("rate_limited_claim_gift", { requestId, ip: limiterKey(req) });
+    logEvent("rate_limited_claim_gift", { requestId, key: getClientKey(req) });
     res.status(429).json({ error: "Too many requests", route: "POST /api/gifts/:publicId/claim" });
   },
 });
@@ -121,13 +132,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v4_rate_limit_2026-01-10",
+      routesMarker: "ROUTES_MARKER_v5_rate_limit_keyfix_2026-01-10",
     });
   });
 
   /* -------------------- PING (FAST DIAG) -------------------- */
-  app.get("/api/__ping", (_req, res) => {
-    res.json({ ok: true, ts: new Date().toISOString() });
+  app.get("/api/__ping", (req, res) => {
+    res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      key: getClientKey(req),
+      ip: safeStr(req.ip),
+      xff: safeStr(req.headers["x-forwarded-for"]),
+    });
   });
 
   /* -------------------- CREATE GIFT -------------------- */
@@ -135,7 +152,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const started = Date.now();
 
-    logEvent("gift_create_start", { requestId, ip: limiterKey(req) });
+    logEvent("gift_create_start", { requestId, key: getClientKey(req) });
 
     try {
       const parsed = CreateGiftSchema.safeParse(req.body);
@@ -150,8 +167,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const baseUrl = getBaseUrl(req);
       const claimLinkAbs = `${baseUrl}/claim/${publicId}`;
 
-      // DB insert (critical path)
-      logEvent("gift_create_db_insert_begin", { requestId, publicId });
       await db.insert(gifts).values({
         publicId,
         recipientEmail,
@@ -159,13 +174,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         amount,
         isClaimed: false,
       });
+
       logEvent("gift_create_db_insert_ok", { requestId, publicId, ms: Date.now() - started });
 
-      // Respond immediately
-      const responseBody = { success: true, giftId: publicId, claimLink: `/claim/${publicId}` };
-      res.json(responseBody);
+      res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
 
-      // Email in background with timeout
       (async () => {
         const emailStarted = Date.now();
         try {
@@ -244,7 +257,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const publicId = req.params.publicId;
 
-    logEvent("claim_attempt", { requestId, publicId, ip: limiterKey(req) });
+    logEvent("claim_attempt", { requestId, publicId, key: getClientKey(req) });
 
     try {
       const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
