@@ -118,10 +118,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }
 
   /* -------------------- HEALTH -------------------- */
-  app.get(["/health", "/__health"], (_req, res) => {
+  app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v8_claim_json_2026-01-10",
+      routesMarker: "ROUTES_MARKER_v9_api_health_2026-01-10",
     });
   });
 
