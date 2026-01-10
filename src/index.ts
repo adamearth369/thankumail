@@ -3,7 +3,8 @@ import cors from "cors";
 import path from "path";
 import { createServer } from "http";
 
-import { registerRoutes } from "./routes";
+// NOTE: routes live in server/, not src/
+import { registerRoutes } from "../server/routes";
 
 const app = express();
 
