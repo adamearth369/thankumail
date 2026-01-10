@@ -2,38 +2,41 @@ import nodemailer from "nodemailer";
 
 type SendGiftEmailArgs = {
   to: string;
-  claimLink: string; // can be relative (/claim/abc) or absolute (https://...)
+  claimLink: string; // can be relative "/claim/abc" or absolute
   message: string;
   amountCents: number;
 };
 
-function getEnv(name: string): string | undefined {
+type SendGiftEmailResult =
+  | { ok: true; messageId: string }
+  | { ok: false; error: string };
+
+function env(name: string, fallback = "") {
   const v = process.env[name];
-  return v && v.trim().length ? v : undefined;
+  return (v ?? fallback).trim();
 }
 
-function requireEnv(name: string): string {
-  const v = getEnv(name);
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
+function asInt(value: string, fallback: number) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
-function isAbsoluteUrl(s: string) {
-  return /^https?:\/\//i.test(s);
+function isEmail(s: string) {
+  // simple + safe (good enough for routing)
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
 function toAbsoluteClaimLink(claimLink: string) {
-  const base =
-    getEnv("APP_BASE_URL") ||
-    getEnv("PUBLIC_APP_URL") ||
-    getEnv("RENDER_EXTERNAL_URL") ||
-    "https://thankumail.onrender.com";
+  if (!claimLink) return claimLink;
 
-  if (isAbsoluteUrl(claimLink)) return claimLink;
+  // already absolute
+  if (/^https?:\/\//i.test(claimLink)) return claimLink;
 
-  const cleanBase = base.replace(/\/+$/, "");
-  const cleanPath = claimLink.startsWith("/") ? claimLink : `/${claimLink}`;
-  return `${cleanBase}${cleanPath}`;
+  const base = env("BASE_URL", "").replace(/\/+$/, "");
+  if (!base) return claimLink; // leave relative if no BASE_URL configured
+
+  const path = claimLink.startsWith("/") ? claimLink : `/${claimLink}`;
+  return `${base}${path}`;
 }
 
 function escapeHtml(input: string) {
@@ -45,111 +48,96 @@ function escapeHtml(input: string) {
     .replaceAll("'", "&#039;");
 }
 
-export async function sendGiftEmail(args: SendGiftEmailArgs) {
-  // Prefer explicit SMTP vars
-  const BREVO_SMTP_KEY =
-    getEnv("BREVO_SMTP_KEY") || getEnv("BREVO_API_KEY") || "";
-  if (!BREVO_SMTP_KEY) {
-    throw new Error("Missing BREVO_SMTP_KEY (or BREVO_API_KEY fallback)");
-  }
-
-  const SMTP_USER = getEnv("BREVO_SMTP_LOGIN") || "apikey";
-
-  // IMPORTANT: FROM_EMAIL must be a verified Brevo sender/domain
-  const FROM_EMAIL = getEnv("FROM_EMAIL") || "noreply@thankumail.com";
-  const FROM_NAME = getEnv("FROM_NAME") || "ThankuMail";
-
-  const claimUrl = toAbsoluteClaimLink(args.claimLink);
-  const dollars = (args.amountCents / 100).toFixed(2);
-
-  const subject = `You received a ThanküMail gift ($${dollars})`;
-
-  const text = [
-    `You received a ThanküMail gift!`,
-    ``,
-    `Amount: $${dollars}`,
-    `Message: ${args.message}`,
-    ``,
-    `Claim here: ${claimUrl}`,
-  ].join("\n");
-
-  const html = `
-    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
-      <h2 style="margin:0 0 12px">You received a ThanküMail gift 🎁</h2>
-      <p style="margin:0 0 8px"><b>Amount:</b> $${dollars}</p>
-      <p style="margin:0 0 8px"><b>Message:</b></p>
-      <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(
-        args.message,
-      )}"</p>
-      <p style="margin:0 0 16px">
-        <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
-          Claim your gift →
-        </a>
-      </p>
-      <p style="margin:0; color:#777; font-size:13px">If you did not expect this, you can ignore this email.</p>
-    </div>
-  `;
-
-  // Brevo SMTP standard settings
-  const transporter = nodemailer.createTransport({
-    host: "smtp-relay.brevo.com",
-    port: 587,
-    secure: false,
-    auth: {
-      user: SMTP_USER,
-      pass: BREVO_SMTP_KEY,
-    },
-    // Helps on some platforms with slower connections
-    connectionTimeout: 15_000,
-    greetingTimeout: 15_000,
-    socketTimeout: 20_000,
-  });
-
-  // Optional sanity check (doesn't leak secrets)
-  // If this throws, you'll get an actionable error in logs.
+export async function sendGiftEmail(
+  args: SendGiftEmailArgs,
+): Promise<SendGiftEmailResult> {
   try {
-    await transporter.verify();
-  } catch (err: any) {
-    console.error("SMTP_VERIFY_FAIL", {
-      host: "smtp-relay.brevo.com",
-      port: 587,
-      user: SMTP_USER,
-      from: FROM_EMAIL,
-      code: err?.code,
-      responseCode: err?.responseCode,
-      command: err?.command,
-      message: err?.message,
-      response: err?.response,
+    const to = (args.to || "").trim();
+    if (!isEmail(to)) {
+      return { ok: false, error: `Invalid recipient email: "${to}"` };
+    }
+
+    const smtpKey = env("BREVO_SMTP_KEY") || env("BREVO_API_KEY");
+    if (!smtpKey) {
+      return { ok: false, error: "Missing BREVO_SMTP_KEY (or BREVO_API_KEY)" };
+    }
+
+    const host = env("SMTP_HOST", "smtp-relay.brevo.com");
+    const port = asInt(env("SMTP_PORT", "587"), 587);
+    const secure = env("SMTP_SECURE", "false").toLowerCase() === "true";
+
+    // IMPORTANT: Brevo SMTP user is typically literally "apikey"
+    const user = env("BREVO_SMTP_LOGIN", "apikey");
+
+    // Use a VERIFIED sender in Brevo or it can fail
+    const fromEmail = env("FROM_EMAIL", "noreply@thankumail.com");
+    const fromName = env("FROM_NAME", "ThankuMail");
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass: smtpKey },
     });
-    throw err;
-  }
 
-  try {
+    const dollars = (args.amountCents / 100).toFixed(2);
+    const claimUrl = toAbsoluteClaimLink(args.claimLink);
+
+    const subject = `You received a ThanküMail gift ($${dollars})`;
+    const text = [
+      `You received a ThanküMail gift!`,
+      ``,
+      `Amount: $${dollars}`,
+      `Message: ${args.message}`,
+      ``,
+      `Claim here: ${claimUrl}`,
+    ].join("\n");
+
+    const html = `
+      <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
+        <h2 style="margin:0 0 12px">You received a ThanküMail gift 🎁</h2>
+        <p style="margin:0 0 8px"><b>Amount:</b> $${dollars}</p>
+        <p style="margin:0 0 8px"><b>Message:</b></p>
+        <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(
+          args.message,
+        )}"</p>
+        <p style="margin:0 0 16px">
+          <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
+            Claim your gift →
+          </a>
+        </p>
+        <p style="margin:0; color:#777; font-size:13px">If you did not expect this, you can ignore this email.</p>
+      </div>
+    `;
+
     const info = await transporter.sendMail({
-      from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
-      to: args.to,
+      from: `"${fromName}" <${fromEmail}>`,
+      to,
       subject,
       text,
       html,
     });
 
-    console.log("SMTP_SEND_OK", {
-      to: args.to,
-      from: FROM_EMAIL,
-      messageId: info.messageId,
-    });
+    console.log(
+      JSON.stringify({
+        tag: "email_sent",
+        to,
+        from: fromEmail,
+        messageId: info.messageId,
+      }),
+    );
 
-    return { messageId: info.messageId };
+    return { ok: true, messageId: info.messageId || "unknown" };
   } catch (err: any) {
-    console.error("SMTP_SEND_FAIL", {
-      to: args.to,
-      from: FROM_EMAIL,
+    // DO NOT throw: gift creation must not fail just because email failed
+    const safe = {
+      tag: "email_send_failed",
+      message: String(err?.message || err),
       code: err?.code,
-      responseCode: err?.responseCode,
-      command: err?.command,
-      message: err?.message,
       response: err?.response,
-    });
-    throw err;
+      responseCode: err?.responseCode,
+    };
+    console.error(JSON.stringify(safe));
+    return { ok: false, error: safe.message };
   }
 }
