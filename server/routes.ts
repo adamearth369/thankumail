@@ -25,20 +25,13 @@ function getBaseUrl(req: any) {
   const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
   if (envBase) return envBase.replace(/\/+$/, "");
   const proto = (req.headers["x-forwarded-proto"] || "https").toString();
-  const host = (
-    req.headers["x-forwarded-host"] ||
-    req.headers.host ||
-    ""
-  ).toString();
+  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
   return `${proto}://${host}`.replace(/\/+$/, "");
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(
-      () => reject(new Error(`timeout:${label}:${ms}ms`)),
-      ms,
-    );
+    const t = setTimeout(() => reject(new Error(`timeout:${label}:${ms}ms`)), ms);
     p.then(
       (v) => {
         clearTimeout(t);
@@ -47,21 +40,17 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
       (e) => {
         clearTimeout(t);
         reject(e);
-      },
+      }
     );
   });
 }
 
 /* -------------------- SAFE SEED (DOES NOT CRASH) -------------------- */
 async function seed() {
-  if (!(db as any)?.query?.gifts?.findFirst) {
-    logEvent("seed_skipped", { reason: "db_query_layer_not_ready" });
-    return;
-  }
-
+  // Do not rely on db.query layer; use select instead
   try {
-    const existing = await (db as any).query.gifts.findFirst();
-    if (!existing) {
+    const existing = await db.select().from(gifts).limit(1);
+    if (!existing || existing.length === 0) {
       const publicId = "demo-gift";
       await db.insert(gifts).values({
         publicId,
@@ -86,10 +75,7 @@ const CreateGiftSchema = z.object({
   amount: z.number().int().min(1000),
 });
 
-export async function registerRoutes(
-  httpServer: Server,
-  app: Express,
-): Promise<Server> {
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   try {
     await seed();
   } catch (e: any) {
@@ -100,7 +86,7 @@ export async function registerRoutes(
   app.get(["/health", "/__health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v2_email_timeout_2026-01-10",
+      routesMarker: "ROUTES_MARKER_v3_select_queries_2026-01-10",
     });
   });
 
@@ -111,23 +97,16 @@ export async function registerRoutes(
 
   /* -------------------- CREATE GIFT -------------------- */
   app.post("/api/gifts", async (req, res) => {
-    const requestId = safeStr(
-      req.headers["x-request-id"] || req.headers["cf-ray"] || "",
-    );
-
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const started = Date.now();
+
     logEvent("gift_create_start", { requestId });
 
     try {
       const parsed = CreateGiftSchema.safeParse(req.body);
       if (!parsed.success) {
-        logEvent("gift_create_validation_failed", {
-          requestId,
-          issues: parsed.error.issues,
-        });
-        return res
-          .status(400)
-          .json({ error: "Invalid payload", issues: parsed.error.issues });
+        logEvent("gift_create_validation_failed", { requestId, issues: parsed.error.issues });
+        return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues });
       }
 
       const { recipientEmail, message, amount } = parsed.data;
@@ -136,7 +115,7 @@ export async function registerRoutes(
       const baseUrl = getBaseUrl(req);
       const claimLinkAbs = `${baseUrl}/claim/${publicId}`;
 
-      // 1) DB insert (this is the critical path)
+      // DB insert (critical path)
       logEvent("gift_create_db_insert_begin", { requestId, publicId });
       await db.insert(gifts).values({
         publicId,
@@ -145,21 +124,13 @@ export async function registerRoutes(
         amount,
         isClaimed: false,
       });
-      logEvent("gift_create_db_insert_ok", {
-        requestId,
-        publicId,
-        ms: Date.now() - started,
-      });
+      logEvent("gift_create_db_insert_ok", { requestId, publicId, ms: Date.now() - started });
 
-      // 2) Respond immediately (DO NOT WAIT ON EMAIL)
-      const responseBody = {
-        success: true,
-        giftId: publicId,
-        claimLink: `/claim/${publicId}`,
-      };
+      // Respond immediately
+      const responseBody = { success: true, giftId: publicId, claimLink: `/claim/${publicId}` };
       res.json(responseBody);
 
-      // 3) Email in background with timeout so it can’t hang the request
+      // Email in background with timeout
       (async () => {
         const emailStarted = Date.now();
         try {
@@ -171,7 +142,7 @@ export async function registerRoutes(
               amountCents: amount,
             }),
             10_000,
-            "sendGiftEmail",
+            "sendGiftEmail"
           );
 
           logEvent("email_send_ok", {
@@ -191,91 +162,67 @@ export async function registerRoutes(
           });
         }
       })().catch((e) => {
-        logEvent("email_bg_task_crash", {
-          requestId,
-          publicId,
-          error: safeStr((e as any)?.message || e),
-        });
+        logEvent("email_bg_task_crash", { requestId, publicId, error: safeStr((e as any)?.message || e) });
       });
 
-      // end handler
       return;
     } catch (e: any) {
-      logEvent("gift_create_error", {
-        requestId,
-        error: safeStr(e?.message || e),
-      });
+      logEvent("gift_create_error", { requestId, error: safeStr(e?.message || e) });
       return res.status(500).json({ error: "Internal server error" });
     }
   });
 
   /* -------------------- GET GIFT -------------------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
-    const requestId = safeStr(
-      req.headers["x-request-id"] || req.headers["cf-ray"] || "",
-    );
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const publicId = req.params.publicId;
 
     try {
-      const row = await db.query.gifts.findFirst({
-        where: eq(gifts.publicId, publicId),
-      });
+      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
+      const row: any = rows && rows.length > 0 ? rows[0] : null;
 
       if (!row) {
         logEvent("gift_get_not_found", { requestId, publicId });
         return res.status(404).json({ error: "Not found" });
       }
 
-      logEvent("gift_get_ok", {
-        requestId,
-        publicId,
-        isClaimed: (row as any).isClaimed,
-      });
+      logEvent("gift_get_ok", { requestId, publicId, isClaimed: row.isClaimed });
 
       return res.json({
-        id: (row as any).id,
-        publicId: (row as any).publicId,
-        recipientEmail: (row as any).recipientEmail,
-        message: (row as any).message,
-        amount: (row as any).amount,
-        isClaimed: (row as any).isClaimed,
-        createdAt: (row as any).createdAt,
-        claimedAt: (row as any).claimedAt,
+        id: row.id,
+        publicId: row.publicId,
+        recipientEmail: row.recipientEmail,
+        message: row.message,
+        amount: row.amount,
+        isClaimed: row.isClaimed,
+        createdAt: row.createdAt,
+        claimedAt: row.claimedAt,
       });
     } catch (e: any) {
-      logEvent("gift_get_error", {
-        requestId,
-        publicId,
-        error: safeStr(e?.message || e),
-      });
+      logEvent("gift_get_error", { requestId, publicId, error: safeStr(e?.message || e) });
       return res.status(500).json({ error: "Internal server error" });
     }
   });
 
   /* -------------------- CLAIM GIFT -------------------- */
   app.post("/api/gifts/:publicId/claim", async (req, res) => {
-    const requestId = safeStr(
-      req.headers["x-request-id"] || req.headers["cf-ray"] || "",
-    );
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const publicId = req.params.publicId;
 
     logEvent("claim_attempt", { requestId, publicId });
 
     try {
-      const row = await db.query.gifts.findFirst({
-        where: eq(gifts.publicId, publicId),
-      });
+      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
+      const row: any = rows && rows.length > 0 ? rows[0] : null;
 
       if (!row) {
         logEvent("claim_not_found", { requestId, publicId });
         return res.status(404).send("<h2>Gift not found</h2>");
       }
 
-      if ((row as any).isClaimed) {
+      if (row.isClaimed) {
         logEvent("claim_already_claimed", { requestId, publicId });
-        return res
-          .status(400)
-          .send("<h2>This gift has already been claimed 🎁</h2>");
+        return res.status(400).send("<h2>This gift has already been claimed 🎁</h2>");
       }
 
       await db
@@ -283,14 +230,10 @@ export async function registerRoutes(
         .set({ isClaimed: true, claimedAt: new Date() as any })
         .where(eq(gifts.publicId, publicId));
 
-      logEvent("claim_success", {
-        requestId,
-        publicId,
-        amount: (row as any).amount,
-      });
+      logEvent("claim_success", { requestId, publicId, amount: row.amount });
 
-      const dollars = (((row as any).amount || 0) / 100).toFixed(2);
-      const msg = escapeHtml((row as any).message || "");
+      const dollars = ((row.amount || 0) / 100).toFixed(2);
+      const msg = escapeHtml(row.message || "");
 
       return res.status(200).send(`
         <div style="font-family: sans-serif; text-align: center; padding: 50px;">
@@ -305,11 +248,7 @@ export async function registerRoutes(
         </div>
       `);
     } catch (e: any) {
-      logEvent("claim_error", {
-        requestId,
-        publicId,
-        error: safeStr(e?.message || e),
-      });
+      logEvent("claim_error", { requestId, publicId, error: safeStr(e?.message || e) });
       return res.status(500).send("<h2>Internal server error</h2>");
     }
   });
