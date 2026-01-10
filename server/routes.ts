@@ -3,8 +3,6 @@ import type { Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import pg from "pg";
-import connectPgSimple from "connect-pg-simple";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { eq } from "drizzle-orm";
@@ -48,7 +46,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-/* -------------------- RATE LIMITING (SHARED VIA POSTGRES) -------------------- */
+/* -------------------- RATE LIMITING (MEMORY STORE) -------------------- */
+/**
+ * Most stable client key on Render:
+ * - take the FIRST IP in x-forwarded-for (client)
+ * - fallback to req.ip
+ * - include host to avoid cross-domain collisions later
+ */
 function getClientKey(req: any) {
   const xff = safeStr(req.headers["x-forwarded-for"]);
   const firstXff = xff ? xff.split(",")[0].trim() : "";
@@ -57,34 +61,12 @@ function getClientKey(req: any) {
   return `${firstXff || ip || "unknown"}|${host || "unknown"}`;
 }
 
-// Optional shared store: Postgres (prevents "OK after 429" across instances)
-const PgSessionStore = connectPgSimple(undefined as any);
-
-// Create a dedicated pool for limiter store (do not reuse drizzle pool)
-const limiterPool =
-  process.env.DATABASE_URL
-    ? new pg.Pool({
-        connectionString: process.env.DATABASE_URL,
-        ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: false },
-      })
-    : null;
-
-// If DATABASE_URL not set, fall back to memory store (still works but may be inconsistent)
-const limiterStore = limiterPool
-  ? new PgSessionStore({
-      pool: limiterPool,
-      tableName: "rate_limit",
-      createTableIfMissing: true,
-    })
-  : undefined;
-
 const createGiftLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 12,
+  windowMs: 10 * 60 * 1000, // 10 min
+  max: 12, // 12 creates per 10 min per client key
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
-  store: limiterStore as any,
   handler: (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     logEvent("rate_limited_create_gift", { requestId, key: getClientKey(req) });
@@ -93,12 +75,11 @@ const createGiftLimiter = rateLimit({
 });
 
 const claimGiftLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 30,
+  windowMs: 10 * 60 * 1000, // 10 min
+  max: 30, // 30 claim attempts per 10 min per client key
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
-  store: limiterStore as any,
   handler: (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     logEvent("rate_limited_claim_gift", { requestId, key: getClientKey(req) });
@@ -106,7 +87,7 @@ const claimGiftLimiter = rateLimit({
   },
 });
 
-/* -------------------- SAFE SEED (DOES NOT CRASH) -------------------- */
+/* -------------------- SAFE SEED -------------------- */
 async function seed() {
   try {
     const existing = await db.select().from(gifts).limit(1);
@@ -146,12 +127,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v6_pg_rate_limit_store_2026-01-10",
-      rateLimitStore: limiterStore ? "postgres" : "memory",
+      routesMarker: "ROUTES_MARKER_v7_rate_limit_memory_ok_2026-01-10",
     });
   });
 
-  /* -------------------- PING (FAST DIAG) -------------------- */
+  /* -------------------- PING (DEBUG KEY) -------------------- */
   app.get("/api/__ping", (req, res) => {
     res.json({
       ok: true,
@@ -159,6 +139,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       key: getClientKey(req),
       ip: safeStr(req.ip),
       xff: safeStr(req.headers["x-forwarded-for"]),
+      host: safeStr(req.headers["x-forwarded-host"] || req.headers.host || ""),
     });
   });
 
@@ -192,6 +173,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       logEvent("gift_create_db_insert_ok", { requestId, publicId, ms: Date.now() - started });
 
+      // respond immediately (email is background)
       res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
 
       (async () => {
@@ -236,94 +218,4 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* -------------------- GET GIFT -------------------- */
-  app.get("/api/gifts/:publicId", async (req, res) => {
-    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
-    const publicId = req.params.publicId;
-
-    try {
-      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
-      const row: any = rows && rows.length > 0 ? rows[0] : null;
-
-      if (!row) {
-        logEvent("gift_get_not_found", { requestId, publicId });
-        return res.status(404).json({ error: "Not found" });
-      }
-
-      logEvent("gift_get_ok", { requestId, publicId, isClaimed: row.isClaimed });
-
-      return res.json({
-        id: row.id,
-        publicId: row.publicId,
-        recipientEmail: row.recipientEmail,
-        message: row.message,
-        amount: row.amount,
-        isClaimed: row.isClaimed,
-        createdAt: row.createdAt,
-        claimedAt: row.claimedAt,
-      });
-    } catch (e: any) {
-      logEvent("gift_get_error", { requestId, publicId, error: safeStr(e?.message || e) });
-      return res.status(500).json({ error: "Internal server error" });
-    }
-  });
-
-  /* -------------------- CLAIM GIFT -------------------- */
-  app.post("/api/gifts/:publicId/claim", claimGiftLimiter, async (req, res) => {
-    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
-    const publicId = req.params.publicId;
-
-    logEvent("claim_attempt", { requestId, publicId, key: getClientKey(req) });
-
-    try {
-      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
-      const row: any = rows && rows.length > 0 ? rows[0] : null;
-
-      if (!row) {
-        logEvent("claim_not_found", { requestId, publicId });
-        return res.status(404).send("<h2>Gift not found</h2>");
-      }
-
-      if (row.isClaimed) {
-        logEvent("claim_already_claimed", { requestId, publicId });
-        return res.status(400).send("<h2>This gift has already been claimed 🎁</h2>");
-      }
-
-      await db
-        .update(gifts)
-        .set({ isClaimed: true, claimedAt: new Date() as any })
-        .where(eq(gifts.publicId, publicId));
-
-      logEvent("claim_success", { requestId, publicId, amount: row.amount });
-
-      const dollars = ((row.amount || 0) / 100).toFixed(2);
-      const msg = escapeHtml(row.message || "");
-
-      return res.status(200).send(`
-        <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-          <h1>🎉 Gift Claimed!</h1>
-          <p><strong>Amount:</strong> $${dollars}</p>
-          <p><strong>Message:</strong></p>
-          <p style="font-style: italic; color: #666;">"${msg}"</p>
-          <p>Thank you for using ThanküMail.</p>
-          <a href="/" style="display: inline-block; margin-top: 20px; color: #7c3aed; text-decoration: none; font-weight: bold;">
-            Send a gift yourself →
-          </a>
-        </div>
-      `);
-    } catch (e: any) {
-      logEvent("claim_error", { requestId, publicId, error: safeStr(e?.message || e) });
-      return res.status(500).send("<h2>Internal server error</h2>");
-    }
-  });
-
-  return httpServer;
-}
-
-function escapeHtml(input: string) {
-  return input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
+  app.get("/api/gi
