@@ -76,7 +76,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* -------------------- HEALTH -------------------- */
   app.get(["/health", "/__health"], (_req, res) => {
-    res.json({ ok: true, marker: process.env.DEPLOY_MARKER || process.env.MARKER || undefined });
+    res.json({
+      ok: true,
+      // Hardcoded marker to PROVE this exact file is deployed
+      routesMarker: "ROUTES_MARKER_v1_2026-01-10",
+      marker: process.env.DEPLOY_MARKER || process.env.MARKER || undefined,
+    });
   });
 
   /* -------------------- CREATE GIFT -------------------- */
@@ -146,7 +151,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  /* -------------------- GET GIFT (THIS FIXES YOUR HTML FALLBACK) -------------------- */
+  /* -------------------- GET GIFT -------------------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const publicId = req.params.publicId;
