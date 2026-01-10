@@ -2,84 +2,68 @@ import nodemailer from "nodemailer";
 
 type SendGiftEmailArgs = {
   to: string;
-  claimLink: string; // may be relative like "/claim/abc"
+  claimLink: string; // can be relative (/claim/abc) or absolute (https://...)
   message: string;
   amountCents: number;
 };
 
-function getEnv(name: string, fallback = "") {
-  return process.env[name] || fallback;
+function getEnv(name: string): string | undefined {
+  const v = process.env[name];
+  return v && v.trim().length ? v : undefined;
 }
 
-function isEmailDebugEnabled() {
-  return getEnv("EMAIL_DEBUG", "") === "1";
+function requireEnv(name: string): string {
+  const v = getEnv(name);
+  if (!v) throw new Error(`Missing env var: ${name}`);
+  return v;
 }
 
-function toAbsoluteUrl(maybeRelative: string) {
-  if (!maybeRelative) return maybeRelative;
-
-  // already absolute
-  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
-
-  const origin = getEnv(
-    "APP_ORIGIN",
-    "https://thankumail.onrender.com",
-  ).replace(/\/+$/, "");
-  const path = maybeRelative.startsWith("/")
-    ? maybeRelative
-    : `/${maybeRelative}`;
-  return `${origin}${path}`;
+function isAbsoluteUrl(s: string) {
+  return /^https?:\/\//i.test(s);
 }
 
-function sanitizeSmtpError(err: any) {
-  // Never include secrets. Only safe fields.
-  const out: Record<string, any> = {
-    name: err?.name,
-    message: err?.message,
-    code: err?.code,
-    command: err?.command,
-    responseCode: err?.responseCode,
-  };
+function toAbsoluteClaimLink(claimLink: string) {
+  const base =
+    getEnv("APP_BASE_URL") ||
+    getEnv("PUBLIC_APP_URL") ||
+    getEnv("RENDER_EXTERNAL_URL") ||
+    "https://thankumail.onrender.com";
 
-  // nodemailer sometimes includes a server response string
-  if (typeof err?.response === "string") out.response = err.response;
+  if (isAbsoluteUrl(claimLink)) return claimLink;
 
-  // Brevo/SMTP servers sometimes embed details; keep it short
-  if (typeof out.message === "string" && out.message.length > 500) {
-    out.message = out.message.slice(0, 500) + "...";
-  }
-  if (typeof out.response === "string" && out.response.length > 500) {
-    out.response = out.response.slice(0, 500) + "...";
-  }
+  const cleanBase = base.replace(/\/+$/, "");
+  const cleanPath = claimLink.startsWith("/") ? claimLink : `/${claimLink}`;
+  return `${cleanBase}${cleanPath}`;
+}
 
-  return out;
+function escapeHtml(input: string) {
+  return input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 export async function sendGiftEmail(args: SendGiftEmailArgs) {
-  const BREVO_SMTP_KEY = getEnv("BREVO_SMTP_KEY") || getEnv("BREVO_API_KEY"); // fallback
-  if (!BREVO_SMTP_KEY) throw new Error("Missing BREVO_SMTP_KEY");
+  // Prefer explicit SMTP vars
+  const BREVO_SMTP_KEY =
+    getEnv("BREVO_SMTP_KEY") || getEnv("BREVO_API_KEY") || "";
+  if (!BREVO_SMTP_KEY) {
+    throw new Error("Missing BREVO_SMTP_KEY (or BREVO_API_KEY fallback)");
+  }
 
-  // Brevo SMTP login is typically literally "apikey"
-  const BREVO_SMTP_LOGIN = getEnv("BREVO_SMTP_LOGIN", "apikey");
+  const SMTP_USER = getEnv("BREVO_SMTP_LOGIN") || "apikey";
 
-  // IMPORTANT: FROM_EMAIL must be a sender you verified inside Brevo
-  const FROM_EMAIL = getEnv("FROM_EMAIL", "noreply@thankumail.com");
-  const FROM_NAME = getEnv("FROM_NAME", "ThankuMail");
+  // IMPORTANT: FROM_EMAIL must be a verified Brevo sender/domain
+  const FROM_EMAIL = getEnv("FROM_EMAIL") || "noreply@thankumail.com";
+  const FROM_NAME = getEnv("FROM_NAME") || "ThankuMail";
 
-  const transporter = nodemailer.createTransport({
-    host: "smtp-relay.brevo.com",
-    port: 587,
-    secure: false,
-    auth: {
-      user: BREVO_SMTP_LOGIN,
-      pass: BREVO_SMTP_KEY,
-    },
-  });
-
+  const claimUrl = toAbsoluteClaimLink(args.claimLink);
   const dollars = (args.amountCents / 100).toFixed(2);
-  const claimUrl = toAbsoluteUrl(args.claimLink);
 
   const subject = `You received a ThanküMail gift ($${dollars})`;
+
   const text = [
     `You received a ThanküMail gift!`,
     ``,
@@ -94,7 +78,9 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
       <h2 style="margin:0 0 12px">You received a ThanküMail gift 🎁</h2>
       <p style="margin:0 0 8px"><b>Amount:</b> $${dollars}</p>
       <p style="margin:0 0 8px"><b>Message:</b></p>
-      <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(args.message)}"</p>
+      <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(
+        args.message,
+      )}"</p>
       <p style="margin:0 0 16px">
         <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
           Claim your gift →
@@ -104,16 +90,41 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
     </div>
   `;
 
-  try {
-    if (isEmailDebugEnabled()) {
-      console.log("[EMAIL_DEBUG] sending email", {
-        to: args.to,
-        from: FROM_EMAIL,
-        origin: getEnv("APP_ORIGIN", "https://thankumail.onrender.com"),
-        claimUrl,
-      });
-    }
+  // Brevo SMTP standard settings
+  const transporter = nodemailer.createTransport({
+    host: "smtp-relay.brevo.com",
+    port: 587,
+    secure: false,
+    auth: {
+      user: SMTP_USER,
+      pass: BREVO_SMTP_KEY,
+    },
+    // Helps on some platforms with slower connections
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 20_000,
+  });
 
+  // Optional sanity check (doesn't leak secrets)
+  // If this throws, you'll get an actionable error in logs.
+  try {
+    await transporter.verify();
+  } catch (err: any) {
+    console.error("SMTP_VERIFY_FAIL", {
+      host: "smtp-relay.brevo.com",
+      port: 587,
+      user: SMTP_USER,
+      from: FROM_EMAIL,
+      code: err?.code,
+      responseCode: err?.responseCode,
+      command: err?.command,
+      message: err?.message,
+      response: err?.response,
+    });
+    throw err;
+  }
+
+  try {
     const info = await transporter.sendMail({
       from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
       to: args.to,
@@ -122,27 +133,23 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
       html,
     });
 
-    if (isEmailDebugEnabled()) {
-      console.log("[EMAIL_DEBUG] sent OK", { messageId: info.messageId });
-    }
+    console.log("SMTP_SEND_OK", {
+      to: args.to,
+      from: FROM_EMAIL,
+      messageId: info.messageId,
+    });
 
     return { messageId: info.messageId };
   } catch (err: any) {
-    const safe = sanitizeSmtpError(err);
-    console.error("[EMAIL_SEND_FAILED]", safe);
-
-    // Throw a small safe message upward (no secrets)
-    throw new Error(
-      `SMTP_SEND_FAILED: ${safe.code || safe.responseCode || "unknown"}`,
-    );
+    console.error("SMTP_SEND_FAIL", {
+      to: args.to,
+      from: FROM_EMAIL,
+      code: err?.code,
+      responseCode: err?.responseCode,
+      command: err?.command,
+      message: err?.message,
+      response: err?.response,
+    });
+    throw err;
   }
-}
-
-function escapeHtml(input: string) {
-  return input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
