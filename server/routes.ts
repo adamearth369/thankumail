@@ -2,6 +2,7 @@ import type { Express } from "express";
 import type { Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { eq } from "drizzle-orm";
@@ -45,9 +46,43 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
+/* -------------------- RATE LIMITING -------------------- */
+/**
+ * Keying: use req.ip (trust proxy enabled in src/index.ts)
+ * Add requestId fields for debugging.
+ */
+function limiterKey(req: any) {
+  return safeStr(req.ip || req.headers["x-forwarded-for"] || "unknown");
+}
+
+const createGiftLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 12, // 12 creates per 10 min per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: limiterKey,
+  handler: (req, res) => {
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
+    logEvent("rate_limited_create_gift", { requestId, ip: limiterKey(req) });
+    res.status(429).json({ error: "Too many requests", route: "POST /api/gifts" });
+  },
+});
+
+const claimGiftLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 30, // 30 claim attempts per 10 min per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: limiterKey,
+  handler: (req, res) => {
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
+    logEvent("rate_limited_claim_gift", { requestId, ip: limiterKey(req) });
+    res.status(429).json({ error: "Too many requests", route: "POST /api/gifts/:publicId/claim" });
+  },
+});
+
 /* -------------------- SAFE SEED (DOES NOT CRASH) -------------------- */
 async function seed() {
-  // Do not rely on db.query layer; use select instead
   try {
     const existing = await db.select().from(gifts).limit(1);
     if (!existing || existing.length === 0) {
@@ -86,7 +121,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v3_select_queries_2026-01-10",
+      routesMarker: "ROUTES_MARKER_v4_rate_limit_2026-01-10",
     });
   });
 
@@ -96,11 +131,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* -------------------- CREATE GIFT -------------------- */
-  app.post("/api/gifts", async (req, res) => {
+  app.post("/api/gifts", createGiftLimiter, async (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const started = Date.now();
 
-    logEvent("gift_create_start", { requestId });
+    logEvent("gift_create_start", { requestId, ip: limiterKey(req) });
 
     try {
       const parsed = CreateGiftSchema.safeParse(req.body);
@@ -205,11 +240,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* -------------------- CLAIM GIFT -------------------- */
-  app.post("/api/gifts/:publicId/claim", async (req, res) => {
+  app.post("/api/gifts/:publicId/claim", claimGiftLimiter, async (req, res) => {
     const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
     const publicId = req.params.publicId;
 
-    logEvent("claim_attempt", { requestId, publicId });
+    logEvent("claim_attempt", { requestId, publicId, ip: limiterKey(req) });
 
     try {
       const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);

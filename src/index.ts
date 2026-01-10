@@ -8,8 +8,8 @@ import { registerRoutes } from "../server/routes";
 
 const app = express();
 
-// Bump this anytime to prove deploy updated
-const INDEX_MARKER = "INDEX_MARKER_v3_2026-01-10";
+// IMPORTANT for Render / proxies so req.ip works correctly (rate limiting)
+app.set("trust proxy", 1);
 
 /* -------------------- middleware -------------------- */
 app.use(cors());
@@ -34,35 +34,17 @@ async function main() {
   // Register ALL API routes first
   await registerRoutes(httpServer, app);
 
-  // Health marker to prove THIS src/index.ts is deployed/bundled
-  app.get(["/health", "/__health"], (_req, res) => {
-    res.json({
-      ok: true,
-      marker:
-        process.env.DEPLOY_MARKER ||
-        process.env.MARKER ||
-        "IDX_v3_entryfix_2026-01-09",
-      indexMarker: INDEX_MARKER,
-    });
-  });
-
   // Hard rule: /api must never serve the SPA
   // Covers: /api, /api/, /api/anything...
-  app.all("/api", (_req, res) =>
-    res.status(404).json({ message: "Not found" }),
-  );
-  app.all("/api/*", (_req, res) =>
-    res.status(404).json({ message: "Not found" }),
-  );
+  app.all("/api", (_req, res) => res.status(404).json({ message: "Not found" }));
+  app.all("/api/*", (_req, res) => res.status(404).json({ message: "Not found" }));
 
   // Now mount static + SPA fallback
   mountStaticAndSpa(app);
 
   const PORT = process.env.PORT || 10000;
   httpServer.listen(PORT, () => {
-    console.log(
-      `ThankuMail server running on port ${PORT} (${process.env.DEPLOY_MARKER || "IDX_v3_entryfix_2026-01-09"})`,
-    );
+    console.log(`ThankuMail server running on port ${PORT}`);
   });
 }
 
