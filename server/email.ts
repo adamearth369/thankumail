@@ -7,12 +7,6 @@ type SendGiftEmailArgs = {
   amountCents: number;
 };
 
-function requireEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
-}
-
 export async function sendGiftEmail(args: SendGiftEmailArgs) {
   const BREVO_SMTP_KEY =
     process.env.BREVO_SMTP_KEY || process.env.BREVO_API_KEY || "";
@@ -52,9 +46,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
       <h2 style="margin:0 0 12px">You received a ThanküMail gift 🎁</h2>
       <p style="margin:0 0 8px"><b>Amount:</b> $${dollars}</p>
       <p style="margin:0 0 8px"><b>Message:</b></p>
-      <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(
-        args.message,
-      )}"</p>
+      <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(args.message)}"</p>
       <p style="margin:0 0 16px">
         <a href="${args.claimLink}" style="display:inline-block; padding:10px 14px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
           Claim your gift →
