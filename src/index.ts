@@ -1,124 +1,71 @@
 import express from "express";
-import path from "path";
-import http from "http";
 import cors from "cors";
+import path from "path";
+import { createServer } from "http";
 
-import { registerRoutes } from "../server/routes";
-import { sendGiftEmail } from "../server/email";
+import { registerRoutes } from "./routes";
 
 const app = express();
 
-// ---- middleware ----
+// Bump this anytime to prove deploy updated
+const INDEX_MARKER = "INDEX_MARKER_v3_2026-01-10";
+
+/* -------------------- middleware -------------------- */
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
-// ---- marker (optional) ----
-const MARKER = process.env.MARKER || "IDX_v3_entryfix_2026-01-09";
-
-// ---- health routes ----
-app.get("/health", (_req, res) => res.json({ ok: true, marker: MARKER }));
-app.get("/__health", (_req, res) => res.json({ ok: true, marker: MARKER }));
-
-// ---- debug routes gating ----
-function debugAllowed(req: express.Request) {
-  // In production: require token
-  const token = process.env.DEBUG_ROUTES_TOKEN;
-  if (process.env.NODE_ENV === "production") {
-    if (!token) return false;
-    const q = String(req.query.token || "");
-    return q === token;
-  }
-  // Non-production: allow
-  return true;
-}
-
-// __marker (debug)
-app.get("/__marker", (req, res) => {
-  if (!debugAllowed(req)) return res.status(404).send("Not found");
-  res.type("text/plain").send(MARKER);
-});
-
-// __where (debug)
-app.get("/__where", (req, res) => {
-  if (!debugAllowed(req)) return res.status(404).send("Not found");
-
+function mountStaticAndSpa(app: express.Express) {
+  // dist/index.cjs lives in dist/, and client build outputs to dist/public
   const publicDir = path.join(__dirname, "public");
-  const indexPath = path.join(publicDir, "index.html");
 
-  res.json({
-    marker: MARKER,
-    __dirname,
-    cwd: process.cwd(),
-    publicDir,
-    indexPath,
-    publicDirExists: safeExists(publicDir),
-    indexExists: safeExists(indexPath),
-    renderCommit:
-      process.env.RENDER_GIT_COMMIT ||
-      process.env.RENDER_COMMIT ||
-      process.env.GIT_COMMIT ||
-      null,
+  // Static assets
+  app.use(express.static(publicDir));
+
+  // SPA fallback LAST
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(publicDir, "index.html"));
   });
-});
-
-// __email_test (debug)
-app.get("/__email_test", async (req, res) => {
-  if (!debugAllowed(req)) return res.status(404).send("Not found");
-
-  const to = String(req.query.to || "");
-  if (!to || !to.includes("@")) {
-    return res
-      .status(400)
-      .type("text/plain")
-      .send(
-        'BREVO_API_ERROR 400: {"code":"invalid_parameter","message":"email is not valid in to"}',
-      );
-  }
-
-  try {
-    // Minimal smoke-test using your existing email sender
-    const out = await sendGiftEmail({
-      to,
-      claimLink: "/claim/demo-email-test",
-      message: "If you received this, Brevo API sending works.",
-      amountCents: 1000,
-    });
-
-    res.type("text/plain").send(`SENT_OK: ${JSON.stringify(out)}`);
-  } catch (err: any) {
-    res
-      .status(500)
-      .type("text/plain")
-      .send(`SENT_FAIL: ${err?.message || String(err)}`);
-  }
-});
-
-// ---- server routes ----
-const httpServer = http.createServer(app);
-registerRoutes(httpServer, app).catch((err) => {
-  console.error("registerRoutes failed", err);
-});
-
-// ---- static + SPA fallback ----
-const publicDir = path.join(__dirname, "public");
-app.use(express.static(publicDir, { maxAge: 0 }));
-
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(publicDir, "index.html"));
-});
-
-const port = Number(process.env.PORT) || 5000;
-httpServer.listen(port, "0.0.0.0", () => {
-  console.log(`ThankuMail server running on port ${port} (${MARKER})`);
-});
-
-function safeExists(p: string) {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require("fs");
-    return fs.existsSync(p);
-  } catch {
-    return false;
-  }
 }
+
+async function main() {
+  const httpServer = createServer(app);
+
+  // Register ALL API routes first
+  await registerRoutes(httpServer, app);
+
+  // Health marker to prove THIS src/index.ts is deployed/bundled
+  app.get(["/health", "/__health"], (_req, res) => {
+    res.json({
+      ok: true,
+      marker:
+        process.env.DEPLOY_MARKER ||
+        process.env.MARKER ||
+        "IDX_v3_entryfix_2026-01-09",
+      indexMarker: INDEX_MARKER,
+    });
+  });
+
+  // Hard rule: /api must never serve the SPA
+  // Covers: /api, /api/, /api/anything...
+  app.all("/api", (_req, res) =>
+    res.status(404).json({ message: "Not found" }),
+  );
+  app.all("/api/*", (_req, res) =>
+    res.status(404).json({ message: "Not found" }),
+  );
+
+  // Now mount static + SPA fallback
+  mountStaticAndSpa(app);
+
+  const PORT = process.env.PORT || 10000;
+  httpServer.listen(PORT, () => {
+    console.log(
+      `ThankuMail server running on port ${PORT} (${process.env.DEPLOY_MARKER || "IDX_v3_entryfix_2026-01-09"})`,
+    );
+  });
+}
+
+main().catch((err) => {
+  console.error("Fatal startup error:", err);
+  process.exit(1);
+});
