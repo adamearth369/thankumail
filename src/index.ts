@@ -1,119 +1,124 @@
 import express from "express";
-import cors from "cors";
 import path from "path";
-import { fileURLToPath } from "url";
-import { createServer } from "http";
+import http from "http";
+import cors from "cors";
 
-import { registerRoutes } from "./server/routes";
-import { sendGiftEmail } from "./server/email";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { registerRoutes } from "../server/routes";
+import { sendGiftEmail } from "../server/email";
 
 const app = express();
-const server = createServer(app);
 
+// ---- middleware ----
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-const PORT = Number(process.env.PORT || 5000);
-const BASE_URL = process.env.BASE_URL || "https://thankumail.onrender.com";
-const DEBUG_TOKEN = process.env.DEBUG_ROUTES_TOKEN || "";
+// ---- marker (optional) ----
+const MARKER = process.env.MARKER || "IDX_v3_entryfix_2026-01-09";
 
-/* ---------------------------------------------------
-   🔒 DEBUG ROUTE GUARD
---------------------------------------------------- */
-function debugGuard(req: express.Request, res: express.Response): boolean {
-  const token = String(req.query.token ?? "");
-  if (!DEBUG_TOKEN || token !== DEBUG_TOKEN) {
-    res.status(404).type("text/plain").send("Not found");
-    return false;
+// ---- health routes ----
+app.get("/health", (_req, res) => res.json({ ok: true, marker: MARKER }));
+app.get("/__health", (_req, res) => res.json({ ok: true, marker: MARKER }));
+
+// ---- debug routes gating ----
+function debugAllowed(req: express.Request) {
+  // In production: require token
+  const token = process.env.DEBUG_ROUTES_TOKEN;
+  if (process.env.NODE_ENV === "production") {
+    if (!token) return false;
+    const q = String(req.query.token || "");
+    return q === token;
   }
+  // Non-production: allow
   return true;
 }
 
-/* ---------------------------------------------------
-   🔍 DEBUG ROUTES (TOKEN REQUIRED)
---------------------------------------------------- */
-
+// __marker (debug)
 app.get("/__marker", (req, res) => {
-  if (!debugGuard(req, res)) return;
-  res.type("text/plain").send("IDX_v2_emailtest_2026-01-09_17:40");
+  if (!debugAllowed(req)) return res.status(404).send("Not found");
+  res.type("text/plain").send(MARKER);
 });
 
+// __where (debug)
 app.get("/__where", (req, res) => {
-  if (!debugGuard(req, res)) return;
+  if (!debugAllowed(req)) return res.status(404).send("Not found");
 
   const publicDir = path.join(__dirname, "public");
   const indexPath = path.join(publicDir, "index.html");
 
   res.json({
+    marker: MARKER,
+    __dirname,
     cwd: process.cwd(),
     publicDir,
     indexPath,
-    publicDirExists: true,
-    indexExists: true,
-    renderCommit: process.env.RENDER_GIT_COMMIT || "unknown",
+    publicDirExists: safeExists(publicDir),
+    indexExists: safeExists(indexPath),
+    renderCommit:
+      process.env.RENDER_GIT_COMMIT ||
+      process.env.RENDER_COMMIT ||
+      process.env.GIT_COMMIT ||
+      null,
   });
 });
 
+// __email_test (debug)
 app.get("/__email_test", async (req, res) => {
-  if (!debugGuard(req, res)) return;
+  if (!debugAllowed(req)) return res.status(404).send("Not found");
 
-  const to = String(req.query.to ?? "").trim();
+  const to = String(req.query.to || "");
   if (!to || !to.includes("@")) {
     return res
       .status(400)
       .type("text/plain")
-      .send("BAD_REQUEST: provide ?to=email@example.com");
+      .send(
+        'BREVO_API_ERROR 400: {"code":"invalid_parameter","message":"email is not valid in to"}',
+      );
   }
 
   try {
-    const result = await sendGiftEmail({
+    // Minimal smoke-test using your existing email sender
+    const out = await sendGiftEmail({
       to,
-      claimLink: `${BASE_URL}/claim/demo`,
+      claimLink: "/claim/demo-email-test",
       message: "If you received this, Brevo API sending works.",
       amountCents: 1000,
     });
 
-    res.type("text/plain").send(`SENT_OK: ${JSON.stringify(result)}`);
+    res.type("text/plain").send(`SENT_OK: ${JSON.stringify(out)}`);
   } catch (err: any) {
     res
       .status(500)
       .type("text/plain")
-      .send(`EMAIL_TEST_ERROR: ${err?.message || String(err)}`);
+      .send(`SENT_FAIL: ${err?.message || String(err)}`);
   }
 });
 
-/* ---------------------------------------------------
-   ❤️ HEALTH
---------------------------------------------------- */
-app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+// ---- server routes ----
+const httpServer = http.createServer(app);
+registerRoutes(httpServer, app).catch((err) => {
+  console.error("registerRoutes failed", err);
 });
 
-app.get("/__health", (_req, res) => {
-  res.json({ ok: true });
-});
-
-/* ---------------------------------------------------
-   🚀 API ROUTES
---------------------------------------------------- */
-registerRoutes(server, app);
-
-/* ---------------------------------------------------
-   🌐 STATIC FRONTEND
---------------------------------------------------- */
+// ---- static + SPA fallback ----
 const publicDir = path.join(__dirname, "public");
-app.use(express.static(publicDir));
+app.use(express.static(publicDir, { maxAge: 0 }));
 
 app.get("*", (_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });
 
-/* ---------------------------------------------------
-   ▶️ START SERVER
---------------------------------------------------- */
-server.listen(PORT, () => {
-  console.log(`ThankuMail server running on port ${PORT}`);
+const port = Number(process.env.PORT) || 5000;
+httpServer.listen(port, "0.0.0.0", () => {
+  console.log(`ThankuMail server running on port ${port} (${MARKER})`);
 });
+
+function safeExists(p: string) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require("fs");
+    return fs.existsSync(p);
+  } catch {
+    return false;
+  }
+}
