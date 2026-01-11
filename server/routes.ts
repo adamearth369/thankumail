@@ -121,7 +121,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v9_api_health_2026-01-10",
+      routesMarker: "ROUTES_MARKER_v10_email_log_fix_2026-01-11",
     });
   });
 
@@ -170,11 +170,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // respond immediately
       res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
 
-      // email in background with timeout
+      // email in background with timeout (DO NOT block request)
       (async () => {
         const emailStarted = Date.now();
+
         try {
-          const info = await withTimeout(
+          const result = await withTimeout(
             sendGiftEmail({
               to: recipientEmail,
               claimLink: claimLinkAbs,
@@ -185,13 +186,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             "sendGiftEmail"
           );
 
-          logEvent("email_send_ok", {
-            requestId,
-            publicId,
-            to: recipientEmail,
-            messageId: safeStr((info as any)?.messageId),
-            ms: Date.now() - emailStarted,
-          });
+          if ((result as any)?.ok) {
+            logEvent("email_send_ok", {
+              requestId,
+              publicId,
+              to: recipientEmail,
+              messageId: safeStr((result as any)?.messageId),
+              ms: Date.now() - emailStarted,
+            });
+          } else {
+            logEvent("email_send_failed", {
+              requestId,
+              publicId,
+              to: recipientEmail,
+              error: safeStr((result as any)?.error || "unknown_error"),
+              ms: Date.now() - emailStarted,
+            });
+          }
         } catch (e: any) {
           logEvent("email_send_failed", {
             requestId,
