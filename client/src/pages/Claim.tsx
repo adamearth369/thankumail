@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { Link, useRoute } from "wouter";
 
 type Gift = {
   publicId: string;
@@ -22,7 +22,8 @@ function safeText(v: any) {
 }
 
 export default function Claim() {
-  const { publicId } = useParams<{ publicId: string }>();
+  const [, params] = useRoute<{ publicId: string }>("/claim/:publicId");
+  const publicId = params?.publicId || "";
 
   const [loading, setLoading] = useState(true);
   const [gift, setGift] = useState<Gift | null>(null);
@@ -55,9 +56,9 @@ export default function Claim() {
       }
 
       setGift({
-        publicId: data.publicId,
-        message: safeText(data.message),
-        amount: Number(data.amount || 0),
+        publicId: safeText((data as any).publicId),
+        message: safeText((data as any).message),
+        amount: Number((data as any).amount || 0),
         isClaimed: Boolean((data as any).isClaimed),
         createdAt: safeText((data as any).createdAt),
         claimedAt: (data as any).claimedAt ?? null,
@@ -90,7 +91,6 @@ export default function Claim() {
       const data = (await r.json().catch(() => ({}))) as any;
 
       if (r.status === 409) {
-        // Already claimed
         setGift((g) => (g ? { ...g, isClaimed: true, claimedAt: new Date().toISOString() } : g));
         setClaiming(false);
         return;
@@ -102,7 +102,6 @@ export default function Claim() {
         return;
       }
 
-      // success
       setGift((g) =>
         g
           ? {
@@ -122,7 +121,7 @@ export default function Claim() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-white via-white to-violet-50 text-slate-900">
       <header className="mx-auto flex max-w-4xl items-center justify-between px-6 py-6">
-        <Link to="/" className="flex items-center gap-3">
+        <Link href="/" className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-2xl bg-violet-600 shadow-sm" />
           <div className="leading-tight">
             <div className="text-sm font-semibold tracking-tight">ThanküMail</div>
@@ -131,7 +130,7 @@ export default function Claim() {
         </Link>
 
         <Link
-          to="/"
+          href="/"
           className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:ring-violet-200"
         >
           Send one →
@@ -162,7 +161,7 @@ export default function Claim() {
                   Try again
                 </button>
                 <Link
-                  to="/"
+                  href="/"
                   className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-violet-200"
                 >
                   Go home
@@ -205,7 +204,12 @@ export default function Claim() {
                           : "bg-violet-50 text-violet-700",
                       ].join(" ")}
                     >
-                      <span className={["h-2 w-2 rounded-full", gift.isClaimed ? "bg-slate-500" : "bg-violet-600"].join(" ")} />
+                      <span
+                        className={[
+                          "h-2 w-2 rounded-full",
+                          gift.isClaimed ? "bg-slate-500" : "bg-violet-600",
+                        ].join(" ")}
+                      />
                       {gift.isClaimed ? "Claimed" : "Unclaimed"}
                     </div>
                   </div>
@@ -243,7 +247,7 @@ export default function Claim() {
                   )}
 
                   <Link
-                    to="/"
+                    href="/"
                     className="rounded-2xl bg-white px-5 py-3 text-center text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-violet-200"
                   >
                     Send a ThanküMail →
@@ -260,9 +264,7 @@ export default function Claim() {
 
         <div className="mt-6 rounded-3xl border border-violet-100 bg-white p-5 text-sm text-slate-600 shadow-sm">
           <div className="font-semibold text-slate-800">Private. Simple. Human.</div>
-          <div className="mt-1">
-            ThanküMail is built to deliver the feeling first — the gift second.
-          </div>
+          <div className="mt-1">ThanküMail is built to deliver the feeling first — the gift second.</div>
         </div>
       </main>
 
