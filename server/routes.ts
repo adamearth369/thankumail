@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: FULL REPLACEMENT — paste the entire file
-
 import type { Express } from "express";
 import type { Server } from "http";
 import crypto from "crypto";
@@ -11,15 +8,15 @@ import { gifts } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { sendGiftEmail } from "./email";
 
-/* -------------------- STRUCTURED LOGGING -------------------- */
+/* ==================== UTIL ==================== */
 function logEvent(event: string, fields: Record<string, any> = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
 }
+
 function safeStr(v: any) {
   return typeof v === "string" ? v : "";
 }
 
-/* -------------------- BASE URL -------------------- */
 function getBaseUrl(req: any) {
   const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
   if (envBase) return envBase.replace(/\/+$/, "");
@@ -28,30 +25,36 @@ function getBaseUrl(req: any) {
   return `${proto}://${host}`.replace(/\/+$/, "");
 }
 
-/* -------------------- TIMEOUT WRAPPER -------------------- */
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`timeout:${label}:${ms}ms`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      },
-    );
-  });
+/* ==================== DISPOSABLE EMAIL BLOCK ==================== */
+const BLOCKED_EMAIL_DOMAINS = new Set([
+  "mailinator.com",
+  "10minutemail.com",
+  "guerrillamail.com",
+  "temp-mail.org",
+  "yopmail.com",
+  "getnada.com",
+  "dispostable.com",
+  "maildrop.cc",
+  "fakeinbox.com",
+  "throwawaymail.com",
+]);
+
+function getEmailDomain(email: string) {
+  const parts = email.split("@");
+  return parts.length === 2 ? parts[1].toLowerCase() : "";
 }
 
-/* -------------------- RATE LIMITING -------------------- */
+function isDisposableEmail(email: string) {
+  const domain = getEmailDomain(email);
+  return BLOCKED_EMAIL_DOMAINS.has(domain);
+}
+
+/* ==================== RATE LIMITING ==================== */
 function getClientKey(req: any) {
   const xff = safeStr(req.headers["x-forwarded-for"]);
-  const firstXff = xff ? xff.split(",")[0].trim() : "";
-  const ip = safeStr(req.ip);
+  const ip = xff ? xff.split(",")[0].trim() : safeStr(req.ip);
   const host = safeStr(req.headers["x-forwarded-host"] || req.headers.host || "");
-  return `${firstXff || ip || "unknown"}|${host || "unknown"}`;
+  return `${ip || "unknown"}|${host || "unknown"}`;
 }
 
 const createGiftLimiter = rateLimit({
@@ -74,7 +77,7 @@ const claimGiftLimiter = rateLimit({
   },
 });
 
-/* -------------------- SEED -------------------- */
+/* ==================== SEED ==================== */
 async function seed() {
   const existing = await db.select().from(gifts).limit(1);
   if (!existing || existing.length === 0) {
@@ -91,7 +94,7 @@ async function seed() {
   }
 }
 
-/* -------------------- SCHEMAS -------------------- */
+/* ==================== SCHEMAS ==================== */
 const CreateGiftSchema = z.object({
   recipientEmail: z.string().email(),
   message: z.string().min(1).max(1000),
@@ -103,31 +106,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   await seed();
 
   /* -------- HEALTH -------- */
-  app.get(["/health", "/__health", "/api/health"], (_req, res) => {
+  app.get(["/health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v12_admin_status_live",
-      gitCommit: process.env.RENDER_GIT_COMMIT || "",
-      serviceId: process.env.RENDER_SERVICE_ID || "",
+      routesMarker: "ROUTES_MARKER_v13_disposable_email_block",
     });
   });
 
-  /* -------- ADMIN STATUS (NO SECRETS) -------- */
+  /* -------- ADMIN STATUS -------- */
   app.get("/api/admin/status", (_req, res) => {
     res.json({
       ok: true,
-      env: {
-        NODE_ENV: process.env.NODE_ENV || "",
-        PUBLIC_BASE_URL: Boolean(process.env.PUBLIC_BASE_URL),
-        BASE_URL: Boolean(process.env.BASE_URL),
-        FROM_EMAIL: Boolean(process.env.FROM_EMAIL),
-        BREVO_API_KEY: Boolean(process.env.BREVO_API_KEY),
-      },
       email: {
-        provider: "brevo",
-        configured: Boolean(process.env.FROM_EMAIL && process.env.BREVO_API_KEY),
+        disposableBlockEnabled: true,
+        blockedDomainsCount: BLOCKED_EMAIL_DOMAINS.size,
       },
-      uptimeSec: Math.floor(process.uptime()),
     });
   });
 
@@ -139,6 +132,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const { recipientEmail, message, amount } = parsed.data;
+
+    if (isDisposableEmail(recipientEmail)) {
+      logEvent("gift_create_blocked_disposable_email", {
+        recipientEmail,
+        domain: getEmailDomain(recipientEmail),
+      });
+      return res.status(400).json({
+        error: "Disposable email addresses are not allowed",
+        field: "recipientEmail",
+      });
+    }
+
     const publicId = crypto.randomBytes(6).toString("hex");
     const claimAbs = `${getBaseUrl(req)}/claim/${publicId}`;
 
@@ -152,56 +157,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
 
-    withTimeout(
-      sendGiftEmail({
-        to: recipientEmail,
-        claimLink: claimAbs,
-        message,
-        amountCents: amount,
+    sendGiftEmail({
+      to: recipientEmail,
+      claimLink: claimAbs,
+      message,
+      amountCents: amount,
+    }).then((r: any) =>
+      logEvent(r.ok ? "email_send_ok" : "email_send_failed", {
+        publicId,
+        error: r.ok ? undefined : r.error,
       }),
-      10000,
-      "sendGiftEmail",
-    )
-      .then((r: any) =>
-        logEvent(r.ok ? "email_send_ok" : "email_send_failed", {
-          publicId,
-          error: r.ok ? undefined : r.error,
-        }),
-      )
-      .catch((e) => logEvent("email_send_failed", { publicId, error: e?.message || e }));
+    );
   });
 
   /* -------- GET GIFT -------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
     const row = (
-      await db
-        .select()
-        .from(gifts)
-        .where(eq(gifts.publicId, req.params.publicId))
-        .limit(1)
+      await db.select().from(gifts).where(eq(gifts.publicId, req.params.publicId)).limit(1)
     )[0];
 
     if (!row) return res.status(404).json({ error: "Not found" });
 
-    res.json({
-      publicId: row.publicId,
-      recipientEmail: row.recipientEmail,
-      message: row.message,
-      amount: row.amount,
-      isClaimed: row.isClaimed,
-      createdAt: row.createdAt,
-      claimedAt: row.claimedAt,
-    });
+    res.json(row);
   });
 
   /* -------- CLAIM -------- */
   app.post("/api/gifts/:publicId/claim", claimGiftLimiter, async (req, res) => {
     const row = (
-      await db
-        .select()
-        .from(gifts)
-        .where(eq(gifts.publicId, req.params.publicId))
-        .limit(1)
+      await db.select().from(gifts).where(eq(gifts.publicId, req.params.publicId)).limit(1)
     )[0];
 
     if (!row) return res.status(404).json({ error: "Not found" });
