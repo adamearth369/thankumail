@@ -1,10 +1,3 @@
-# NEXT STEP: make the Claim page stop showing “Claimed” unless it’s actually claimed in the DB.
-# (Right now it can look claimed because the page state can be stale or updated locally.)
-
-# WHERE TO PASTE: Replit → file editor
-# FILE: client/src/pages/Claim.tsx
-# ACTION: Replace the ENTIRE file with this
-
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useRoute } from "wouter";
 
@@ -17,7 +10,14 @@ type Gift = {
   claimedAt?: string | null;
 };
 
-type ApiError = { error?: string; message?: string };
+type ClaimResponse =
+  | {
+      success: true;
+      status: "claimed" | "already_claimed";
+      publicId: string;
+      claimedAt: string | null;
+    }
+  | { error: string };
 
 function centsToDollars(cents: number) {
   const n = Number(cents || 0);
@@ -26,6 +26,14 @@ function centsToDollars(cents: number) {
 
 function safeText(v: any) {
   return typeof v === "string" ? v : "";
+}
+
+function absoluteLink(pathOrUrl: string) {
+  if (!pathOrUrl) return pathOrUrl;
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const path = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
+  return `${origin}${path}`;
 }
 
 export default function Claim() {
@@ -37,17 +45,29 @@ export default function Claim() {
   const [err, setErr] = useState<string>("");
 
   const [claiming, setClaiming] = useState(false);
+
   const [copied, setCopied] = useState(false);
+  const claimUrl = useMemo(() => absoluteLink(`/claim/${encodeURIComponent(publicId)}`), [publicId]);
 
   const amountLabel = useMemo(() => {
     if (!gift) return "$0.00";
     return `$${centsToDollars(gift.amount)}`;
   }, [gift]);
 
+  async function copyLink() {
+    if (!claimUrl) return;
+    try {
+      await navigator.clipboard.writeText(claimUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // ignore
+    }
+  }
+
   async function load() {
     if (!publicId) {
       setErr("Invalid link.");
-      setGift(null);
       setLoading(false);
       return;
     }
@@ -57,7 +77,7 @@ export default function Claim() {
 
     try {
       const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}`, { method: "GET" });
-      const data = (await r.json().catch(() => ({}))) as Gift & ApiError;
+      const data = (await r.json().catch(() => ({}))) as Gift & { error?: string };
 
       if (!r.ok) {
         setErr(safeText((data as any)?.error) || "This link is invalid or expired.");
@@ -88,22 +108,6 @@ export default function Claim() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicId]);
 
-  async function copyLink() {
-    if (!publicId) return;
-    const url =
-      typeof window !== "undefined"
-        ? `${window.location.origin}/claim/${encodeURIComponent(publicId)}`
-        : `/claim/${encodeURIComponent(publicId)}`;
-
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      // ignore
-    }
-  }
-
   async function claim() {
     if (!publicId) return;
 
@@ -117,16 +121,16 @@ export default function Claim() {
         body: "{}",
       });
 
-      const data = (await r.json().catch(() => ({}))) as any;
+      const data = (await r.json().catch(() => ({}))) as ClaimResponse;
 
-      // Always re-fetch from DB so UI matches truth (prevents “looks claimed” bugs)
-      if (r.ok || r.status === 409) {
-        await load();
+      if (!r.ok) {
+        setErr(safeText((data as any)?.error) || "Couldn’t claim right now. Please try again.");
         setClaiming(false);
         return;
       }
 
-      setErr(safeText(data?.error) || "Couldn’t claim right now. Please try again.");
+      // Always refresh from DB so we never show a false claimed state
+      await load();
       setClaiming(false);
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
@@ -215,7 +219,9 @@ export default function Claim() {
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <div className="text-xs font-semibold text-slate-500">AMOUNT</div>
-                    <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">{amountLabel}</div>
+                    <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">
+                      {amountLabel}
+                    </div>
                   </div>
 
                   <div className="sm:text-right">
@@ -226,7 +232,12 @@ export default function Claim() {
                         gift.isClaimed ? "bg-slate-100 text-slate-700" : "bg-violet-50 text-violet-700",
                       ].join(" ")}
                     >
-                      <span className={["h-2 w-2 rounded-full", gift.isClaimed ? "bg-slate-500" : "bg-violet-600"].join(" ")} />
+                      <span
+                        className={[
+                          "h-2 w-2 rounded-full",
+                          gift.isClaimed ? "bg-slate-500" : "bg-violet-600",
+                        ].join(" ")}
+                      />
                       {gift.isClaimed ? "Claimed" : "Unclaimed"}
                     </div>
                   </div>
@@ -249,11 +260,6 @@ export default function Claim() {
                   {gift.isClaimed ? (
                     <div className="flex-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
                       Claimed. You’re all set.
-                      {gift.claimedAt ? (
-                        <div className="mt-1 text-xs font-normal text-emerald-800/80">
-                          Claimed at: {new Date(gift.claimedAt).toLocaleString()}
-                        </div>
-                      ) : null}
                     </div>
                   ) : (
                     <button
@@ -276,7 +282,9 @@ export default function Claim() {
                   </Link>
                 </div>
 
-                <div className="mt-4 text-xs text-slate-500">If you weren’t expecting this, you can simply close this page.</div>
+                <div className="mt-4 text-xs text-slate-500">
+                  If you weren’t expecting this, you can simply close this page.
+                </div>
               </div>
             </div>
           ) : null}
