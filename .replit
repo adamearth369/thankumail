@@ -1,5 +1,5 @@
 run = "bash -lc 'node dist/index.cjs'"
-modules = ["nodejs-20"]
+modules = ["nodejs-20", "python-3.11"]
 
 [deployment]
 run = ["bash", "-lc", "node dist/index.cjs"]
@@ -7,3 +7,5 @@ run = ["bash", "-lc", "node dist/index.cjs"]
 [[ports]]
 localPort = 10000
 externalPort = 80
+
+[nix]

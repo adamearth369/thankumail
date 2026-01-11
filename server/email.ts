@@ -1,64 +1,15 @@
-// WHERE TO PASTE: server/email.ts
-// ACTION: Replace the entire file with this
+import type { Express } from "express";
+import type { Server } from "http";
+import crypto from "crypto";
+import { z } from "zod";
+import rateLimit from "express-rate-limit";
+import { db } from "./db";
+import { gifts } from "@shared/schema";
+import { eq } from "drizzle-orm";
+import { sendGiftEmail } from "./email";
 
-type SendGiftEmailArgs = {
-  to: string;
-  claimLink: string; // can be relative "/claim/abc" or absolute
-  message: string;
-  amountCents: number;
-};
-
-type SendGiftEmailResult =
-  | { ok: true; messageId: string }
-  | { ok: false; error: string };
-
-function env(name: string, fallback = "") {
-  const v = process.env[name];
-  return (v ?? fallback).trim();
-}
-
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || "").trim());
-}
-
-function firstNonEmpty(...vals: Array<string | undefined | null>) {
-  for (const v of vals) {
-    const s = (v ?? "").trim();
-    if (s) return s;
-  }
-  return "";
-}
-
-function toAbsoluteClaimLink(claimLink: string) {
-  if (!claimLink) return claimLink;
-
-  // already absolute
-  if (/^https?:\/\//i.test(claimLink)) return claimLink;
-
-  // prefer PUBLIC_BASE_URL, then BASE_URL
-  const base = firstNonEmpty(env("PUBLIC_BASE_URL"), env("BASE_URL")).replace(/\/+$/, "");
-  if (!base) return claimLink;
-
-  const path = claimLink.startsWith("/") ? claimLink : `/${claimLink}`;
-  return `${base}${path}`;
-}
-
-function escapeHtml(input: string) {
-  return (input || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function redact(s: string) {
-  if (!s) return "";
-  if (s.length <= 8) return "***";
-  return `${s.slice(0, 4)}…${s.slice(-4)}`;
-}
-
-function logEmail(event: string, fields: Record<string, any> = {}) {
+/* -------------------- STRUCTURED LOGGING -------------------- */
+function logEvent(event: string, fields: Record<string, any> = {}) {
   console.log(
     JSON.stringify({
       ts: new Date().toISOString(),
@@ -68,218 +19,290 @@ function logEmail(event: string, fields: Record<string, any> = {}) {
   );
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+function safeStr(v: any) {
+  return typeof v === "string" ? v : "";
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), ms);
+function getBaseUrl(req: any) {
+  const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
+  if (envBase) return envBase.replace(/\/+$/, "");
+  const proto = (req.headers["x-forwarded-proto"] || "https").toString();
+  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timeout:${label}:${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
+/* -------------------- RATE LIMITING (MEMORY STORE) -------------------- */
+function getClientKey(req: any) {
+  const xff = safeStr(req.headers["x-forwarded-for"]);
+  const firstXff = xff ? xff.split(",")[0].trim() : "";
+  const ip = safeStr(req.ip);
+  const host = safeStr(req.headers["x-forwarded-host"] || req.headers.host || "");
+  return `${firstXff || ip || "unknown"}|${host || "unknown"}`;
+}
+
+const createGiftLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => getClientKey(req),
+  handler: (req, res) => {
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
+    logEvent("rate_limited_create_gift", { requestId, key: getClientKey(req) });
+    res.status(429).json({ error: "Too many requests", route: "POST /api/gifts" });
+  },
+});
+
+const claimGiftLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => getClientKey(req),
+  handler: (req, res) => {
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
+    logEvent("rate_limited_claim_gift", { requestId, key: getClientKey(req) });
+    res.status(429).json({ error: "Too many requests", route: "POST /api/gifts/:publicId/claim" });
+  },
+});
+
+/* -------------------- SAFE SEED -------------------- */
+async function seed() {
   try {
-    return await fetch(url, { ...init, signal: ac.signal });
-  } finally {
-    clearTimeout(t);
+    const existing = await db.select().from(gifts).limit(1);
+    if (!existing || existing.length === 0) {
+      const publicId = "demo-gift";
+      await db.insert(gifts).values({
+        publicId,
+        recipientEmail: "demo@example.com",
+        message: "Here's a little thank you for trying out ThanküMail! 🎁",
+        amount: 1000,
+        isClaimed: false,
+      });
+      logEvent("seed_inserted", { publicId });
+    } else {
+      logEvent("seed_noop", { reason: "already_has_rows" });
+    }
+  } catch (e: any) {
+    logEvent("seed_error", { error: safeStr(e?.message || e) });
   }
 }
 
-function parseBrevoError(bodyJson: any, bodyText: string, status: number) {
-  // Brevo often returns { message, code } or { message: "...", ... }
-  const msg =
-    (bodyJson && typeof bodyJson.message === "string" && bodyJson.message) ||
-    (bodyJson && typeof bodyJson.error === "string" && bodyJson.error) ||
-    "";
+/* -------------------- SCHEMAS -------------------- */
+const CreateGiftSchema = z.object({
+  recipientEmail: z.string().email(),
+  message: z.string().min(1).max(1000),
+  amount: z.number().int().min(1000),
+});
 
-  const code =
-    (bodyJson && typeof bodyJson.code === "string" && bodyJson.code) ||
-    (bodyJson && typeof bodyJson.errorCode === "string" && bodyJson.errorCode) ||
-    "";
-
-  const hint = (() => {
-    if (status === 401) return "Check BREVO_API_KEY (wrong key or key revoked).";
-    if (status === 403) return "Brevo blocked request (permissions / sender not verified / plan limit).";
-    if (status === 400) return "Bad request (sender/to/subject/content).";
-    if (status === 429) return "Rate limited (retry).";
-    if (status >= 500) return "Brevo server error (retry).";
-    return "";
-  })();
-
-  const compact =
-    msg || code
-      ? `${msg}${code ? ` (${code})` : ""}${hint ? ` — ${hint}` : ""}`
-      : `${(bodyText || "").slice(0, 160)}${hint ? ` — ${hint}` : ""}`;
-
-  return `Brevo API error (${status}): ${compact || "unknown error"}`;
-}
-
-export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEmailResult> {
-  const started = Date.now();
-
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   try {
-    const to = (args.to || "").trim();
-    if (!isEmail(to)) return { ok: false, error: `Invalid recipient email: "${to}"` };
+    await seed();
+  } catch (e: any) {
+    logEvent("seed_crash_prevented", { error: safeStr(e?.message || e) });
+  }
 
-    const apiKey = env("BREVO_API_KEY");
-    if (!apiKey) return { ok: false, error: "Missing BREVO_API_KEY" };
+  /* -------------------- HEALTH -------------------- */
+  app.get(["/health", "/__health", "/api/health"], (_req, res) => {
+    res.json({
+      ok: true,
+      routesMarker: "ROUTES_MARKER_v12_create_returns_email_queued_2026-01-11",
+      renderGitCommit: process.env.RENDER_GIT_COMMIT || "",
+      renderServiceId: process.env.RENDER_SERVICE_ID || "",
+    });
+  });
 
-    // IMPORTANT: FROM_EMAIL must be a VERIFIED sender in Brevo (or domain authenticated)
-    const fromEmail = env("FROM_EMAIL", "");
-    if (!fromEmail) {
-      return {
-        ok: false,
-        error: "Missing FROM_EMAIL (must be a verified sender in Brevo)",
-      };
-    }
-    const fromName = env("FROM_NAME", "ThanküMail");
+  /* -------------------- PING (DEBUG KEY) -------------------- */
+  app.get("/api/__ping", (req, res) => {
+    res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      key: getClientKey(req),
+      ip: safeStr(req.ip),
+      xff: safeStr(req.headers["x-forwarded-for"]),
+      host: safeStr(req.headers["x-forwarded-host"] || req.headers.host || ""),
+    });
+  });
 
-    // Optional but recommended for deliverability
-    const replyToEmail = env("REPLY_TO_EMAIL", "");
-    const replyToName = env("REPLY_TO_NAME", fromName);
+  /* -------------------- CREATE GIFT -------------------- */
+  app.post("/api/gifts", createGiftLimiter, async (req, res) => {
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
+    const started = Date.now();
 
-    const dollars = ((Number(args.amountCents) || 0) / 100).toFixed(2);
-    const claimUrl = toAbsoluteClaimLink(args.claimLink);
+    logEvent("gift_create_start", { requestId, key: getClientKey(req) });
 
-    const subject = `You received a ThanküMail gift ($${dollars})`;
+    try {
+      const parsed = CreateGiftSchema.safeParse(req.body);
+      if (!parsed.success) {
+        logEvent("gift_create_validation_failed", { requestId, issues: parsed.error.issues });
+        return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues });
+      }
 
-    const textContent = [
-      `You received a ThanküMail gift!`,
-      ``,
-      `Amount: $${dollars}`,
-      `Message: ${args.message}`,
-      ``,
-      `Claim here: ${claimUrl}`,
-    ].join("\n");
+      const { recipientEmail, message, amount } = parsed.data;
 
-    const safeMsg = escapeHtml(args.message);
+      const publicId = crypto.randomBytes(6).toString("hex");
+      const baseUrl = getBaseUrl(req);
+      const claimLinkAbs = `${baseUrl}/claim/${publicId}`;
 
-    const htmlContent = `
-<div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.45; color:#0f172a">
-  <div style="max-width:560px; margin:0 auto; padding:18px 10px">
-    <h2 style="margin:0 0 12px; font-size:20px">You received a ThanküMail gift 🎁</h2>
-    <p style="margin:0 0 8px"><b>Amount:</b> $${dollars}</p>
-    <p style="margin:0 0 8px"><b>Message:</b></p>
-    <div style="margin:0 0 16px; padding:14px 16px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; color:#111827">
-      <div style="font-style: italic">“${safeMsg}”</div>
-    </div>
-    <p style="margin:0 0 16px">
-      <a href="${claimUrl}" style="display:inline-block; padding:12px 16px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:14px; font-weight:800">
-        Claim your gift →
-      </a>
-    </p>
-    <p style="margin:0; color:#64748b; font-size:13px">
-      If you did not expect this, you can ignore this email.
-    </p>
-  </div>
-</div>
-`.trim();
-
-    const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
-
-    // retry policy: 2 attempts for network/429/5xx
-    const maxAttempts = 2;
-    const timeoutMs = Number(env("BREVO_HTTP_TIMEOUT_MS", "8000")) || 8000;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      logEmail("email_api_send_start", {
-        attempt,
-        to,
-        fromEmail,
-        endpoint,
-        apiKey: redact(apiKey),
+      await db.insert(gifts).values({
+        publicId,
+        recipientEmail,
+        message,
+        amount,
+        isClaimed: false,
       });
 
-      try {
-        const payload: any = {
-          sender: { email: fromEmail, name: fromName },
-          to: [{ email: to }],
-          subject,
-          textContent,
-          htmlContent,
-        };
+      logEvent("gift_create_db_insert_ok", { requestId, publicId, ms: Date.now() - started });
 
-        if (replyToEmail) {
-          payload.replyTo = { email: replyToEmail, name: replyToName };
-        }
+      // Respond immediately; email is async, so this is intentionally "queued"
+      res.json({
+        success: true,
+        giftId: publicId,
+        claimLink: `/claim/${publicId}`,
+        email: { ok: false, status: "queued" },
+      });
 
-        const resp = await fetchWithTimeout(
-          endpoint,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "api-key": apiKey,
-              Accept: "application/json",
-            },
-            body: JSON.stringify(payload),
-          },
-          timeoutMs,
-        );
-
-        const bodyText = await resp.text();
-        let bodyJson: any = null;
+      // email in background with timeout
+      (async () => {
+        const emailStarted = Date.now();
         try {
-          bodyJson = bodyText ? JSON.parse(bodyText) : null;
-        } catch {
-          bodyJson = null;
-        }
+          const info = await withTimeout(
+            sendGiftEmail({
+              to: recipientEmail,
+              claimLink: claimLinkAbs,
+              message,
+              amountCents: amount,
+            }),
+            10_000,
+            "sendGiftEmail",
+          );
 
-        if (!resp.ok) {
-          const errMsg = parseBrevoError(bodyJson, bodyText, resp.status);
-
-          logEmail("email_api_send_attempt_failed", {
-            attempt,
-            to,
-            status: resp.status,
-            body: bodyJson ?? bodyText?.slice(0, 500),
-            ms: Date.now() - started,
-          });
-
-          const retryable = resp.status === 429 || resp.status >= 500;
-          if (retryable && attempt < maxAttempts) {
-            await sleep(350);
-            continue;
+          if ((info as any)?.ok) {
+            logEvent("email_send_ok", {
+              requestId,
+              publicId,
+              to: recipientEmail,
+              messageId: safeStr((info as any)?.messageId),
+              ms: Date.now() - emailStarted,
+            });
+          } else {
+            logEvent("email_send_failed", {
+              requestId,
+              publicId,
+              to: recipientEmail,
+              error: safeStr((info as any)?.error || "unknown_email_error"),
+              ms: Date.now() - emailStarted,
+            });
           }
-
-          return { ok: false, error: errMsg };
+        } catch (e: any) {
+          logEvent("email_send_failed", {
+            requestId,
+            publicId,
+            to: recipientEmail,
+            error: safeStr(e?.message || e),
+            ms: Date.now() - emailStarted,
+          });
         }
-
-        const messageId =
-          (bodyJson && (bodyJson.messageId || bodyJson["messageId"])) || "unknown";
-
-        logEmail("email_api_send_ok", {
-          attempt,
-          to,
-          messageId,
-          ms: Date.now() - started,
+      })().catch((e) => {
+        logEvent("email_bg_task_crash", {
+          requestId,
+          publicId,
+          error: safeStr((e as any)?.message || e),
         });
+      });
 
-        return { ok: true, messageId: String(messageId) };
-      } catch (err: any) {
-        const msg = String(err?.message || err);
-
-        logEmail("email_api_send_attempt_crash", {
-          attempt,
-          to,
-          message: msg,
-          code: err?.code,
-          ms: Date.now() - started,
-        });
-
-        const isAbort = /abort/i.test(msg);
-        const retryable = isAbort || /timeout/i.test(msg) || /network/i.test(msg);
-
-        if (retryable && attempt < maxAttempts) {
-          await sleep(350);
-          continue;
-        }
-
-        return { ok: false, error: msg };
-      }
+      return;
+    } catch (e: any) {
+      logEvent("gift_create_error", { requestId, error: safeStr(e?.message || e) });
+      return res.status(500).json({ error: "Internal server error" });
     }
+  });
 
-    return { ok: false, error: "Email send failed (exhausted retries)" };
-  } catch (err: any) {
-    const msg = String(err?.message || err);
-    logEmail("email_api_crash", { message: msg, code: err?.code, ms: Date.now() - started });
-    return { ok: false, error: msg };
-  }
+  /* -------------------- GET GIFT -------------------- */
+  app.get("/api/gifts/:publicId", async (req, res) => {
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
+    const publicId = req.params.publicId;
+
+    try {
+      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
+      const row: any = rows && rows.length > 0 ? rows[0] : null;
+
+      if (!row) {
+        logEvent("gift_get_not_found", { requestId, publicId });
+        return res.status(404).json({ error: "Not found" });
+      }
+
+      logEvent("gift_get_ok", { requestId, publicId, isClaimed: row.isClaimed });
+
+      return res.json({
+        id: row.id,
+        publicId: row.publicId,
+        recipientEmail: row.recipientEmail,
+        message: row.message,
+        amount: row.amount,
+        isClaimed: row.isClaimed,
+        createdAt: row.createdAt,
+        claimedAt: row.claimedAt,
+      });
+    } catch (e: any) {
+      logEvent("gift_get_error", { requestId, publicId, error: safeStr(e?.message || e) });
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  /* -------------------- CLAIM GIFT (JSON ONLY) -------------------- */
+  app.post("/api/gifts/:publicId/claim", claimGiftLimiter, async (req, res) => {
+    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
+    const publicId = req.params.publicId;
+
+    logEvent("claim_attempt", { requestId, publicId, key: getClientKey(req) });
+
+    try {
+      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
+      const row: any = rows && rows.length > 0 ? rows[0] : null;
+
+      if (!row) {
+        logEvent("claim_not_found", { requestId, publicId });
+        return res.status(404).json({ error: "Not found" });
+      }
+
+      if (row.isClaimed) {
+        logEvent("claim_already_claimed", { requestId, publicId });
+        return res.status(409).json({ error: "Already claimed" });
+      }
+
+      const claimedAt = new Date();
+
+      await db.update(gifts).set({ isClaimed: true, claimedAt: claimedAt as any }).where(eq(gifts.publicId, publicId));
+
+      logEvent("claim_success", { requestId, publicId, amount: row.amount });
+
+      return res.status(200).json({
+        success: true,
+        publicId,
+        claimedAt: claimedAt.toISOString(),
+      });
+    } catch (e: any) {
+      logEvent("claim_error", { requestId, publicId, error: safeStr(e?.message || e) });
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  return httpServer;
 }
