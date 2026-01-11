@@ -42,17 +42,20 @@ export default function Claim() {
   const [gift, setGift] = useState<Gift | null>(null);
   const [err, setErr] = useState<string>("");
   const [claiming, setClaiming] = useState(false);
-  const [justClaimed, setJustClaimed] = useState(false);
 
   const amountLabel = useMemo(() => {
     if (!gift) return "$0.00";
     return `$${centsToDollars(gift.amount)}`;
   }, [gift]);
 
+  const claimedAtLabel = useMemo(() => {
+    if (!gift?.claimedAt) return "";
+    return formatWhen(gift.claimedAt);
+  }, [gift?.claimedAt]);
+
   async function load() {
     if (!publicId) {
       setErr("Invalid link.");
-      setGift(null);
       setLoading(false);
       return;
     }
@@ -61,7 +64,12 @@ export default function Claim() {
     setErr("");
 
     try {
-      const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}`, { method: "GET" });
+      const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache" },
+      });
+
       const data = (await r.json().catch(() => ({}))) as Gift & ApiError;
 
       if (!r.ok) {
@@ -89,28 +97,29 @@ export default function Claim() {
   }
 
   useEffect(() => {
-    setJustClaimed(false);
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicId]);
 
   async function claim() {
     if (!publicId) return;
+
     setClaiming(true);
     setErr("");
 
     try {
       const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}/claim`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
         body: "{}",
       });
 
       const data = (await r.json().catch(() => ({}))) as any;
 
-      // If already claimed, treat as success + refresh state.
       if (r.status === 409) {
-        setJustClaimed(true);
+        // already claimed — reflect it immediately + refresh truth from server
+        setGift((g) => (g ? { ...g, isClaimed: true, claimedAt: g.claimedAt || new Date().toISOString() } : g));
         await load();
         setClaiming(false);
         return;
@@ -122,16 +131,17 @@ export default function Claim() {
         return;
       }
 
-      // Warm success moment, then refresh the gift state.
-      setJustClaimed(true);
+      setGift((g) =>
+        g
+          ? {
+              ...g,
+              isClaimed: true,
+              claimedAt: safeText(data?.claimedAt) || new Date().toISOString(),
+            }
+          : g
+      );
+
       await load();
-
-      // If API returned claimedAt, keep it (load() will also bring it in)
-      const claimedAt = safeText(data?.claimedAt);
-      if (claimedAt) {
-        setGift((g) => (g ? { ...g, isClaimed: true, claimedAt } : g));
-      }
-
       setClaiming(false);
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
@@ -139,7 +149,7 @@ export default function Claim() {
     }
   }
 
-  const claimedWhen = formatWhen(gift?.claimedAt ?? null);
+  const isClaimed = Boolean(gift?.isClaimed);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-white via-white to-violet-50 text-slate-900">
@@ -152,12 +162,21 @@ export default function Claim() {
           </div>
         </Link>
 
-        <Link
-          href="/"
-          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:ring-violet-200"
-        >
-          Send one →
-        </Link>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={load}
+            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:ring-violet-200"
+          >
+            Refresh
+          </button>
+
+          <Link
+            href="/"
+            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:ring-violet-200"
+          >
+            Send one →
+          </Link>
+        </div>
       </header>
 
       <main className="mx-auto max-w-4xl px-6 pb-20 pt-6">
@@ -193,43 +212,48 @@ export default function Claim() {
             </div>
           ) : gift ? (
             <div className="space-y-6">
-              {gift.isClaimed || justClaimed ? (
-                <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 h-9 w-9 rounded-2xl bg-emerald-600 shadow-sm" />
-                    <div>
-                      <div className="text-sm font-semibold text-emerald-900">Gift claimed</div>
-                      <div className="mt-1 text-sm text-emerald-800">
-                        You’re all set. Let that message land.
-                        {claimedWhen ? <span className="ml-2 text-emerald-700">({claimedWhen})</span> : null}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs text-slate-700">
-                  <span className="h-2 w-2 rounded-full bg-violet-600" />
-                  A ThanküMail for you
-                </div>
-              )}
+              <div
+                className={[
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs",
+                  isClaimed ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-violet-100 bg-violet-50 text-slate-700",
+                ].join(" ")}
+              >
+                <span className={["h-2 w-2 rounded-full", isClaimed ? "bg-emerald-500" : "bg-violet-600"].join(" ")} />
+                {isClaimed ? "This gift has been claimed" : "A ThanküMail for you"}
+              </div>
 
               <div>
-                <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-                  {gift.isClaimed ? "This one was claimed." : "Take a breath."}
-                  <span className="block text-violet-700">{gift.isClaimed ? "Message received." : "This one is yours."}</span>
-                </h1>
-                <p className="mt-3 text-sm leading-relaxed text-slate-600">
-                  Your message is first. No rush.
-                </p>
+                {isClaimed ? (
+                  <>
+                    <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+                      Gift claimed.
+                      <span className="block text-emerald-700">Your message is yours to keep.</span>
+                    </h1>
+                    <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                      This ThanküMail has already been claimed{claimedAtLabel ? ` on ${claimedAtLabel}` : ""}.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+                      Take a breath.
+                      <span className="block text-violet-700">This one is yours.</span>
+                    </h1>
+                    <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                      Your message is first. No rush. When you’re ready, you can claim it.
+                    </p>
+                  </>
+                )}
               </div>
 
               <div className="rounded-3xl border border-violet-100 bg-white p-5 shadow-sm">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <div className="text-xs font-semibold text-slate-500">AMOUNT</div>
-                    <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">
-                      {amountLabel}
-                    </div>
+                    <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">{amountLabel}</div>
+                    {isClaimed && claimedAtLabel ? (
+                      <div className="mt-1 text-xs text-slate-500">Claimed at {claimedAtLabel}</div>
+                    ) : null}
                   </div>
 
                   <div className="sm:text-right">
@@ -237,11 +261,11 @@ export default function Claim() {
                     <div
                       className={[
                         "mt-1 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold",
-                        gift.isClaimed ? "bg-slate-100 text-slate-700" : "bg-violet-50 text-violet-700",
+                        isClaimed ? "bg-emerald-50 text-emerald-800" : "bg-violet-50 text-violet-700",
                       ].join(" ")}
                     >
-                      <span className={["h-2 w-2 rounded-full", gift.isClaimed ? "bg-slate-500" : "bg-violet-600"].join(" ")} />
-                      {gift.isClaimed ? "Claimed" : "Unclaimed"}
+                      <span className={["h-2 w-2 rounded-full", isClaimed ? "bg-emerald-600" : "bg-violet-600"].join(" ")} />
+                      {isClaimed ? "Claimed" : "Unclaimed"}
                     </div>
                   </div>
                 </div>
@@ -253,23 +277,18 @@ export default function Claim() {
                   </div>
                 </div>
 
-                {gift.isClaimed ? (
-                  <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <Link
-                      href="/"
-                      className="flex-1 rounded-2xl bg-violet-600 px-5 py-3 text-center text-sm font-semibold text-white shadow-sm hover:bg-violet-700"
-                    >
-                      Send a ThanküMail →
-                    </Link>
-                    <button
-                      onClick={load}
-                      className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-violet-200"
-                    >
-                      Refresh
-                    </button>
+                {err ? (
+                  <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                    {err}
                   </div>
-                ) : (
-                  <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+                ) : null}
+
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+                  {isClaimed ? (
+                    <div className="flex-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                      Claimed. You’re all set.
+                    </div>
+                  ) : (
                     <button
                       onClick={claim}
                       disabled={claiming}
@@ -280,15 +299,15 @@ export default function Claim() {
                     >
                       {claiming ? "Claiming…" : "Claim gift"}
                     </button>
+                  )}
 
-                    <Link
-                      href="/"
-                      className="rounded-2xl bg-white px-5 py-3 text-center text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-violet-200"
-                    >
-                      Send a ThanküMail →
-                    </Link>
-                  </div>
-                )}
+                  <Link
+                    href="/"
+                    className="rounded-2xl bg-white px-5 py-3 text-center text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-violet-200"
+                  >
+                    Send a ThanküMail →
+                  </Link>
+                </div>
 
                 <div className="mt-4 text-xs text-slate-500">
                   If you weren’t expecting this, you can simply close this page.
