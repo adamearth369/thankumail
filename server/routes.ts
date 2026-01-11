@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: FULL REPLACEMENT — paste the entire file
+
 import type { Express } from "express";
 import type { Server } from "http";
 import crypto from "crypto";
@@ -170,11 +173,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* -------- GET GIFT -------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
-    const row = (await db
-      .select()
-      .from(gifts)
-      .where(eq(gifts.publicId, req.params.publicId))
-      .limit(1))[0];
+    const row = (
+      await db
+        .select()
+        .from(gifts)
+        .where(eq(gifts.publicId, req.params.publicId))
+        .limit(1)
+    )[0];
 
     if (!row) return res.status(404).json({ error: "Not found" });
 
@@ -191,11 +196,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* -------- CLAIM -------- */
   app.post("/api/gifts/:publicId/claim", claimGiftLimiter, async (req, res) => {
-    const row = (await db
-      .select()
-      .from(gifts)
-      .where(eq(gifts.publicId, req.params.publicId))
-      .limit(1))[0];
+    const row = (
+      await db
+        .select()
+        .from(gifts)
+        .where(eq(gifts.publicId, req.params.publicId))
+        .limit(1)
+    )[0];
 
     if (!row) return res.status(404).json({ error: "Not found" });
     if (row.isClaimed) return res.status(409).json({ error: "Already claimed" });
