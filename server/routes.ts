@@ -8,7 +8,7 @@ import { gifts } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { sendGiftEmail } from "./email";
 
-/* ==================== UTIL ==================== */
+/* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
 }
@@ -17,6 +17,7 @@ function safeStr(v: any) {
   return typeof v === "string" ? v : "";
 }
 
+/* -------------------- BASE URL -------------------- */
 function getBaseUrl(req: any) {
   const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
   if (envBase) return envBase.replace(/\/+$/, "");
@@ -25,76 +26,182 @@ function getBaseUrl(req: any) {
   return `${proto}://${host}`.replace(/\/+$/, "");
 }
 
-/* ==================== DISPOSABLE EMAIL BLOCK ==================== */
-const BLOCKED_EMAIL_DOMAINS = new Set([
-  "mailinator.com",
-  "10minutemail.com",
-  "guerrillamail.com",
-  "temp-mail.org",
-  "yopmail.com",
-  "getnada.com",
-  "dispostable.com",
-  "maildrop.cc",
-  "fakeinbox.com",
-  "throwawaymail.com",
-]);
-
-function getEmailDomain(email: string) {
-  const parts = email.split("@");
-  return parts.length === 2 ? parts[1].toLowerCase() : "";
+/* -------------------- TIMEOUT WRAPPER -------------------- */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timeout:${label}:${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }
 
-function isDisposableEmail(email: string) {
-  const domain = getEmailDomain(email);
-  return BLOCKED_EMAIL_DOMAINS.has(domain);
-}
-
-/* ==================== RATE LIMITING ==================== */
+/* -------------------- RATE LIMITING (10 MIN WINDOWS) -------------------- */
 function getClientKey(req: any) {
   const xff = safeStr(req.headers["x-forwarded-for"]);
-  const ip = xff ? xff.split(",")[0].trim() : safeStr(req.ip);
+  const firstXff = xff ? xff.split(",")[0].trim() : "";
+  const ip = safeStr(req.ip);
   const host = safeStr(req.headers["x-forwarded-host"] || req.headers.host || "");
-  return `${ip || "unknown"}|${host || "unknown"}`;
+  return `${firstXff || ip || "unknown"}|${host || "unknown"}`;
 }
 
 const createGiftLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
   handler: (req, res) => {
     logEvent("rate_limited_create_gift", { key: getClientKey(req) });
-    res.status(429).json({ error: "Too many requests" });
+    res.status(429).json({ error: "Too many requests", route: "POST /api/gifts" });
   },
 });
 
 const claimGiftLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
   handler: (req, res) => {
     logEvent("rate_limited_claim_gift", { key: getClientKey(req) });
-    res.status(429).json({ error: "Too many requests" });
+    res.status(429).json({ error: "Too many requests", route: "POST /api/gifts/:publicId/claim" });
   },
 });
 
-/* ==================== SEED ==================== */
-async function seed() {
-  const existing = await db.select().from(gifts).limit(1);
-  if (!existing || existing.length === 0) {
-    await db.insert(gifts).values({
-      publicId: "demo-gift",
-      recipientEmail: "demo@example.com",
-      message: "Welcome to ThanküMail 🎁",
-      amount: 1000,
-      isClaimed: false,
-    });
-    logEvent("seed_inserted");
-  } else {
-    logEvent("seed_noop");
+/* -------------------- DAILY LIMITS (IN-MEMORY) -------------------- */
+/**
+ * NOTE: in-memory counters reset on deploy/restart and do not share across instances.
+ * Good enough for MVP + WEB_CONCURRENCY=1; later we can move to Redis/Upstash.
+ */
+type DailyBucket = { day: string; count: number; updatedAtMs: number };
+
+const dailyIpCounts = new Map<string, DailyBucket>();
+const dailyRecipientCounts = new Map<string, DailyBucket>();
+
+function todayKeyUTC() {
+  const d = new Date();
+  // YYYY-MM-DD in UTC
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function getEnvInt(name: string, fallback: number) {
+  const raw = (process.env[name] || "").trim();
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+const DAILY_LIMIT_PER_IP = getEnvInt("DAILY_LIMIT_PER_IP", 50);
+const DAILY_LIMIT_PER_RECIPIENT = getEnvInt("DAILY_LIMIT_PER_RECIPIENT", 10);
+
+function bumpDaily(map: Map<string, DailyBucket>, key: string, day: string) {
+  const now = Date.now();
+  const prev = map.get(key);
+  if (!prev || prev.day !== day) {
+    const next: DailyBucket = { day, count: 1, updatedAtMs: now };
+    map.set(key, next);
+    return next;
+  }
+  const next: DailyBucket = { day, count: prev.count + 1, updatedAtMs: now };
+  map.set(key, next);
+  return next;
+}
+
+function pruneOld(map: Map<string, DailyBucket>, keepDays: number = 3) {
+  // Best-effort cleanup; avoid unbounded growth
+  const now = Date.now();
+  const maxAgeMs = keepDays * 24 * 60 * 60 * 1000;
+  for (const [k, v] of map.entries()) {
+    if (now - v.updatedAtMs > maxAgeMs) map.delete(k);
   }
 }
 
-/* ==================== SCHEMAS ==================== */
+function getIpOnly(req: any) {
+  const xff = safeStr(req.headers["x-forwarded-for"]);
+  const firstXff = xff ? xff.split(",")[0].trim() : "";
+  const ip = safeStr(req.ip);
+  return firstXff || ip || "unknown";
+}
+
+/* -------------------- DISPOSABLE EMAIL BLOCKING -------------------- */
+function normalizeEmail(email: string) {
+  return (email || "").trim().toLowerCase();
+}
+
+function getDomain(email: string) {
+  const at = email.lastIndexOf("@");
+  if (at === -1) return "";
+  return email.slice(at + 1).trim().toLowerCase();
+}
+
+// Keep this list short + high-signal. Expand over time.
+const DISPOSABLE_DOMAINS = new Set<string>([
+  "mailinator.com",
+  "guerrillamail.com",
+  "guerrillamail.net",
+  "guerrillamail.org",
+  "guerrillamail.biz",
+  "guerrillamail.de",
+  "10minutemail.com",
+  "10minutemail.net",
+  "tempmail.com",
+  "temp-mail.org",
+  "yopmail.com",
+  "yopmail.net",
+  "yopmail.org",
+  "throwawaymail.com",
+  "getnada.com",
+  "dispostable.com",
+  "maildrop.cc",
+  "trashmail.com",
+  "trashmail.de",
+  "sharklasers.com",
+]);
+
+function isDisposableEmail(email: string) {
+  const e = normalizeEmail(email);
+  const domain = getDomain(e);
+  if (!domain) return false;
+  if (DISPOSABLE_DOMAINS.has(domain)) return true;
+  // simple subdomain catch: something.mailinator.com
+  for (const d of DISPOSABLE_DOMAINS) {
+    if (domain.endsWith(`.${d}`)) return true;
+  }
+  return false;
+}
+
+/* -------------------- SEED -------------------- */
+async function seed() {
+  try {
+    const existing = await db.select().from(gifts).limit(1);
+    if (!existing || existing.length === 0) {
+      await db.insert(gifts).values({
+        publicId: "demo-gift",
+        recipientEmail: "demo@example.com",
+        message: "Welcome to ThanküMail 🎁",
+        amount: 1000,
+        isClaimed: false,
+      });
+      logEvent("seed_inserted");
+    } else {
+      logEvent("seed_noop");
+    }
+  } catch (e: any) {
+    logEvent("seed_error", { error: safeStr(e?.message || e) });
+  }
+}
+
+/* -------------------- SCHEMAS -------------------- */
 const CreateGiftSchema = z.object({
   recipientEmail: z.string().email(),
   message: z.string().min(1).max(1000),
@@ -106,26 +213,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   await seed();
 
   /* -------- HEALTH -------- */
-  app.get(["/health", "/api/health"], (_req, res) => {
+  app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v13_disposable_email_block",
+      routesMarker: "ROUTES_MARKER_v14_daily_limits_ip_and_recipient",
+      gitCommit: process.env.RENDER_GIT_COMMIT || "",
+      serviceId: process.env.RENDER_SERVICE_ID || "",
     });
   });
 
-  /* -------- ADMIN STATUS -------- */
+  /* -------- ADMIN STATUS (NO SECRETS) -------- */
   app.get("/api/admin/status", (_req, res) => {
     res.json({
       ok: true,
-      email: {
-        disposableBlockEnabled: true,
-        blockedDomainsCount: BLOCKED_EMAIL_DOMAINS.size,
+      env: {
+        NODE_ENV: process.env.NODE_ENV || "",
+        PUBLIC_BASE_URL: Boolean(process.env.PUBLIC_BASE_URL),
+        BASE_URL: Boolean(process.env.BASE_URL),
+        FROM_EMAIL: Boolean(process.env.FROM_EMAIL),
+        BREVO_API_KEY: Boolean(process.env.BREVO_API_KEY),
+        DAILY_LIMIT_PER_IP,
+        DAILY_LIMIT_PER_RECIPIENT,
       },
+      email: {
+        provider: "brevo",
+        configured: Boolean(process.env.FROM_EMAIL && process.env.BREVO_API_KEY),
+      },
+      uptimeSec: Math.floor(process.uptime()),
     });
   });
 
   /* -------- CREATE GIFT -------- */
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
+    pruneOld(dailyIpCounts);
+    pruneOld(dailyRecipientCounts);
+
     const parsed = CreateGiftSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues });
@@ -133,15 +255,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const { recipientEmail, message, amount } = parsed.data;
 
+    // disposable block
     if (isDisposableEmail(recipientEmail)) {
       logEvent("gift_create_blocked_disposable_email", {
-        recipientEmail,
-        domain: getEmailDomain(recipientEmail),
+        recipientEmail: normalizeEmail(recipientEmail),
+        domain: getDomain(normalizeEmail(recipientEmail)),
       });
-      return res.status(400).json({
-        error: "Disposable email addresses are not allowed",
-        field: "recipientEmail",
+      return res.status(400).json({ error: "Disposable email addresses are not allowed", field: "recipientEmail" });
+    }
+
+    // daily limits
+    const day = todayKeyUTC();
+    const ip = getIpOnly(req);
+    const recipient = normalizeEmail(recipientEmail);
+
+    const ipBucket = bumpDaily(dailyIpCounts, ip, day);
+    if (ipBucket.count > DAILY_LIMIT_PER_IP) {
+      logEvent("daily_limit_ip_hit", { ip, day, count: ipBucket.count, limit: DAILY_LIMIT_PER_IP });
+      return res.status(429).json({ error: "Daily limit reached for this IP", field: "ip" });
+    }
+
+    const rBucket = bumpDaily(dailyRecipientCounts, recipient, day);
+    if (rBucket.count > DAILY_LIMIT_PER_RECIPIENT) {
+      logEvent("daily_limit_recipient_hit", {
+        recipient,
+        day,
+        count: rBucket.count,
+        limit: DAILY_LIMIT_PER_RECIPIENT,
       });
+      return res.status(429).json({ error: "Daily limit reached for this recipient", field: "recipientEmail" });
     }
 
     const publicId = crypto.randomBytes(6).toString("hex");
@@ -155,48 +297,80 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       isClaimed: false,
     });
 
+    logEvent("gift_create_ok", { publicId, ip, recipient });
+
     res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
 
-    sendGiftEmail({
-      to: recipientEmail,
-      claimLink: claimAbs,
-      message,
-      amountCents: amount,
-    }).then((r: any) =>
-      logEvent(r.ok ? "email_send_ok" : "email_send_failed", {
-        publicId,
-        error: r.ok ? undefined : r.error,
+    withTimeout(
+      sendGiftEmail({
+        to: recipientEmail,
+        claimLink: claimAbs,
+        message,
+        amountCents: amount,
       }),
-    );
+      10000,
+      "sendGiftEmail",
+    )
+      .then((r: any) =>
+        logEvent(r?.ok ? "email_send_ok" : "email_send_failed", {
+          publicId,
+          error: r?.ok ? undefined : safeStr(r?.error || "email_failed"),
+        }),
+      )
+      .catch((e) => logEvent("email_send_failed", { publicId, error: safeStr(e?.message || e) }));
   });
 
   /* -------- GET GIFT -------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
-    const row = (
-      await db.select().from(gifts).where(eq(gifts.publicId, req.params.publicId)).limit(1)
-    )[0];
+    try {
+      const row = (await db
+        .select()
+        .from(gifts)
+        .where(eq(gifts.publicId, req.params.publicId))
+        .limit(1))[0];
 
-    if (!row) return res.status(404).json({ error: "Not found" });
+      if (!row) return res.status(404).json({ error: "Not found" });
 
-    res.json(row);
+      return res.json({
+        publicId: row.publicId,
+        recipientEmail: row.recipientEmail,
+        message: row.message,
+        amount: row.amount,
+        isClaimed: row.isClaimed,
+        createdAt: row.createdAt,
+        claimedAt: row.claimedAt,
+      });
+    } catch (e: any) {
+      logEvent("gift_get_error", { publicId: req.params.publicId, error: safeStr(e?.message || e) });
+      return res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   /* -------- CLAIM -------- */
   app.post("/api/gifts/:publicId/claim", claimGiftLimiter, async (req, res) => {
-    const row = (
-      await db.select().from(gifts).where(eq(gifts.publicId, req.params.publicId)).limit(1)
-    )[0];
+    try {
+      const row = (await db
+        .select()
+        .from(gifts)
+        .where(eq(gifts.publicId, req.params.publicId))
+        .limit(1))[0];
 
-    if (!row) return res.status(404).json({ error: "Not found" });
-    if (row.isClaimed) return res.status(409).json({ error: "Already claimed" });
+      if (!row) return res.status(404).json({ error: "Not found" });
+      if (row.isClaimed) return res.status(409).json({ error: "Already claimed" });
 
-    const claimedAt = new Date();
-    await db
-      .update(gifts)
-      .set({ isClaimed: true, claimedAt: claimedAt as any })
-      .where(eq(gifts.publicId, req.params.publicId));
+      const claimedAt = new Date();
+      await db
+        .update(gifts)
+        .set({ isClaimed: true, claimedAt: claimedAt as any })
+        .where(eq(gifts.publicId, req.params.publicId));
 
-    res.json({ success: true, publicId: row.publicId, claimedAt: claimedAt.toISOString() });
+      logEvent("claim_success", { publicId: row.publicId });
+
+      return res.json({ success: true, publicId: row.publicId, claimedAt: claimedAt.toISOString() });
+    } catch (e: any) {
+      logEvent("claim_error", { publicId: req.params.publicId, error: safeStr(e?.message || e) });
+      return res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   return httpServer;
