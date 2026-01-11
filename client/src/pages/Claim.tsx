@@ -21,17 +21,12 @@ function safeText(v: any) {
   return typeof v === "string" ? v : "";
 }
 
-function formatWhen(iso?: string | null) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function absoluteLink(maybeRelative: string) {
+  if (!maybeRelative) return maybeRelative;
+  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
+  return `${origin}${path}`;
 }
 
 export default function Claim() {
@@ -43,15 +38,28 @@ export default function Claim() {
   const [err, setErr] = useState<string>("");
   const [claiming, setClaiming] = useState(false);
 
+  const [copied, setCopied] = useState(false);
+
   const amountLabel = useMemo(() => {
     if (!gift) return "$0.00";
     return `$${centsToDollars(gift.amount)}`;
   }, [gift]);
 
-  const claimedAtLabel = useMemo(() => {
-    if (!gift?.claimedAt) return "";
-    return formatWhen(gift.claimedAt);
-  }, [gift?.claimedAt]);
+  const claimPageLink = useMemo(() => {
+    if (!publicId) return "";
+    return absoluteLink(`/claim/${publicId}`);
+  }, [publicId]);
+
+  async function copyLink() {
+    if (!claimPageLink) return;
+    try {
+      await navigator.clipboard.writeText(claimPageLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // ignore
+    }
+  }
 
   async function load() {
     if (!publicId) {
@@ -62,14 +70,8 @@ export default function Claim() {
 
     setLoading(true);
     setErr("");
-
     try {
-      const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}`, {
-        method: "GET",
-        cache: "no-store",
-        headers: { "Cache-Control": "no-cache" },
-      });
-
+      const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}`, { method: "GET" });
       const data = (await r.json().catch(() => ({}))) as Gift & ApiError;
 
       if (!r.ok) {
@@ -87,7 +89,6 @@ export default function Claim() {
         createdAt: safeText((data as any).createdAt),
         claimedAt: (data as any).claimedAt ?? null,
       });
-
       setLoading(false);
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
@@ -103,24 +104,21 @@ export default function Claim() {
 
   async function claim() {
     if (!publicId) return;
-
     setClaiming(true);
     setErr("");
 
     try {
       const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}/claim`, {
         method: "POST",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
+        headers: { "Content-Type": "application/json" },
         body: "{}",
       });
 
       const data = (await r.json().catch(() => ({}))) as any;
 
       if (r.status === 409) {
-        // already claimed — reflect it immediately + refresh truth from server
-        setGift((g) => (g ? { ...g, isClaimed: true, claimedAt: g.claimedAt || new Date().toISOString() } : g));
-        await load();
+        // Already claimed on server — reflect it as a settled state.
+        setGift((g) => (g ? { ...g, isClaimed: true, claimedAt: g.claimedAt ?? new Date().toISOString() } : g));
         setClaiming(false);
         return;
       }
@@ -140,16 +138,12 @@ export default function Claim() {
             }
           : g
       );
-
-      await load();
       setClaiming(false);
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
       setClaiming(false);
     }
   }
-
-  const isClaimed = Boolean(gift?.isClaimed);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-white via-white to-violet-50 text-slate-900">
@@ -164,10 +158,13 @@ export default function Claim() {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={load}
+            type="button"
+            onClick={copyLink}
             className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:ring-violet-200"
+            disabled={!claimPageLink}
+            title="Copy this claim link"
           >
-            Refresh
+            {copied ? "Copied" : "Copy link"}
           </button>
 
           <Link
@@ -215,35 +212,30 @@ export default function Claim() {
               <div
                 className={[
                   "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs",
-                  isClaimed ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-violet-100 bg-violet-50 text-slate-700",
+                  gift.isClaimed
+                    ? "border-slate-200 bg-slate-50 text-slate-700"
+                    : "border-violet-100 bg-violet-50 text-slate-700",
                 ].join(" ")}
               >
-                <span className={["h-2 w-2 rounded-full", isClaimed ? "bg-emerald-500" : "bg-violet-600"].join(" ")} />
-                {isClaimed ? "This gift has been claimed" : "A ThanküMail for you"}
+                <span
+                  className={[
+                    "h-2 w-2 rounded-full",
+                    gift.isClaimed ? "bg-slate-500" : "bg-violet-600",
+                  ].join(" ")}
+                />
+                {gift.isClaimed ? "Already received" : "A ThanküMail for you"}
               </div>
 
               <div>
-                {isClaimed ? (
-                  <>
-                    <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-                      Gift claimed.
-                      <span className="block text-emerald-700">Your message is yours to keep.</span>
-                    </h1>
-                    <p className="mt-3 text-sm leading-relaxed text-slate-600">
-                      This ThanküMail has already been claimed{claimedAtLabel ? ` on ${claimedAtLabel}` : ""}.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-                      Take a breath.
-                      <span className="block text-violet-700">This one is yours.</span>
-                    </h1>
-                    <p className="mt-3 text-sm leading-relaxed text-slate-600">
-                      Your message is first. No rush. When you’re ready, you can claim it.
-                    </p>
-                  </>
-                )}
+                <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+                  Take a breath.
+                  <span className="block text-violet-700">This one is yours.</span>
+                </h1>
+                <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                  {gift.isClaimed
+                    ? "This ThanküMail has already been opened. The message is still here."
+                    : "Your message is first. No rush. When you’re ready, you can claim it."}
+                </p>
               </div>
 
               <div className="rounded-3xl border border-violet-100 bg-white p-5 shadow-sm">
@@ -251,9 +243,6 @@ export default function Claim() {
                   <div>
                     <div className="text-xs font-semibold text-slate-500">AMOUNT</div>
                     <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">{amountLabel}</div>
-                    {isClaimed && claimedAtLabel ? (
-                      <div className="mt-1 text-xs text-slate-500">Claimed at {claimedAtLabel}</div>
-                    ) : null}
                   </div>
 
                   <div className="sm:text-right">
@@ -261,11 +250,11 @@ export default function Claim() {
                     <div
                       className={[
                         "mt-1 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold",
-                        isClaimed ? "bg-emerald-50 text-emerald-800" : "bg-violet-50 text-violet-700",
+                        gift.isClaimed ? "bg-slate-100 text-slate-700" : "bg-violet-50 text-violet-700",
                       ].join(" ")}
                     >
-                      <span className={["h-2 w-2 rounded-full", isClaimed ? "bg-emerald-600" : "bg-violet-600"].join(" ")} />
-                      {isClaimed ? "Claimed" : "Unclaimed"}
+                      <span className={["h-2 w-2 rounded-full", gift.isClaimed ? "bg-slate-500" : "bg-violet-600"].join(" ")} />
+                      {gift.isClaimed ? "Claimed" : "Unclaimed"}
                     </div>
                   </div>
                 </div>
@@ -284,7 +273,7 @@ export default function Claim() {
                 ) : null}
 
                 <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
-                  {isClaimed ? (
+                  {gift.isClaimed ? (
                     <div className="flex-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
                       Claimed. You’re all set.
                     </div>
