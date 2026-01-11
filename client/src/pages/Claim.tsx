@@ -1,3 +1,10 @@
+# NEXT STEP: make the Claim page stop showing “Claimed” unless it’s actually claimed in the DB.
+# (Right now it can look claimed because the page state can be stale or updated locally.)
+
+# WHERE TO PASTE: Replit → file editor
+# FILE: client/src/pages/Claim.tsx
+# ACTION: Replace the ENTIRE file with this
+
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useRoute } from "wouter";
 
@@ -21,14 +28,6 @@ function safeText(v: any) {
   return typeof v === "string" ? v : "";
 }
 
-function absoluteLink(maybeRelative: string) {
-  if (!maybeRelative) return maybeRelative;
-  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
-  return `${origin}${path}`;
-}
-
 export default function Claim() {
   const [, params] = useRoute<{ publicId: string }>("/claim/:publicId");
   const publicId = params?.publicId || "";
@@ -36,8 +35,8 @@ export default function Claim() {
   const [loading, setLoading] = useState(true);
   const [gift, setGift] = useState<Gift | null>(null);
   const [err, setErr] = useState<string>("");
-  const [claiming, setClaiming] = useState(false);
 
+  const [claiming, setClaiming] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const amountLabel = useMemo(() => {
@@ -45,31 +44,17 @@ export default function Claim() {
     return `$${centsToDollars(gift.amount)}`;
   }, [gift]);
 
-  const claimPageLink = useMemo(() => {
-    if (!publicId) return "";
-    return absoluteLink(`/claim/${publicId}`);
-  }, [publicId]);
-
-  async function copyLink() {
-    if (!claimPageLink) return;
-    try {
-      await navigator.clipboard.writeText(claimPageLink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      // ignore
-    }
-  }
-
   async function load() {
     if (!publicId) {
       setErr("Invalid link.");
+      setGift(null);
       setLoading(false);
       return;
     }
 
     setLoading(true);
     setErr("");
+
     try {
       const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}`, { method: "GET" });
       const data = (await r.json().catch(() => ({}))) as Gift & ApiError;
@@ -89,6 +74,7 @@ export default function Claim() {
         createdAt: safeText((data as any).createdAt),
         claimedAt: (data as any).claimedAt ?? null,
       });
+
       setLoading(false);
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
@@ -102,8 +88,25 @@ export default function Claim() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicId]);
 
+  async function copyLink() {
+    if (!publicId) return;
+    const url =
+      typeof window !== "undefined"
+        ? `${window.location.origin}/claim/${encodeURIComponent(publicId)}`
+        : `/claim/${encodeURIComponent(publicId)}`;
+
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // ignore
+    }
+  }
+
   async function claim() {
     if (!publicId) return;
+
     setClaiming(true);
     setErr("");
 
@@ -116,28 +119,14 @@ export default function Claim() {
 
       const data = (await r.json().catch(() => ({}))) as any;
 
-      if (r.status === 409) {
-        // Already claimed on server — reflect it as a settled state.
-        setGift((g) => (g ? { ...g, isClaimed: true, claimedAt: g.claimedAt ?? new Date().toISOString() } : g));
+      // Always re-fetch from DB so UI matches truth (prevents “looks claimed” bugs)
+      if (r.ok || r.status === 409) {
+        await load();
         setClaiming(false);
         return;
       }
 
-      if (!r.ok) {
-        setErr(safeText(data?.error) || "Couldn’t claim right now. Please try again.");
-        setClaiming(false);
-        return;
-      }
-
-      setGift((g) =>
-        g
-          ? {
-              ...g,
-              isClaimed: true,
-              claimedAt: safeText(data?.claimedAt) || new Date().toISOString(),
-            }
-          : g
-      );
+      setErr(safeText(data?.error) || "Couldn’t claim right now. Please try again.");
       setClaiming(false);
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
@@ -161,8 +150,6 @@ export default function Claim() {
             type="button"
             onClick={copyLink}
             className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:ring-violet-200"
-            disabled={!claimPageLink}
-            title="Copy this claim link"
           >
             {copied ? "Copied" : "Copy link"}
           </button>
@@ -209,21 +196,9 @@ export default function Claim() {
             </div>
           ) : gift ? (
             <div className="space-y-6">
-              <div
-                className={[
-                  "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs",
-                  gift.isClaimed
-                    ? "border-slate-200 bg-slate-50 text-slate-700"
-                    : "border-violet-100 bg-violet-50 text-slate-700",
-                ].join(" ")}
-              >
-                <span
-                  className={[
-                    "h-2 w-2 rounded-full",
-                    gift.isClaimed ? "bg-slate-500" : "bg-violet-600",
-                  ].join(" ")}
-                />
-                {gift.isClaimed ? "Already received" : "A ThanküMail for you"}
+              <div className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs text-slate-700">
+                <span className="h-2 w-2 rounded-full bg-violet-600" />
+                A ThanküMail for you
               </div>
 
               <div>
@@ -232,9 +207,7 @@ export default function Claim() {
                   <span className="block text-violet-700">This one is yours.</span>
                 </h1>
                 <p className="mt-3 text-sm leading-relaxed text-slate-600">
-                  {gift.isClaimed
-                    ? "This ThanküMail has already been opened. The message is still here."
-                    : "Your message is first. No rush. When you’re ready, you can claim it."}
+                  Your message is first. No rush. When you’re ready, you can claim it.
                 </p>
               </div>
 
@@ -276,6 +249,11 @@ export default function Claim() {
                   {gift.isClaimed ? (
                     <div className="flex-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
                       Claimed. You’re all set.
+                      {gift.claimedAt ? (
+                        <div className="mt-1 text-xs font-normal text-emerald-800/80">
+                          Claimed at: {new Date(gift.claimedAt).toLocaleString()}
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <button
@@ -298,9 +276,7 @@ export default function Claim() {
                   </Link>
                 </div>
 
-                <div className="mt-4 text-xs text-slate-500">
-                  If you weren’t expecting this, you can simply close this page.
-                </div>
+                <div className="mt-4 text-xs text-slate-500">If you weren’t expecting this, you can simply close this page.</div>
               </div>
             </div>
           ) : null}
