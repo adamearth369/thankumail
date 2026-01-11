@@ -41,7 +41,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
       (e) => {
         clearTimeout(t);
         reject(e);
-      }
+      },
     );
   });
 }
@@ -121,7 +121,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v10_email_log_fix_2026-01-11",
+      routesMarker: "ROUTES_MARKER_v11_health_shows_commit_2026-01-11",
+      renderGitCommit: process.env.RENDER_GIT_COMMIT || "",
+      renderServiceId: process.env.RENDER_SERVICE_ID || "",
     });
   });
 
@@ -167,15 +169,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       logEvent("gift_create_db_insert_ok", { requestId, publicId, ms: Date.now() - started });
 
-      // respond immediately
       res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
 
-      // email in background with timeout (DO NOT block request)
       (async () => {
         const emailStarted = Date.now();
-
         try {
-          const result = await withTimeout(
+          const info = await withTimeout(
             sendGiftEmail({
               to: recipientEmail,
               claimLink: claimLinkAbs,
@@ -183,15 +182,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               amountCents: amount,
             }),
             10_000,
-            "sendGiftEmail"
+            "sendGiftEmail",
           );
 
-          if ((result as any)?.ok) {
+          if ((info as any)?.ok) {
             logEvent("email_send_ok", {
               requestId,
               publicId,
               to: recipientEmail,
-              messageId: safeStr((result as any)?.messageId),
+              messageId: safeStr((info as any)?.messageId),
               ms: Date.now() - emailStarted,
             });
           } else {
@@ -199,7 +198,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               requestId,
               publicId,
               to: recipientEmail,
-              error: safeStr((result as any)?.error || "unknown_error"),
+              error: safeStr((info as any)?.error || "unknown_email_error"),
               ms: Date.now() - emailStarted,
             });
           }
