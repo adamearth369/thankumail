@@ -28,6 +28,8 @@ function firstNonEmpty(...vals: Array<string | undefined | null>) {
 
 function toAbsoluteClaimLink(claimLink: string) {
   if (!claimLink) return claimLink;
+
+  // already absolute
   if (/^https?:\/\//i.test(claimLink)) return claimLink;
 
   // prefer PUBLIC_BASE_URL, then BASE_URL
@@ -109,7 +111,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
     const apiKey = env("BREVO_API_KEY");
     if (!apiKey) return { ok: false, error: "Missing BREVO_API_KEY" };
 
-    // Require verified sender
+    // Require verified sender (prevents silent deliverability failures)
     const fromEmail = env("FROM_EMAIL", "");
     if (!fromEmail) {
       return { ok: false, error: "Missing FROM_EMAIL (must be a verified sender in Brevo)" };
