@@ -1,113 +1,211 @@
-import { CreateGiftForm } from "@/components/CreateGiftForm";
-import { motion } from "framer-motion";
-import { Mail, Sparkles, Coffee, Heart } from "lucide-react";
+import React, { useMemo, useState } from "react";
+
+type CreateGiftResponse =
+  | { success: true; giftId: string; claimLink: string }
+  | { error: string; issues?: Array<{ path: (string | number)[]; message: string }> };
+
+function centsFromDollarsInput(input: string): number {
+  // Accepts "10", "10.00", "10.5" etc. Converts safely to cents.
+  const cleaned = input.replace(/[^\d.]/g, "");
+  if (!cleaned) return 0;
+  const parts = cleaned.split(".");
+  const dollars = parseInt(parts[0] || "0", 10);
+  const cents = parseInt(((parts[1] || "") + "00").slice(0, 2), 10);
+  if (!Number.isFinite(dollars) || !Number.isFinite(cents)) return 0;
+  return dollars * 100 + cents;
+}
+
+function formatDollarsFromCents(cents: number): string {
+  const v = Math.max(0, Math.floor(cents));
+  const dollars = Math.floor(v / 100);
+  const rem = v % 100;
+  return `${dollars}.${rem.toString().padStart(2, "0")}`;
+}
+
+function getIssueMap(issues?: Array<{ path: (string | number)[]; message: string }>) {
+  const map: Record<string, string> = {};
+  for (const i of issues || []) {
+    const key = (i.path?.[0] ?? "").toString();
+    if (key && !map[key]) map[key] = i.message || "Invalid value";
+  }
+  return map;
+}
 
 export default function Home() {
-  return (
-    <div className="min-h-screen pb-20 overflow-x-hidden">
-      {/* Navigation / Header */}
-      <header className="py-6 px-4 md:px-8 border-b border-white/50 bg-white/30 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/20">
-              <Mail className="w-6 h-6" />
-            </div>
-            <span className="text-xl font-bold font-display tracking-tight text-gray-900">
-              Thank<span className="text-primary">ü</span><span className="text-primary">Mail</span>
-            </span>
-          </div>
-          <a href="https://github.com" target="_blank" rel="noreferrer" className="text-sm font-bold text-slate-500 hover:text-primary transition-colors">
-            About Us
-          </a>
-        </div>
-      </header>
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [amountStr, setAmountStr] = useState("10.00");
 
-      <main className="max-w-6xl mx-auto px-4 py-12 md:py-20">
-        <div className="grid lg:grid-cols-2 gap-12 items-center">
-          
-          {/* Left Column: Hero Text */}
-          <motion.div 
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.6 }}
-            className="space-y-8"
-          >
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-white rounded-full shadow-sm border border-slate-100 text-sm font-bold text-slate-600">
-              <Sparkles className="w-4 h-4 text-secondary" />
-              <span>The easiest way to say thanks</span>
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [result, setResult] = useState<{ giftId: string; claimLink: string } | null>(null);
+
+  const amountCents = useMemo(() => centsFromDollarsInput(amountStr), [amountStr]);
+  const amountPreview = useMemo(() => formatDollarsFromCents(amountCents), [amountCents]);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setApiError(null);
+    setFieldErrors({});
+    setResult(null);
+
+    const localErrors: Record<string, string> = {};
+    if (!recipientEmail.trim()) localErrors.recipientEmail = "Recipient email is required.";
+    if (!message.trim()) localErrors.message = "Message is required.";
+    if (amountCents < 1000) localErrors.amount = "Minimum is $10.00.";
+
+    if (Object.keys(localErrors).length) {
+      setFieldErrors(localErrors);
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch("/api/gifts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipientEmail: recipientEmail.trim(),
+          message: message.trim(),
+          amount: amountCents, // cents
+        }),
+      });
+
+      const data = (await res.json().catch(() => null)) as CreateGiftResponse | null;
+
+      if (!res.ok) {
+        const issues = data && "issues" in data ? data.issues : undefined;
+        const issueMap = getIssueMap(issues);
+        if (Object.keys(issueMap).length) setFieldErrors(issueMap);
+
+        const msg =
+          (data && "error" in data && data.error) ||
+          (data && "message" in (data as any) && (data as any).message) ||
+          "Something went wrong. Please try again.";
+        setApiError(msg);
+        return;
+      }
+
+      if (data && "success" in data && data.success) {
+        setResult({ giftId: data.giftId, claimLink: data.claimLink });
+        return;
+      }
+
+      setApiError("Unexpected response. Please try again.");
+    } catch {
+      setApiError("Network error. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-[#fbfaf9] text-neutral-900">
+      {/* Soft warm header wash */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-gradient-to-b from-purple-50/70 via-white to-transparent" />
+
+      <div className="relative mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
+        {/* Header */}
+        <header className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="h-9 w-9 rounded-2xl bg-purple-600/90 shadow-sm" />
+            <div className="leading-tight">
+              <div className="font-[Outfit] text-lg font-bold tracking-tight">ThankuMail</div>
+              <div className="text-xs text-neutral-500">Send gratitude. Simply.</div>
             </div>
-            
-            <h1 className="text-5xl md:text-7xl font-extrabold font-display leading-[1.1] text-gray-900">
-              Send a little happiness.
+          </div>
+
+          <nav className="hidden items-center gap-6 text-sm text-neutral-600 sm:flex">
+            <a href="#how" className="hover:text-neutral-900">
+              How it works
+            </a>
+            <a href="#trust" className="hover:text-neutral-900">
+              Trust
+            </a>
+          </nav>
+        </header>
+
+        {/* Hero + Form */}
+        <section className="mt-10 grid gap-10 lg:grid-cols-2 lg:items-start">
+          {/* Left: copy */}
+          <div className="max-w-xl">
+            <h1 className="font-[Outfit] text-4xl font-extrabold tracking-tight sm:text-5xl">
+              Send gratitude.
+              <span className="block text-purple-700">Simply.</span>
             </h1>
-            
-            <p className="text-xl text-slate-600 leading-relaxed max-w-lg">
-              Create an anonymous thank-you with a personal note and an optional gift.
-              No account. No pressure. Just appreciation.
+
+            <p className="mt-4 text-lg leading-relaxed text-neutral-700">
+              A small gift. A real moment. No awkwardness. ThankuMail helps you share appreciation (or a gentle
+              “thinking of you”) with a private, one-time link.
             </p>
 
-            <div className="flex items-center gap-6 pt-4">
-              <div className="flex -space-x-3">
-                {[1, 2, 3, 4].map((i) => (
-                  <div key={i} className="w-10 h-10 rounded-full border-2 border-white bg-slate-200 overflow-hidden">
-                    {/* Placeholder avatars */}
-                    <img 
-                      src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${i*13}`} 
-                      alt="User" 
-                      className="w-full h-full bg-slate-100"
-                    />
-                  </div>
-                ))}
+            <div className="mt-7 flex flex-wrap items-center gap-3">
+              <a
+                href="#send"
+                className="inline-flex items-center justify-center rounded-2xl bg-purple-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-purple-800 focus:outline-none focus:ring-2 focus:ring-purple-400"
+              >
+                Send a ThankuMail
+              </a>
+
+              <a
+                href="#how"
+                className="inline-flex items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold text-purple-700 hover:bg-purple-50 focus:outline-none focus:ring-2 focus:ring-purple-200"
+              >
+                See how it works →
+              </a>
+            </div>
+
+            <div className="mt-8 rounded-3xl border border-neutral-200 bg-white/70 p-5 shadow-sm">
+              <p className="text-sm text-neutral-600">
+                “Thank you” lands different when it’s quiet, sincere, and doesn’t ask for anything back.
+              </p>
+              <p className="mt-2 text-xs text-neutral-500">— The ThankuMail vibe</p>
+            </div>
+          </div>
+
+          {/* Right: form card */}
+          <div id="send" className="rounded-3xl border border-neutral-200 bg-white p-6 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="font-[Outfit] text-xl font-bold tracking-tight">Create a gift</h2>
+                <p className="mt-1 text-sm text-neutral-600">Write a message, choose an amount, send the link.</p>
               </div>
-              <div className="text-sm font-medium text-slate-500">
-                <strong className="text-gray-900">1,200+</strong> gifts sent this week
+              <div className="rounded-2xl bg-purple-50 px-3 py-2 text-xs font-semibold text-purple-800">
+                Min $10.00
               </div>
             </div>
 
-            {/* Fun decorative elements */}
-            <div className="hidden lg:block relative h-32 w-full">
-              <motion.div 
-                className="absolute left-0 top-4 bg-white p-3 rounded-2xl shadow-lg border border-slate-100 rotate-[-6deg]"
-                animate={{ rotate: [-6, -4, -6], y: [0, -5, 0] }}
-                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-              >
-                <Coffee className="w-6 h-6 text-amber-500 mb-1" />
-                <p className="text-xs font-bold text-slate-400">Coffee's on me!</p>
-                <p className="font-bold text-gray-900">$5.00</p>
-              </motion.div>
+            <form className="mt-6 space-y-4" onSubmit={onSubmit}>
+              <div>
+                <label className="text-sm font-semibold text-neutral-800">Recipient email</label>
+                <input
+                  value={recipientEmail}
+                  onChange={(e) => setRecipientEmail(e.target.value)}
+                  placeholder="friend@example.com"
+                  className="mt-2 w-full rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-purple-300 focus:ring-2 focus:ring-purple-100"
+                />
+                {fieldErrors.recipientEmail ? (
+                  <p className="mt-1 text-xs text-red-600">{fieldErrors.recipientEmail}</p>
+                ) : null}
+              </div>
 
-              <motion.div 
-                className="absolute left-32 top-0 bg-white p-3 rounded-2xl shadow-lg border border-slate-100 rotate-[3deg]"
-                animate={{ rotate: [3, 5, 3], y: [0, -8, 0] }}
-                transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay: 1 }}
-              >
-                <Heart className="w-6 h-6 text-rose-500 mb-1 fill-rose-500" />
-                <p className="text-xs font-bold text-slate-400">Thanks for helping</p>
-                <p className="font-bold text-gray-900">$20.00</p>
-              </motion.div>
-            </div>
-          </motion.div>
+              <div>
+                <label className="text-sm font-semibold text-neutral-800">Message</label>
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder="Say the thing you’d want to hear."
+                  rows={5}
+                  maxLength={1000}
+                  className="mt-2 w-full resize-none rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-purple-300 focus:ring-2 focus:ring-purple-100"
+                />
+                <div className="mt-1 flex items-center justify-between text-xs text-neutral-500">
+                  <span>{fieldErrors.message ? <span className="text-red-600">{fieldErrors.message}</span> : " "}</span>
+                  <span>{message.length}/1000</span>
+                </div>
+              </div>
 
-          {/* Right Column: Form */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-            className="w-full max-w-md mx-auto lg:mx-0"
-          >
-            <CreateGiftForm />
-          </motion.div>
-
-        </div>
-      </main>
-      
-      <footer className="max-w-6xl mx-auto px-4 py-8 border-t text-center text-sm text-slate-400">
-        © 2026 ThankuMail • Privacy • Terms
-      </footer>
-      
-      {/* Background blobs */}
-      <div className="fixed top-20 left-10 w-72 h-72 bg-primary/10 rounded-full blur-[100px] -z-10 animate-float" />
-      <div className="fixed bottom-20 right-10 w-96 h-96 bg-secondary/10 rounded-full blur-[120px] -z-10 animate-float-delayed" />
-    </div>
-  );
-}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-semibold text-neutral-800">Amount (CAD
