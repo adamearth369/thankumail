@@ -22,6 +22,15 @@ function safeStr(v: any) {
   return typeof v === "string" ? v : "";
 }
 
+function env(name: string, fallback = "") {
+  const v = process.env[name];
+  return (v ?? fallback).trim();
+}
+
+function hasEnv(name: string) {
+  return Boolean(env(name));
+}
+
 function getBaseUrl(req: any) {
   const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
   if (envBase) return envBase.replace(/\/+$/, "");
@@ -121,9 +130,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v11_health_shows_commit_2026-01-11",
+      routesMarker: "ROUTES_MARKER_v12_admin_status_2026-01-11",
       renderGitCommit: process.env.RENDER_GIT_COMMIT || "",
       renderServiceId: process.env.RENDER_SERVICE_ID || "",
+    });
+  });
+
+  /* -------------------- ADMIN STATUS (BEST PRACTICE: NAMESPACED) --------------------
+     Chosen route: /api/admin/status
+     - avoid a generic /api/status that 3rd parties might probe
+     - does NOT leak secrets; only booleans + safe metadata
+  */
+  app.get("/api/admin/status", (req, res) => {
+    const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "").trim();
+
+    res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      renderGitCommit: process.env.RENDER_GIT_COMMIT || "",
+      renderServiceId: process.env.RENDER_SERVICE_ID || "",
+      observed: {
+        inferredBaseUrl: getBaseUrl(req),
+      },
+      config: {
+        PUBLIC_BASE_URL_set: hasEnv("PUBLIC_BASE_URL"),
+        BASE_URL_set: hasEnv("BASE_URL"),
+        effectiveBaseUrl_set: Boolean(baseUrl),
+        FROM_EMAIL_set: hasEnv("FROM_EMAIL"),
+        FROM_NAME_set: hasEnv("FROM_NAME"),
+        REPLY_TO_EMAIL_set: hasEnv("REPLY_TO_EMAIL"),
+        BREVO_API_KEY_set: hasEnv("BREVO_API_KEY"),
+        BREVO_API_ENDPOINT_set: hasEnv("BREVO_API_ENDPOINT"),
+      },
     });
   });
 
@@ -281,10 +319,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const claimedAt = new Date();
 
-      await db
-        .update(gifts)
-        .set({ isClaimed: true, claimedAt: claimedAt as any })
-        .where(eq(gifts.publicId, publicId));
+      await db.update(gifts).set({ isClaimed: true, claimedAt: claimedAt as any }).where(eq(gifts.publicId, publicId));
 
       logEvent("claim_success", { requestId, publicId, amount: row.amount });
 
