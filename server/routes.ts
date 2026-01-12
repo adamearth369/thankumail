@@ -62,6 +62,11 @@ function env(name: string, fallback = "") {
   const v = process.env[name];
   return (v ?? fallback).trim();
 }
+function envBool(name: string, fallback = false) {
+  const v = env(name, "");
+  if (!v) return fallback;
+  return ["1", "true", "yes", "y", "on"].includes(v.toLowerCase());
+}
 function envInt(name: string, fallback: number) {
   const raw = env(name, "");
   const n = raw ? Number(raw) : NaN;
@@ -98,8 +103,8 @@ function isDisposableEmail(email: string) {
 
 /* -------------------- DAILY LIMITS (IN-MEMORY) -------------------- */
 /**
- * NOTE: In-memory counters reset on deploy/restart. This is fine for v1 anti-abuse.
- * If you want persistence later, we can move these into DB.
+ * NOTE: In-memory counters reset on deploy/restart. Fine for v1 anti-abuse.
+ * IMPORTANT: We ONLY increment counters after a successful DB insert (accepted request).
  */
 function utcDayKey(d = new Date()) {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD UTC
@@ -108,21 +113,16 @@ function utcDayKey(d = new Date()) {
 const dailyIpCounts = new Map<string, number>(); // key: day|ip
 const dailyRecipientCounts = new Map<string, number>(); // key: day|recipientEmail
 
+function getCount(map: Map<string, number>, key: string) {
+  return map.get(key) || 0;
+}
 function bump(map: Map<string, number>, key: string) {
   const next = (map.get(key) || 0) + 1;
   map.set(key, next);
   return next;
 }
-function getCount(map: Map<string, number>, key: string) {
-  return map.get(key) || 0;
-}
 
-/* -------------------- RATE LIMITING (SHORT WINDOW) -------------------- */
-/**
- * This is a BURST limiter only.
- * Your daily limits are enforced separately.
- * We set this high so your IP daily-limit tests won't trip 429 here.
- */
+/* -------------------- RATE LIMITING (SHORT WINDOW / BURST) -------------------- */
 const createGiftLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 500,
@@ -171,6 +171,27 @@ const CreateGiftSchema = z.object({
   amount: z.number().int().min(1000),
 });
 
+const AdminResetSchema = z.object({
+  recipientEmail: z.string().email().optional(),
+  resetAllForToday: z.boolean().optional(),
+});
+
+/* -------------------- ADMIN AUTH -------------------- */
+function requireAdmin(req: any): { ok: true } | { ok: false; status: number; error: string } {
+  const adminKey = env("ADMIN_KEY", "");
+  if (!adminKey) return { ok: false, status: 503, error: "ADMIN_KEY not configured" };
+
+  // Safety: only allow in prod if explicitly enabled
+  const allow = envBool("ALLOW_ADMIN_RESET", false);
+  const isProd = (process.env.NODE_ENV || "").toLowerCase() === "production";
+  if (isProd && !allow) return { ok: false, status: 403, error: "Admin reset disabled" };
+
+  const provided = safeStr(req.headers["x-admin-key"]);
+  if (!provided || provided !== adminKey) return { ok: false, status: 401, error: "Unauthorized" };
+
+  return { ok: true };
+}
+
 /* ==================== ROUTES ==================== */
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   await seed();
@@ -182,7 +203,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v15_burst_limiter_raised_daily_limits_testable",
+      routesMarker: "ROUTES_MARKER_v16_admin_reset_success_only_counters",
       gitCommit: process.env.RENDER_GIT_COMMIT || "",
       serviceId: process.env.RENDER_SERVICE_ID || "",
     });
@@ -194,6 +215,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ip = getClientIp(req);
     const ipKey = `${today}|${ip}`;
 
+    const recipient = safeStr((req.query?.recipientEmail as any) || "").trim().toLowerCase();
+    const recipKey = recipient ? `${today}|${recipient}` : "";
+
     res.json({
       ok: true,
       env: {
@@ -202,6 +226,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         BASE_URL: Boolean(process.env.BASE_URL),
         FROM_EMAIL: Boolean(process.env.FROM_EMAIL),
         BREVO_API_KEY: Boolean(process.env.BREVO_API_KEY),
+        ADMIN_KEY: Boolean(process.env.ADMIN_KEY),
+        ALLOW_ADMIN_RESET: envBool("ALLOW_ADMIN_RESET", false),
       },
       email: {
         provider: "brevo",
@@ -216,8 +242,79 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       },
       counters: {
         thisIpToday: getCount(dailyIpCounts, ipKey),
+        recipientEmail: recipient || null,
+        thisRecipientToday: recipient ? getCount(dailyRecipientCounts, recipKey) : null,
       },
       uptimeSec: Math.floor(process.uptime()),
+    });
+  });
+
+  /* -------- ADMIN RESET LIMITS (PROTECTED) -------- */
+  app.post("/api/admin/reset-limits", (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+
+    const parsed = AdminResetSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues });
+    }
+
+    const today = utcDayKey();
+    const ip = getClientIp(req);
+    const ipKey = `${today}|${ip}`;
+
+    const recipientEmail = (parsed.data.recipientEmail || "").trim().toLowerCase();
+    const recipKey = recipientEmail ? `${today}|${recipientEmail}` : "";
+
+    const resetAll = Boolean(parsed.data.resetAllForToday);
+
+    let clearedIp = 0;
+    let clearedRecipients = 0;
+
+    if (resetAll) {
+      // Reset all counters for TODAY only (still protected by ADMIN_KEY + ALLOW_ADMIN_RESET)
+      for (const k of Array.from(dailyIpCounts.keys())) {
+        if (k.startsWith(`${today}|`)) {
+          dailyIpCounts.delete(k);
+          clearedIp++;
+        }
+      }
+      for (const k of Array.from(dailyRecipientCounts.keys())) {
+        if (k.startsWith(`${today}|`)) {
+          dailyRecipientCounts.delete(k);
+          clearedRecipients++;
+        }
+      }
+      logEvent("admin_reset_limits_all_today", { today, clearedIp, clearedRecipients });
+      return res.json({ ok: true, todayUtc: today, clearedIp, clearedRecipients });
+    }
+
+    // Default: reset just THIS CALLER IP, and optional single recipient
+    if (dailyIpCounts.has(ipKey)) {
+      dailyIpCounts.delete(ipKey);
+      clearedIp = 1;
+    }
+    if (recipKey && dailyRecipientCounts.has(recipKey)) {
+      dailyRecipientCounts.delete(recipKey);
+      clearedRecipients = 1;
+    }
+
+    logEvent("admin_reset_limits_scoped", {
+      today,
+      ip,
+      recipientEmail: recipientEmail || undefined,
+      clearedIp,
+      clearedRecipients,
+    });
+
+    return res.json({
+      ok: true,
+      todayUtc: today,
+      scope: "ip(+optional recipient)",
+      ip,
+      recipientEmail: recipientEmail || null,
+      clearedIp,
+      clearedRecipients,
     });
   });
 
@@ -236,28 +333,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Disposable block
     if (isDisposableEmail(recipientEmail)) {
-      logEvent("gift_create_disposable_blocked", {
-        requestId,
-        domain: getEmailDomain(recipientEmail),
-      });
-      return res.status(400).json({
-        error: "Disposable email addresses are not allowed",
-        field: "recipientEmail",
-      });
+      logEvent("gift_create_disposable_blocked", { requestId, domain: getEmailDomain(recipientEmail) });
+      return res.status(400).json({ error: "Disposable email addresses are not allowed", field: "recipientEmail" });
     }
 
-    // Daily limits
+    // Daily limits (CHECK ONLY — do NOT bump until successful DB insert)
     const today = utcDayKey();
     const ip = getClientIp(req);
     const ipKey = `${today}|${ip}`;
     const recipKey = `${today}|${recipientEmail.trim().toLowerCase()}`;
 
-    const nextIpCount = bump(dailyIpCounts, ipKey);
-    if (nextIpCount > DAILY_IP_LIMIT) {
+    const ipWouldBe = getCount(dailyIpCounts, ipKey) + 1;
+    if (ipWouldBe > DAILY_IP_LIMIT) {
       logEvent("gift_create_daily_ip_limit", {
         requestId,
         ip,
-        count: nextIpCount,
+        countWouldBe: ipWouldBe,
         limit: DAILY_IP_LIMIT,
         ms: Date.now() - started,
       });
@@ -269,12 +360,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
 
-    const nextRecipCount = bump(dailyRecipientCounts, recipKey);
-    if (nextRecipCount > DAILY_RECIPIENT_LIMIT) {
+    const recipWouldBe = getCount(dailyRecipientCounts, recipKey) + 1;
+    if (recipWouldBe > DAILY_RECIPIENT_LIMIT) {
       logEvent("gift_create_daily_recipient_limit", {
         requestId,
         recipientEmail,
-        count: nextRecipCount,
+        countWouldBe: recipWouldBe,
         limit: DAILY_RECIPIENT_LIMIT,
         ms: Date.now() - started,
       });
@@ -289,36 +380,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const publicId = crypto.randomBytes(6).toString("hex");
     const claimAbs = `${getBaseUrl(req)}/claim/${publicId}`;
 
-    await db.insert(gifts).values({
-      publicId,
-      recipientEmail,
-      message,
-      amount,
-      isClaimed: false,
-    });
+    try {
+      await db.insert(gifts).values({
+        publicId,
+        recipientEmail,
+        message,
+        amount,
+        isClaimed: false,
+      });
+    } catch (e: any) {
+      logEvent("gift_create_db_insert_failed", { requestId, error: safeStr(e?.message || e), ms: Date.now() - started });
+      return res.status(500).json({ error: "Internal server error" });
+    }
+
+    // Bump counters ONLY after successful insert
+    const ipCount = bump(dailyIpCounts, ipKey);
+    const recipientCount = bump(dailyRecipientCounts, recipKey);
 
     logEvent("gift_create_ok", {
       requestId,
       publicId,
       ip,
-      ipCount: nextIpCount,
-      recipientCount: nextRecipCount,
+      ipCount,
+      recipientCount,
       ms: Date.now() - started,
     });
 
-    res.json({
-      success: true,
-      giftId: publicId,
-      claimLink: `/claim/${publicId}`,
-    });
+    res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
 
     withTimeout(
-      sendGiftEmail({
-        to: recipientEmail,
-        claimLink: claimAbs,
-        message,
-        amountCents: amount,
-      }),
+      sendGiftEmail({ to: recipientEmail, claimLink: claimAbs, message, amountCents: amount }),
       10_000,
       "sendGiftEmail",
     )
@@ -332,12 +423,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       })
       .catch((e) => {
-        logEvent("email_send_failed", {
-          requestId,
-          publicId,
-          to: recipientEmail,
-          error: safeStr(e?.message || e),
-        });
+        logEvent("email_send_failed", { requestId, publicId, to: recipientEmail, error: safeStr(e?.message || e) });
       });
   });
 
@@ -367,10 +453,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (row.isClaimed) return res.status(409).json({ error: "Already claimed" });
 
     const claimedAt = new Date();
-    await db
-      .update(gifts)
-      .set({ isClaimed: true, claimedAt: claimedAt as any })
-      .where(eq(gifts.publicId, publicId));
+    await db.update(gifts).set({ isClaimed: true, claimedAt: claimedAt as any }).where(eq(gifts.publicId, publicId));
 
     res.json({ success: true, publicId: row.publicId, claimedAt: claimedAt.toISOString() });
   });
