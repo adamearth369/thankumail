@@ -34,11 +34,8 @@ function firstNonEmpty(...vals: Array<string | undefined | null>) {
 
 function toAbsoluteClaimLink(claimLink: string) {
   if (!claimLink) return claimLink;
-
-  // already absolute
   if (/^https?:\/\//i.test(claimLink)) return claimLink;
 
-  // prefer PUBLIC_BASE_URL, then BASE_URL
   const base = firstNonEmpty(env("PUBLIC_BASE_URL"), env("BASE_URL")).replace(/\/+$/, "");
   if (!base) return claimLink;
 
@@ -117,18 +114,15 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
     const apiKey = env("BREVO_API_KEY");
     if (!apiKey) return { ok: false, error: "Missing BREVO_API_KEY" };
 
-    // Require verified sender
     const fromEmail = env("FROM_EMAIL", "");
-    if (!fromEmail) {
-      return { ok: false, error: "Missing FROM_EMAIL (must be a verified sender in Brevo)" };
-    }
+    if (!fromEmail) return { ok: false, error: "Missing FROM_EMAIL" };
+
     const fromName = env("FROM_NAME", "ThanküMail");
 
-    // Optional but recommended
-    const replyToEmail = env("REPLY_TO_EMAIL", "");
+    // Always set reply-to (so recipients can reply even if provider rewrites From)
+    const replyToEmail = env("REPLY_TO_EMAIL", fromEmail);
     const replyToName = env("REPLY_TO_NAME", fromName);
 
-    // NEW: Force sender by Brevo Sender ID (prevents brevosend.com fallback)
     const senderId = envInt("BREVO_SENDER_ID", 0);
 
     const dollars = ((Number(args.amountCents) || 0) / 100).toFixed(2);
@@ -186,12 +180,16 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
         const payload: any = {
           sender: senderId > 0 ? { id: senderId } : { email: fromEmail, name: fromName },
           to: [{ email: to }],
+          replyTo: { email: replyToEmail, name: replyToName },
           subject,
           textContent,
           htmlContent,
-        };
 
-        if (replyToEmail) payload.replyTo = { email: replyToEmail, name: replyToName };
+          // HARD FORCE visible From (some providers rewrite without it)
+          headers: {
+            From: `${fromName} <${fromEmail}>`,
+          },
+        };
 
         const resp = await fetchWithTimeout(
           endpoint,
