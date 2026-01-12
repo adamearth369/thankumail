@@ -122,27 +122,59 @@ function bump(map: Map<string, number>, key: string) {
   return next;
 }
 
+/* -------------------- TURNSTILE (CLOUDFLARE) -------------------- */
+async function verifyTurnstile(token: string, remoteIp: string) {
+  const secret = env("TURNSTILE_SECRET_KEY", "");
+  if (!secret) return { ok: false as const, reason: "missing_secret" };
+
+  try {
+    const form = new URLSearchParams();
+    form.set("secret", secret);
+    form.set("response", token);
+    if (remoteIp) form.set("remoteip", remoteIp);
+
+    const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    const data: any = await resp.json().catch(() => null);
+
+    const success = Boolean(data?.success);
+    if (success) return { ok: true as const };
+
+    const codes = Array.isArray(data?.["error-codes"]) ? data["error-codes"] : [];
+    return { ok: false as const, reason: "failed", codes };
+  } catch (e: any) {
+    return { ok: false as const, reason: "exception", error: String(e?.message || e) };
+  }
+}
+
 /* -------------------- RATE LIMITING (SHORT WINDOW / BURST) -------------------- */
+const CREATE_BURST_MAX = envInt("CREATE_BURST_MAX_10MIN", 500); // set to 30 later
+const CLAIM_BURST_MAX = envInt("CLAIM_BURST_MAX_10MIN", 120); // set to 30 later
+
 const createGiftLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
-  max: 500,
+  max: CREATE_BURST_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
   handler: (req, res) => {
-    logEvent("rate_limited_create_gift_burst", { key: getClientKey(req) });
+    logEvent("rate_limited_create_gift_burst", { key: getClientKey(req), max: CREATE_BURST_MAX });
     res.status(429).json({ error: "Too many requests", route: "POST /api/gifts" });
   },
 });
 
 const claimGiftLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
-  max: 120,
+  max: CLAIM_BURST_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => getClientKey(req),
   handler: (req, res) => {
-    logEvent("rate_limited_claim_gift_burst", { key: getClientKey(req) });
+    logEvent("rate_limited_claim_gift_burst", { key: getClientKey(req), max: CLAIM_BURST_MAX });
     res.status(429).json({ error: "Too many requests", route: "POST /api/gifts/:publicId/claim" });
   },
 });
@@ -169,6 +201,8 @@ const CreateGiftSchema = z.object({
   recipientEmail: z.string().email(),
   message: z.string().min(1).max(1000),
   amount: z.number().int().min(1000),
+  // optional for now; we will enforce via TURNSTILE_ENFORCE later
+  turnstileToken: z.string().min(1).optional(),
 });
 
 const AdminResetSchema = z.object({
@@ -204,11 +238,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const DAILY_IP_LIMIT = envInt("DAILY_IP_LIMIT", 40);
   const DAILY_RECIPIENT_LIMIT = envInt("DAILY_RECIPIENT_LIMIT", 8);
 
+  const TURNSTILE_ENFORCE = envBool("TURNSTILE_ENFORCE", false);
+  const MIN_CLAIM_DELAY_SEC = envInt("MIN_CLAIM_DELAY_SEC", 0); // set to 60 later
+
   /* -------- HEALTH -------- */
   app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v17_api_claim_json",
+      routesMarker: "ROUTES_MARKER_v18_turnstile_optional_claim_delay_env",
       gitCommit: process.env.RENDER_GIT_COMMIT || "",
       serviceId: process.env.RENDER_SERVICE_ID || "",
     });
@@ -233,6 +270,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         BREVO_API_KEY: Boolean(process.env.BREVO_API_KEY),
         ADMIN_KEY: Boolean(process.env.ADMIN_KEY),
         ALLOW_ADMIN_RESET: envBool("ALLOW_ADMIN_RESET", false),
+        TURNSTILE_SECRET_KEY: Boolean(process.env.TURNSTILE_SECRET_KEY),
+        TURNSTILE_ENFORCE,
+        MIN_CLAIM_DELAY_SEC,
+        CREATE_BURST_MAX_10MIN: CREATE_BURST_MAX,
+        CLAIM_BURST_MAX_10MIN: CLAIM_BURST_MAX,
       },
       email: {
         provider: "brevo",
@@ -269,7 +311,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ipKey = `${today}|${ip}`;
 
     if (parsed.data.resetAllForToday) {
-      // Clear all counters for today
       for (const k of Array.from(dailyIpCounts.keys())) {
         if (k.startsWith(`${today}|`)) dailyIpCounts.delete(k);
       }
@@ -280,7 +321,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.json({ ok: true, reset: "all_for_today", today });
     }
 
-    // Always allow clearing the caller IP counter (common “oops” recovery)
     dailyIpCounts.delete(ipKey);
 
     const recipient = (parsed.data.recipientEmail || "").trim().toLowerCase();
@@ -302,8 +342,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues });
     }
 
-    const { recipientEmail, message, amount } = parsed.data;
+    const { recipientEmail, message, amount, turnstileToken } = parsed.data;
     const recipientLower = recipientEmail.trim().toLowerCase();
+
+    // Turnstile (optional now; enforced later via TURNSTILE_ENFORCE)
+    if (TURNSTILE_ENFORCE) {
+      if (!turnstileToken) {
+        logEvent("turnstile_missing_token", { ip: getClientIp(req) });
+        return res.status(400).json({ error: "Missing CAPTCHA token", field: "turnstileToken" });
+      }
+      const v = await verifyTurnstile(turnstileToken, getClientIp(req));
+      if (!v.ok) {
+        logEvent("turnstile_failed", { ip: getClientIp(req), ...v });
+        return res.status(400).json({ error: "CAPTCHA verification failed" });
+      }
+      logEvent("turnstile_passed", { ip: getClientIp(req) });
+    } else {
+      // If token is provided, verify it and log, but do not block (safe rollout)
+      if (turnstileToken && env("TURNSTILE_SECRET_KEY", "")) {
+        const v = await verifyTurnstile(turnstileToken, getClientIp(req));
+        logEvent(v.ok ? "turnstile_passed_soft" : "turnstile_failed_soft", { ip: getClientIp(req), ...v });
+      }
+    }
 
     if (isDisposableEmail(recipientLower)) {
       logEvent("blocked_disposable_email", { recipientDomain: getEmailDomain(recipientLower) });
@@ -327,7 +387,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(429).json({ error: "Daily limit reached for this recipient", route: "POST /api/gifts" });
     }
 
-    const publicId = crypto.randomBytes(6).toString("hex"); // 12 chars like your current ids
+    const publicId = crypto.randomBytes(6).toString("hex");
 
     try {
       const inserted = await db
@@ -355,7 +415,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ip,
       });
 
-      // Email is best-effort (do not fail creation if provider is down)
       let emailSent = false;
       let emailError: string | null = null;
 
@@ -432,6 +491,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (gift.isClaimed) {
         logEvent("claim_already_claimed", { publicId, claimedAt: gift.claimedAt || null });
         return res.status(409).json({ error: "Already claimed" });
+      }
+
+      // Minimum delay (optional; enable by setting MIN_CLAIM_DELAY_SEC=60)
+      if (MIN_CLAIM_DELAY_SEC > 0 && gift.createdAt) {
+        const created = new Date(gift.createdAt as any).getTime();
+        const now = Date.now();
+        const ageSec = Math.floor((now - created) / 1000);
+        if (ageSec < MIN_CLAIM_DELAY_SEC) {
+          logEvent("claim_too_soon_rejected", { publicId, ageSec, minSec: MIN_CLAIM_DELAY_SEC });
+          return res.status(429).json({ error: "Please wait before claiming", retryAfterSec: MIN_CLAIM_DELAY_SEC - ageSec });
+        }
       }
 
       const claimedAt = new Date();
