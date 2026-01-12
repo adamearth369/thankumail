@@ -245,7 +245,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v18_turnstile_optional_claim_delay_env",
+      routesMarker: "ROUTES_MARKER_v19_unlockInSec_get_gift",
       gitCommit: process.env.RENDER_GIT_COMMIT || "",
       serviceId: process.env.RENDER_SERVICE_ID || "",
     });
@@ -367,7 +367,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     if (isDisposableEmail(recipientLower)) {
       logEvent("blocked_disposable_email", { recipientDomain: getEmailDomain(recipientLower) });
-      return res.status(400).json({ error: "Disposable email domains are not allowed", field: "recipientEmail" });
+      return res.status(400).json({
+        error: "Disposable email domains are not allowed",
+        field: "recipientEmail",
+      });
     }
 
     const today = utcDayKey();
@@ -383,8 +386,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const recipCount = getCount(dailyRecipientCounts, recipKey);
     if (recipCount >= DAILY_RECIPIENT_LIMIT) {
-      logEvent("daily_limit_recipient_rejected", { today, recipientEmail: recipientLower, limit: DAILY_RECIPIENT_LIMIT });
-      return res.status(429).json({ error: "Daily limit reached for this recipient", route: "POST /api/gifts" });
+      logEvent("daily_limit_recipient_rejected", {
+        today,
+        recipientEmail: recipientLower,
+        limit: DAILY_RECIPIENT_LIMIT,
+      });
+      return res
+        .status(429)
+        .json({ error: "Daily limit reached for this recipient", route: "POST /api/gifts" });
     }
 
     const publicId = crypto.randomBytes(6).toString("hex");
@@ -466,7 +475,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const gift = rows?.[0];
       if (!gift) return jsonNotFound(res);
 
-      return res.json(gift);
+      // Server-authoritative countdown value
+      let unlockInSec = 0;
+      if (MIN_CLAIM_DELAY_SEC > 0 && gift.createdAt) {
+        const createdMs = new Date(gift.createdAt as any).getTime();
+        const nowMs = Date.now();
+        const ageSec = Math.floor((nowMs - createdMs) / 1000);
+        unlockInSec = Math.max(0, MIN_CLAIM_DELAY_SEC - ageSec);
+      }
+
+      return res.json({
+        ...gift,
+        unlockInSec,
+        minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
+        serverNow: new Date().toISOString(),
+      });
     } catch (e: any) {
       logEvent("gift_get_error", { publicId, error: String(e?.message || e) });
       return res.status(500).json({ error: "Internal server error" });
@@ -500,16 +523,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const ageSec = Math.floor((now - created) / 1000);
         if (ageSec < MIN_CLAIM_DELAY_SEC) {
           logEvent("claim_too_soon_rejected", { publicId, ageSec, minSec: MIN_CLAIM_DELAY_SEC });
-          return res.status(429).json({ error: "Please wait before claiming", retryAfterSec: MIN_CLAIM_DELAY_SEC - ageSec });
+          const unlockInSec = Math.max(0, MIN_CLAIM_DELAY_SEC - ageSec);
+          return res.status(429).json({
+            error: "Please wait before claiming",
+            unlockInSec,
+            retryAfterSec: unlockInSec,
+          });
         }
       }
 
       const claimedAt = new Date();
-      const updated = await db
-        .update(gifts)
-        .set({ isClaimed: true, claimedAt })
-        .where(eq(gifts.publicId, publicId))
-        .returning();
+      const updated = await db.update(gifts).set({ isClaimed: true, claimedAt }).where(eq(gifts.publicId, publicId)).returning();
 
       logEvent("claim_completed", { publicId, claimedAt: claimedAt.toISOString() });
 
