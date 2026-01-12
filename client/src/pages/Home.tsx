@@ -1,21 +1,20 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type CreateGiftResponse =
   | {
       success: true;
       giftId: string;
       claimLink: string;
+      claimUrl?: string;
+      emailSent?: boolean;
+      emailError?: string | null;
       email?: { ok: boolean };
     }
-  | { error: string; issues?: any[]; field?: string };
+  | { error: string; issues?: any[]; field?: string; retryAfterSec?: number };
 
 function moneyToCents(dollars: number) {
   const cents = Math.round(dollars * 100);
   return Number.isFinite(cents) ? cents : 0;
-}
-
-function centsToMoney(cents: number) {
-  return (cents / 100).toFixed(2);
 }
 
 function isEmail(s: string) {
@@ -28,6 +27,38 @@ function absoluteLink(maybeRelative: string) {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
   return `${origin}${path}`;
+}
+
+/* -------------------- Turnstile helpers -------------------- */
+declare global {
+  interface Window {
+    turnstile?: any;
+  }
+}
+
+const TURNSTILE_SCRIPT_ID = "cf-turnstile-script";
+
+function loadTurnstileScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined") return resolve();
+    if (window.turnstile) return resolve();
+
+    const existing = document.getElementById(TURNSTILE_SCRIPT_ID) as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("Failed to load Turnstile script")));
+      return;
+    }
+
+    const s = document.createElement("script");
+    s.id = TURNSTILE_SCRIPT_ID;
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Failed to load Turnstile script"));
+    document.head.appendChild(s);
+  });
 }
 
 export default function Home() {
@@ -45,6 +76,15 @@ export default function Home() {
   } | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Turnstile state
+  const siteKey = (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || "";
+  const [turnstileReady, setTurnstileReady] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const [turnstileError, setTurnstileError] = useState<string>("");
+
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetIdRef = useRef<string | null>(null);
+
   const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
 
   const canSubmit = useMemo(() => {
@@ -52,12 +92,86 @@ export default function Home() {
     if (!message.trim()) return false;
     if (!Number.isFinite(amountDollars)) return false;
     if (amountCents < 1000) return false;
+
+    // If a site key is present, require a token before enabling submit.
+    // (When TURNSTILE_ENFORCE is flipped on server, this prevents confusing 400s.)
+    if (siteKey && !turnstileToken) return false;
+
     return true;
-  }, [recipientEmail, message, amountDollars, amountCents]);
+  }, [recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken]);
+
+  // Initialize Turnstile widget (explicit render)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      setTurnstileError("");
+      setTurnstileReady(false);
+
+      if (!siteKey) {
+        // No site key configured: run without widget (safe rollout / dev)
+        return;
+      }
+
+      try {
+        await loadTurnstileScript();
+        if (cancelled) return;
+
+        if (!window.turnstile) {
+          setTurnstileError("CAPTCHA failed to load. Please refresh.");
+          return;
+        }
+
+        setTurnstileReady(true);
+
+        // Render widget if not rendered yet
+        if (turnstileContainerRef.current && !turnstileWidgetIdRef.current) {
+          const widgetId = window.turnstile.render(turnstileContainerRef.current, {
+            sitekey: siteKey,
+            theme: "light",
+            callback: (token: string) => {
+              setTurnstileToken(token || "");
+              setTurnstileError("");
+            },
+            "expired-callback": () => {
+              setTurnstileToken("");
+              setTurnstileError("CAPTCHA expired. Please try again.");
+            },
+            "error-callback": () => {
+              setTurnstileToken("");
+              setTurnstileError("CAPTCHA error. Please refresh and try again.");
+            },
+          });
+
+          turnstileWidgetIdRef.current = widgetId;
+        }
+      } catch (e: any) {
+        setTurnstileError(String(e?.message || e || "CAPTCHA failed to load."));
+      }
+    }
+
+    init();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [siteKey]);
+
+  function resetTurnstile() {
+    if (!siteKey) return;
+    try {
+      const id = turnstileWidgetIdRef.current;
+      if (id && window.turnstile) {
+        window.turnstile.reset(id);
+      }
+    } catch {}
+    setTurnstileToken("");
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr("");
+    setTurnstileError("");
     setResult(null);
     setCopied(false);
 
@@ -68,6 +182,10 @@ export default function Home() {
     if (!msg) return setErr("Please write a message.");
     if (amountCents < 1000) return setErr("Minimum amount is $10.");
 
+    if (siteKey && !turnstileToken) {
+      return setTurnstileError("Please complete the CAPTCHA.");
+    }
+
     setSubmitting(true);
     try {
       const r = await fetch("/api/gifts", {
@@ -77,6 +195,7 @@ export default function Home() {
           recipientEmail: email,
           message: msg,
           amount: amountCents,
+          ...(turnstileToken ? { turnstileToken } : {}),
         }),
       });
 
@@ -84,24 +203,52 @@ export default function Home() {
 
       if (!r.ok) {
         const zodIssue = Array.isArray((data as any)?.issues) && (data as any).issues?.[0]?.message;
-        setErr((data as any)?.error || zodIssue || "Something went wrong.");
+
+        const field = (data as any)?.field;
+        const apiErr = (data as any)?.error || zodIssue || "Something went wrong.";
+
+        // If server says captcha missing/failed, show it under the widget and reset.
+        const captchaish =
+          field === "turnstileToken" ||
+          /captcha/i.test(apiErr) ||
+          /turnstile/i.test(apiErr) ||
+          /verification failed/i.test(apiErr);
+
+        if (captchaish) {
+          setTurnstileError(apiErr);
+          resetTurnstile();
+          return;
+        }
+
+        setErr(apiErr);
+        // Some errors should also refresh token (safer)
+        resetTurnstile();
         return;
       }
 
       if ((data as any)?.success) {
-        const claimLink = absoluteLink((data as any).claimLink);
+        const claimLink = absoluteLink((data as any).claimUrl || (data as any).claimLink);
+
         setResult({
           giftId: (data as any).giftId,
           claimLink,
           recipient: email,
-          emailStatus: (data as any)?.email?.ok === false ? "queued" : "sent",
+          emailStatus: (data as any)?.emailSent === false || (data as any)?.email?.ok === false ? "queued" : "sent",
         });
+
+        // Reset token after a successful create (one-time use)
+        resetTurnstile();
+        setRecipientEmail("");
+        setMessage("");
+        setAmountDollars(10);
         return;
       }
 
       setErr("Unexpected response.");
+      resetTurnstile();
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
+      resetTurnstile();
     } finally {
       setSubmitting(false);
     }
@@ -181,6 +328,24 @@ export default function Home() {
                 ))}
               </div>
 
+              {/* Turnstile widget (shows only when VITE_TURNSTILE_SITE_KEY is set) */}
+              {siteKey ? (
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-500">
+                    {turnstileReady ? "Complete the CAPTCHA to create a gift." : "Loading CAPTCHA…"}
+                  </div>
+                  <div
+                    ref={turnstileContainerRef}
+                    className="min-h-[70px] rounded-2xl border bg-white px-4 py-4"
+                  />
+                  {turnstileError ? (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                      {turnstileError}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               {err && (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                   {err}
@@ -196,11 +361,7 @@ export default function Home() {
                   </div>
 
                   <div className="mt-3 flex gap-2">
-                    <input
-                      readOnly
-                      value={result.claimLink}
-                      className="flex-1 rounded-xl border bg-white px-3 py-2 text-xs"
-                    />
+                    <input readOnly value={result.claimLink} className="flex-1 rounded-xl border bg-white px-3 py-2 text-xs" />
                     <button
                       type="button"
                       onClick={copyLink}
@@ -217,8 +378,14 @@ export default function Home() {
                 disabled={!canSubmit || submitting}
                 className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
               >
-                {submitting ? "Creating…" : "Create gift"}
+                {submitting ? "Creating…" : siteKey && !turnstileToken ? "Complete CAPTCHA" : "Create gift"}
               </button>
+
+              {siteKey ? (
+                <div className="text-[11px] leading-relaxed text-slate-500">
+                  Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
+                </div>
+              ) : null}
             </form>
           </div>
         </section>
