@@ -14,6 +14,12 @@ function env(name: string, fallback = "") {
   return (v ?? fallback).trim();
 }
 
+function envInt(name: string, fallback: number) {
+  const raw = env(name, "");
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) ? Math.floor(n) : fallback;
+}
+
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || "").trim());
 }
@@ -111,7 +117,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
     const apiKey = env("BREVO_API_KEY");
     if (!apiKey) return { ok: false, error: "Missing BREVO_API_KEY" };
 
-    // Require verified sender (prevents silent deliverability failures)
+    // Require verified sender
     const fromEmail = env("FROM_EMAIL", "");
     if (!fromEmail) {
       return { ok: false, error: "Missing FROM_EMAIL (must be a verified sender in Brevo)" };
@@ -122,9 +128,11 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
     const replyToEmail = env("REPLY_TO_EMAIL", "");
     const replyToName = env("REPLY_TO_NAME", fromName);
 
+    // NEW: Force sender by Brevo Sender ID (prevents brevosend.com fallback)
+    const senderId = envInt("BREVO_SENDER_ID", 0);
+
     const dollars = ((Number(args.amountCents) || 0) / 100).toFixed(2);
     const claimUrl = toAbsoluteClaimLink(args.claimLink);
-
     const subject = `You received a ThanküMail gift ($${dollars})`;
 
     const textContent = [
@@ -160,7 +168,6 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
 `.trim();
 
     const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
-
     const maxAttempts = 2;
     const timeoutMs = Number(env("BREVO_HTTP_TIMEOUT_MS", "8000")) || 8000;
 
@@ -169,13 +176,15 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
         attempt,
         to,
         fromEmail,
+        fromName,
+        senderId: senderId > 0 ? senderId : null,
         endpoint,
         apiKey: redact(apiKey),
       });
 
       try {
         const payload: any = {
-          sender: { email: fromEmail, name: fromName },
+          sender: senderId > 0 ? { id: senderId } : { email: fromEmail, name: fromName },
           to: [{ email: to }],
           subject,
           textContent,
