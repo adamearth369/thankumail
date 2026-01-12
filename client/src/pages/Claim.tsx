@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useRoute } from "wouter";
 
 type Gift = {
@@ -36,6 +36,19 @@ function absoluteLink(pathOrUrl: string) {
   return `${origin}${path}`;
 }
 
+const MIN_CLAIM_DELAY_SEC = 30;
+
+function clampInt(n: number) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
+function parseIsoMs(s?: string) {
+  if (!s) return NaN;
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
 export default function Claim() {
   const [, params] = useRoute<{ publicId: string }>("/claim/:publicId");
   const publicId = params?.publicId || "";
@@ -53,6 +66,31 @@ export default function Claim() {
     if (!gift) return "$0.00";
     return `$${centsToDollars(gift.amount)}`;
   }, [gift]);
+
+  const createdAtMsRef = useRef<number>(Date.now());
+  const [unlockInSec, setUnlockInSec] = useState<number>(0);
+
+  const isLocked = useMemo(() => {
+    if (!gift) return false;
+    if (gift.isClaimed) return false;
+    return unlockInSec > 0;
+  }, [gift, unlockInSec]);
+
+  function recomputeUnlock() {
+    if (!gift) {
+      setUnlockInSec(0);
+      return;
+    }
+    if (gift.isClaimed) {
+      setUnlockInSec(0);
+      return;
+    }
+
+    const createdMs = createdAtMsRef.current || Date.now();
+    const elapsedSec = (Date.now() - createdMs) / 1000;
+    const remaining = clampInt(MIN_CLAIM_DELAY_SEC - elapsedSec);
+    setUnlockInSec(remaining);
+  }
 
   async function copyLink() {
     if (!claimUrl) return;
@@ -86,14 +124,20 @@ export default function Claim() {
         return;
       }
 
-      setGift({
+      const nextGift: Gift = {
         publicId: safeText((data as any).publicId),
         message: safeText((data as any).message),
         amount: Number((data as any).amount || 0),
         isClaimed: Boolean((data as any).isClaimed),
         createdAt: safeText((data as any).createdAt),
         claimedAt: (data as any).claimedAt ?? null,
-      });
+      };
+
+      setGift(nextGift);
+
+      // establish a stable createdAt reference for countdown
+      const ms = parseIsoMs(nextGift.createdAt);
+      createdAtMsRef.current = Number.isFinite(ms) ? ms : Date.now();
 
       setLoading(false);
     } catch (e: any) {
@@ -108,8 +152,19 @@ export default function Claim() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicId]);
 
+  useEffect(() => {
+    if (!gift) return;
+    recomputeUnlock();
+    const t = setInterval(() => {
+      recomputeUnlock();
+    }, 250);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gift?.publicId, gift?.isClaimed, gift?.createdAt]);
+
   async function claim() {
     if (!publicId) return;
+    if (isLocked) return;
 
     setClaiming(true);
     setErr("");
@@ -124,7 +179,12 @@ export default function Claim() {
       const data = (await r.json().catch(() => ({}))) as ClaimResponse;
 
       if (!r.ok) {
-        setErr(safeText((data as any)?.error) || "Couldn’t claim right now. Please try again.");
+        const msg = safeText((data as any)?.error) || "Couldn’t claim right now. Please try again.";
+        setErr(msg);
+
+        // If server says "too early", keep countdown honest
+        await load();
+
         setClaiming(false);
         return;
       }
@@ -175,7 +235,7 @@ export default function Claim() {
               <div className="h-20 w-full animate-pulse rounded-2xl bg-slate-100" />
               <div className="h-10 w-40 animate-pulse rounded-2xl bg-slate-100" />
             </div>
-          ) : err ? (
+          ) : err && !gift ? (
             <div className="space-y-4">
               <div className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs text-rose-700">
                 <span className="h-2 w-2 rounded-full bg-rose-500" />
@@ -238,7 +298,7 @@ export default function Claim() {
                           gift.isClaimed ? "bg-slate-500" : "bg-violet-600",
                         ].join(" ")}
                       />
-                      {gift.isClaimed ? "Claimed" : "Unclaimed"}
+                      {gift.isClaimed ? "Claimed" : isLocked ? `Unlocks in ${unlockInSec}s` : "Unclaimed"}
                     </div>
                   </div>
                 </div>
@@ -256,6 +316,13 @@ export default function Claim() {
                   </div>
                 ) : null}
 
+                {!gift.isClaimed && isLocked ? (
+                  <div className="mt-4 rounded-2xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-slate-700">
+                    For security reasons, this gift unlocks in <span className="font-semibold">{unlockInSec}s</span>.
+                    The claim button will activate automatically.
+                  </div>
+                ) : null}
+
                 <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
                   {gift.isClaimed ? (
                     <div className="flex-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
@@ -264,13 +331,13 @@ export default function Claim() {
                   ) : (
                     <button
                       onClick={claim}
-                      disabled={claiming}
+                      disabled={claiming || isLocked}
                       className={[
                         "flex-1 rounded-2xl px-5 py-3 text-sm font-semibold text-white shadow-sm transition",
-                        claiming ? "bg-slate-300" : "bg-violet-600 hover:bg-violet-700",
+                        claiming || isLocked ? "bg-slate-300" : "bg-violet-600 hover:bg-violet-700",
                       ].join(" ")}
                     >
-                      {claiming ? "Claiming…" : "Claim gift"}
+                      {claiming ? "Claiming…" : isLocked ? `Ready in ${unlockInSec}s` : "Claim gift"}
                     </button>
                   )}
 
