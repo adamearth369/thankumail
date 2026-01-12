@@ -192,6 +192,11 @@ function requireAdmin(req: any): { ok: true } | { ok: false; status: number; err
   return { ok: true };
 }
 
+/* -------------------- HELPERS -------------------- */
+function jsonNotFound(res: any) {
+  return res.status(404).json({ error: "Not found" });
+}
+
 /* ==================== ROUTES ==================== */
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   await seed();
@@ -203,7 +208,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get(["/health", "/__health", "/api/health"], (_req, res) => {
     res.json({
       ok: true,
-      routesMarker: "ROUTES_MARKER_v16_admin_reset_success_only_counters",
+      routesMarker: "ROUTES_MARKER_v17_api_claim_json",
       gitCommit: process.env.RENDER_GIT_COMMIT || "",
       serviceId: process.env.RENDER_SERVICE_ID || "",
     });
@@ -263,199 +268,229 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ip = getClientIp(req);
     const ipKey = `${today}|${ip}`;
 
-    const recipientEmail = (parsed.data.recipientEmail || "").trim().toLowerCase();
-    const recipKey = recipientEmail ? `${today}|${recipientEmail}` : "";
-
-    const resetAll = Boolean(parsed.data.resetAllForToday);
-
-    let clearedIp = 0;
-    let clearedRecipients = 0;
-
-    if (resetAll) {
-      // Reset all counters for TODAY only (still protected by ADMIN_KEY + ALLOW_ADMIN_RESET)
+    if (parsed.data.resetAllForToday) {
+      // Clear all counters for today
       for (const k of Array.from(dailyIpCounts.keys())) {
-        if (k.startsWith(`${today}|`)) {
-          dailyIpCounts.delete(k);
-          clearedIp++;
-        }
+        if (k.startsWith(`${today}|`)) dailyIpCounts.delete(k);
       }
       for (const k of Array.from(dailyRecipientCounts.keys())) {
-        if (k.startsWith(`${today}|`)) {
-          dailyRecipientCounts.delete(k);
-          clearedRecipients++;
-        }
+        if (k.startsWith(`${today}|`)) dailyRecipientCounts.delete(k);
       }
-      logEvent("admin_reset_limits_all_today", { today, clearedIp, clearedRecipients });
-      return res.json({ ok: true, todayUtc: today, clearedIp, clearedRecipients });
+      logEvent("admin_reset_limits_success", { scope: "all_for_today", today });
+      return res.json({ ok: true, reset: "all_for_today", today });
     }
 
-    // Default: reset just THIS CALLER IP, and optional single recipient
-    if (dailyIpCounts.has(ipKey)) {
-      dailyIpCounts.delete(ipKey);
-      clearedIp = 1;
-    }
-    if (recipKey && dailyRecipientCounts.has(recipKey)) {
+    // Always allow clearing the caller IP counter (common “oops” recovery)
+    dailyIpCounts.delete(ipKey);
+
+    const recipient = (parsed.data.recipientEmail || "").trim().toLowerCase();
+    if (recipient) {
+      const recipKey = `${today}|${recipient}`;
       dailyRecipientCounts.delete(recipKey);
-      clearedRecipients = 1;
+      logEvent("admin_reset_limits_success", { scope: "ip_and_recipient", today, ip, recipientEmail: recipient });
+      return res.json({ ok: true, reset: "ip_and_recipient", today, ip, recipientEmail: recipient });
     }
 
-    logEvent("admin_reset_limits_scoped", {
-      today,
-      ip,
-      recipientEmail: recipientEmail || undefined,
-      clearedIp,
-      clearedRecipients,
-    });
-
-    return res.json({
-      ok: true,
-      todayUtc: today,
-      scope: "ip(+optional recipient)",
-      ip,
-      recipientEmail: recipientEmail || null,
-      clearedIp,
-      clearedRecipients,
-    });
+    logEvent("admin_reset_limits_success", { scope: "ip_only", today, ip });
+    return res.json({ ok: true, reset: "ip_only", today, ip });
   });
 
   /* -------- CREATE GIFT -------- */
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
-    const requestId = safeStr(req.headers["x-request-id"] || req.headers["cf-ray"] || "");
-    const started = Date.now();
-
     const parsed = CreateGiftSchema.safeParse(req.body);
     if (!parsed.success) {
-      logEvent("gift_create_validation_failed", { requestId, issues: parsed.error.issues });
       return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues });
     }
 
     const { recipientEmail, message, amount } = parsed.data;
+    const recipientLower = recipientEmail.trim().toLowerCase();
 
-    // Disposable block
-    if (isDisposableEmail(recipientEmail)) {
-      logEvent("gift_create_disposable_blocked", { requestId, domain: getEmailDomain(recipientEmail) });
-      return res.status(400).json({ error: "Disposable email addresses are not allowed", field: "recipientEmail" });
+    if (isDisposableEmail(recipientLower)) {
+      logEvent("blocked_disposable_email", { recipientDomain: getEmailDomain(recipientLower) });
+      return res.status(400).json({ error: "Disposable email domains are not allowed", field: "recipientEmail" });
     }
 
-    // Daily limits (CHECK ONLY — do NOT bump until successful DB insert)
     const today = utcDayKey();
     const ip = getClientIp(req);
     const ipKey = `${today}|${ip}`;
-    const recipKey = `${today}|${recipientEmail.trim().toLowerCase()}`;
+    const recipKey = `${today}|${recipientLower}`;
 
-    const ipWouldBe = getCount(dailyIpCounts, ipKey) + 1;
-    if (ipWouldBe > DAILY_IP_LIMIT) {
-      logEvent("gift_create_daily_ip_limit", {
-        requestId,
-        ip,
-        countWouldBe: ipWouldBe,
-        limit: DAILY_IP_LIMIT,
-        ms: Date.now() - started,
-      });
-      return res.status(429).json({
-        error: "Daily IP limit reached",
-        field: "ip",
-        limit: DAILY_IP_LIMIT,
-        todayUtc: today,
-      });
+    const ipCount = getCount(dailyIpCounts, ipKey);
+    if (ipCount >= DAILY_IP_LIMIT) {
+      logEvent("daily_limit_ip_rejected", { today, ip, limit: DAILY_IP_LIMIT });
+      return res.status(429).json({ error: "Daily limit reached for this IP", route: "POST /api/gifts" });
     }
 
-    const recipWouldBe = getCount(dailyRecipientCounts, recipKey) + 1;
-    if (recipWouldBe > DAILY_RECIPIENT_LIMIT) {
-      logEvent("gift_create_daily_recipient_limit", {
-        requestId,
-        recipientEmail,
-        countWouldBe: recipWouldBe,
-        limit: DAILY_RECIPIENT_LIMIT,
-        ms: Date.now() - started,
-      });
-      return res.status(429).json({
-        error: "Daily recipient limit reached",
-        field: "recipientEmail",
-        limit: DAILY_RECIPIENT_LIMIT,
-        todayUtc: today,
-      });
+    const recipCount = getCount(dailyRecipientCounts, recipKey);
+    if (recipCount >= DAILY_RECIPIENT_LIMIT) {
+      logEvent("daily_limit_recipient_rejected", { today, recipientEmail: recipientLower, limit: DAILY_RECIPIENT_LIMIT });
+      return res.status(429).json({ error: "Daily limit reached for this recipient", route: "POST /api/gifts" });
     }
 
-    const publicId = crypto.randomBytes(6).toString("hex");
-    const claimAbs = `${getBaseUrl(req)}/claim/${publicId}`;
+    const publicId = crypto.randomBytes(6).toString("hex"); // 12 chars like your current ids
 
     try {
-      await db.insert(gifts).values({
+      const inserted = await db
+        .insert(gifts)
+        .values({
+          publicId,
+          recipientEmail: recipientLower,
+          message,
+          amount,
+          isClaimed: false,
+        })
+        .returning();
+
+      bump(dailyIpCounts, ipKey);
+      bump(dailyRecipientCounts, recipKey);
+
+      const base = getBaseUrl(req);
+      const claimPath = `/claim/${publicId}`;
+      const claimUrl = `${base}${claimPath}`;
+
+      logEvent("gift_created", {
         publicId,
-        recipientEmail,
-        message,
         amount,
-        isClaimed: false,
+        recipientDomain: getEmailDomain(recipientLower),
+        ip,
+      });
+
+      // Email is best-effort (do not fail creation if provider is down)
+      let emailSent = false;
+      let emailError: string | null = null;
+
+      const canEmail = Boolean(process.env.FROM_EMAIL && process.env.BREVO_API_KEY);
+      if (canEmail) {
+        try {
+          await withTimeout(
+            sendGiftEmail({
+              to: recipientLower,
+              claimUrl,
+              message,
+              amountCents: amount,
+            } as any),
+            12000,
+            "sendGiftEmail",
+          );
+          emailSent = true;
+          logEvent("email_sent_success", { publicId, toDomain: getEmailDomain(recipientLower) });
+        } catch (e: any) {
+          emailError = String(e?.message || e);
+          logEvent("email_sent_fail", { publicId, error: emailError });
+        }
+      } else {
+        logEvent("email_skipped_not_configured", { publicId });
+      }
+
+      return res.json({
+        success: true,
+        giftId: publicId,
+        claimLink: claimPath,
+        claimUrl,
+        emailSent,
+        emailError,
+        dbId: inserted?.[0]?.id ?? null,
       });
     } catch (e: any) {
-      logEvent("gift_create_db_insert_failed", { requestId, error: safeStr(e?.message || e), ms: Date.now() - started });
+      logEvent("gift_create_error", { error: String(e?.message || e) });
       return res.status(500).json({ error: "Internal server error" });
     }
-
-    // Bump counters ONLY after successful insert
-    const ipCount = bump(dailyIpCounts, ipKey);
-    const recipientCount = bump(dailyRecipientCounts, recipKey);
-
-    logEvent("gift_create_ok", {
-      requestId,
-      publicId,
-      ip,
-      ipCount,
-      recipientCount,
-      ms: Date.now() - started,
-    });
-
-    res.json({ success: true, giftId: publicId, claimLink: `/claim/${publicId}` });
-
-    withTimeout(
-      sendGiftEmail({ to: recipientEmail, claimLink: claimAbs, message, amountCents: amount }),
-      10_000,
-      "sendGiftEmail",
-    )
-      .then((r: any) => {
-        logEvent(r.ok ? "email_send_ok" : "email_send_failed", {
-          requestId,
-          publicId,
-          to: recipientEmail,
-          messageId: r.ok ? safeStr(r.messageId) : undefined,
-          error: r.ok ? undefined : safeStr(r.error),
-        });
-      })
-      .catch((e) => {
-        logEvent("email_send_failed", { requestId, publicId, to: recipientEmail, error: safeStr(e?.message || e) });
-      });
   });
 
   /* -------- GET GIFT -------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
-    const publicId = req.params.publicId;
-    const row = (await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1))[0];
-    if (!row) return res.status(404).json({ error: "Not found" });
+    const publicId = safeStr(req.params.publicId).trim();
+    if (!publicId) return jsonNotFound(res);
 
-    res.json({
-      publicId: row.publicId,
-      recipientEmail: row.recipientEmail,
-      message: row.message,
-      amount: row.amount,
-      isClaimed: row.isClaimed,
-      createdAt: row.createdAt,
-      claimedAt: row.claimedAt,
-    });
+    try {
+      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
+      const gift = rows?.[0];
+      if (!gift) return jsonNotFound(res);
+
+      return res.json(gift);
+    } catch (e: any) {
+      logEvent("gift_get_error", { publicId, error: String(e?.message || e) });
+      return res.status(500).json({ error: "Internal server error" });
+    }
   });
 
-  /* -------- CLAIM -------- */
+  /* -------- CLAIM GIFT (API MUST BE JSON) -------- */
   app.post("/api/gifts/:publicId/claim", claimGiftLimiter, async (req, res) => {
-    const publicId = req.params.publicId;
-    const row = (await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1))[0];
+    const publicId = safeStr(req.params.publicId).trim();
+    if (!publicId) return jsonNotFound(res);
 
-    if (!row) return res.status(404).json({ error: "Not found" });
-    if (row.isClaimed) return res.status(409).json({ error: "Already claimed" });
+    try {
+      logEvent("claim_attempted", { publicId, ip: getClientIp(req) });
 
-    const claimedAt = new Date();
-    await db.update(gifts).set({ isClaimed: true, claimedAt: claimedAt as any }).where(eq(gifts.publicId, publicId));
+      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId)).limit(1);
+      const gift = rows?.[0];
+      if (!gift) {
+        logEvent("claim_not_found", { publicId });
+        return res.status(404).json({ error: "Gift not found" });
+      }
 
-    res.json({ success: true, publicId: row.publicId, claimedAt: claimedAt.toISOString() });
+      if (gift.isClaimed) {
+        logEvent("claim_already_claimed", { publicId, claimedAt: gift.claimedAt || null });
+        return res.status(409).json({ error: "Already claimed" });
+      }
+
+      const claimedAt = new Date();
+      const updated = await db
+        .update(gifts)
+        .set({ isClaimed: true, claimedAt })
+        .where(eq(gifts.publicId, publicId))
+        .returning();
+
+      logEvent("claim_completed", { publicId, claimedAt: claimedAt.toISOString() });
+
+      return res.json({
+        ok: true,
+        publicId,
+        claimedAt: claimedAt.toISOString(),
+        gift: updated?.[0] ?? null,
+      });
+    } catch (e: any) {
+      logEvent("claim_error", { publicId, error: String(e?.message || e) });
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  /* -------- EMAIL TEST (JSON) -------- */
+  app.post("/api/email/test", async (req, res) => {
+    const to = safeStr(req.body?.to).trim().toLowerCase();
+    if (!to) return res.status(400).json({ ok: false, error: "Missing 'to'" });
+    if (!z.string().email().safeParse(to).success) return res.status(400).json({ ok: false, error: "Invalid email" });
+
+    const base = getBaseUrl(req);
+    const claimUrl = `${base}/claim/demo-gift`;
+
+    const canEmail = Boolean(process.env.FROM_EMAIL && process.env.BREVO_API_KEY);
+    if (!canEmail) return res.status(503).json({ ok: false, error: "Email not configured" });
+
+    try {
+      await withTimeout(
+        sendGiftEmail({
+          to,
+          claimUrl,
+          message: "Test email from ThankuMail",
+          amountCents: 1000,
+        } as any),
+        12000,
+        "sendGiftEmailTest",
+      );
+
+      logEvent("email_test_success", { toDomain: getEmailDomain(to) });
+      return res.json({ ok: true });
+    } catch (e: any) {
+      const err = String(e?.message || e);
+      logEvent("email_test_fail", { error: err, toDomain: getEmailDomain(to) });
+      return res.status(500).json({ ok: false, error: err });
+    }
+  });
+
+  /* -------- FALLBACK 404 FOR /api -------- */
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Not found" });
   });
 
   return httpServer;
