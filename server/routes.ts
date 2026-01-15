@@ -63,6 +63,17 @@ function computeUnlockInSec(createdAt: Date) {
   return clampInt(remaining);
 }
 
+/* -------------------- DB HELPERS -------------------- */
+async function getGiftByPublicId(publicId: string) {
+  // IMPORTANT: avoid db.query.* (it is undefined in your runtime)
+  const rows = await db
+    .select()
+    .from(gifts as any)
+    .where(eq((gifts as any).publicId, publicId))
+    .limit(1);
+  return rows?.[0] || null;
+}
+
 /* -------------------- TURNSTILE -------------------- */
 function bypassAllowed(ip: string) {
   if (!TURNSTILE_BYPASS) return false;
@@ -158,13 +169,13 @@ router.post("/api/gifts", async (req, res) => {
     return res.status(400).json({ error: "Minimum amount is $10", field: "amount" });
   }
 
-  // FIX: public_id is NOT NULL in DB, so we must generate it
-  const publicId = crypto.randomBytes(12).toString("hex"); // 24 chars, collision-resistant
+  // public_id is NOT NULL in DB
+  const publicId = crypto.randomBytes(12).toString("hex");
   const claimToken = crypto.randomBytes(12).toString("hex");
 
   try {
     const [gift] = await db
-      .insert(gifts)
+      .insert(gifts as any)
       .values({
         publicId,
         recipientEmail,
@@ -200,25 +211,28 @@ router.post("/api/gifts", async (req, res) => {
 router.get("/api/gifts/:publicId", async (req, res) => {
   const publicId = (req.params.publicId || "").toString().trim();
 
-  const gift = await db.query.gifts.findFirst({
-    where: eq((gifts as any).publicId, publicId),
-  });
+  try {
+    const gift = await getGiftByPublicId(publicId);
+    if (!gift) return res.status(404).json({ error: "Not found" });
 
-  if (!gift) return res.status(404).json({ error: "Not found" });
+    const createdAtRaw = (gift as any).createdAt;
+    const createdAt = createdAtRaw ? new Date(createdAtRaw) : new Date();
+    const unlockInSec = computeUnlockInSec(createdAt);
 
-  const createdAt = new Date((gift as any).createdAt);
-  const unlockInSec = computeUnlockInSec(createdAt);
-
-  return res.json({
-    publicId: (gift as any).publicId,
-    amount: (gift as any).amount,
-    message: (gift as any).message,
-    isClaimed: (gift as any).isClaimed,
-    createdAt: (gift as any).createdAt,
-    claimedAt: (gift as any).claimedAt,
-    minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
-    unlockInSec,
-  });
+    return res.json({
+      publicId: (gift as any).publicId,
+      amount: (gift as any).amount,
+      message: (gift as any).message,
+      isClaimed: (gift as any).isClaimed,
+      createdAt: (gift as any).createdAt,
+      claimedAt: (gift as any).claimedAt,
+      minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
+      unlockInSec,
+    });
+  } catch (e: any) {
+    logEvent("gift_get_error", { publicId, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Failed to fetch gift" });
+  }
 });
 
 /* ==================================================
@@ -228,54 +242,57 @@ router.post("/api/gifts/:publicId/claim", async (req, res) => {
   const ip = getIp(req);
   const publicId = (req.params.publicId || "").toString().trim();
 
-  logEvent("claim_attempted", { publicId, ip });
+  try {
+    logEvent("claim_attempted", { publicId, ip });
 
-  const gift = await db.query.gifts.findFirst({
-    where: eq((gifts as any).publicId, publicId),
-  });
+    const gift = await getGiftByPublicId(publicId);
+    if (!gift) {
+      logEvent("claim_not_found", { publicId });
+      return res.status(404).json({ error: "Gift not found" });
+    }
 
-  if (!gift) {
-    logEvent("claim_not_found", { publicId });
-    return res.status(404).json({ error: "Gift not found" });
-  }
+    if ((gift as any).isClaimed) {
+      logEvent("claim_already_claimed", { publicId });
+      return res.status(409).json({ error: "Already claimed" });
+    }
 
-  if ((gift as any).isClaimed) {
-    logEvent("claim_already_claimed", { publicId });
-    return res.status(409).json({ error: "Already claimed" });
-  }
+    const createdAtRaw = (gift as any).createdAt;
+    const createdAt = createdAtRaw ? new Date(createdAtRaw) : new Date();
+    const unlockInSec = computeUnlockInSec(createdAt);
 
-  const createdAt = new Date((gift as any).createdAt);
-  const unlockInSec = computeUnlockInSec(createdAt);
+    if (unlockInSec > 0) {
+      logEvent("claim_too_soon", { publicId, unlockInSec, minClaimDelaySec: MIN_CLAIM_DELAY_SEC });
+      return res.status(429).json({
+        error: "Please wait before claiming",
+        retryAfterSec: unlockInSec,
+      });
+    }
 
-  if (unlockInSec > 0) {
-    logEvent("claim_too_soon", { publicId, unlockInSec, minClaimDelaySec: MIN_CLAIM_DELAY_SEC });
-    return res.status(429).json({
-      error: "Please wait before claiming",
-      retryAfterSec: unlockInSec,
+    const claimedAt = new Date();
+
+    const updated = await db
+      .update(gifts as any)
+      .set({ isClaimed: true, claimedAt } as any)
+      .where(eq((gifts as any).publicId, publicId))
+      .returning();
+
+    if (!updated || updated.length === 0) {
+      logEvent("claim_update_failed", { publicId });
+      return res.status(409).json({ error: "Already claimed" });
+    }
+
+    logEvent("claim_completed", { publicId, claimedAt: claimedAt.toISOString() });
+
+    return res.json({
+      ok: true,
+      publicId,
+      claimedAt: claimedAt.toISOString(),
+      gift: updated[0],
     });
+  } catch (e: any) {
+    logEvent("claim_error", { publicId, ip, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Failed to claim gift" });
   }
-
-  const claimedAt = new Date();
-
-  const updated = await db
-    .update(gifts)
-    .set({ isClaimed: true, claimedAt } as any)
-    .where(eq((gifts as any).publicId, publicId))
-    .returning();
-
-  if (!updated || updated.length === 0) {
-    logEvent("claim_update_failed", { publicId });
-    return res.status(409).json({ error: "Already claimed" });
-  }
-
-  logEvent("claim_completed", { publicId, claimedAt: claimedAt.toISOString() });
-
-  return res.json({
-    ok: true,
-    publicId,
-    claimedAt: claimedAt.toISOString(),
-    gift: updated[0],
-  });
 });
 
 export async function registerRoutes(_httpServer: Server, app: Express) {
