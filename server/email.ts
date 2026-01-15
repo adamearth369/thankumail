@@ -30,7 +30,6 @@ function domainOf(email: string) {
 
 export async function sendGiftEmail(args: SendGiftEmailArgs) {
   const { to, claimUrl, message, amountCents } = args;
-
   const toDomain = domainOf(to);
 
   if (!BREVO_API_KEY) {
@@ -41,21 +40,39 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
   const payload = {
     sender: { email: FROM_EMAIL, name: FROM_NAME },
     to: [{ email: to }],
-    subject: "You’ve received a ThankuMail 💛",
+    subject: "Someone sent you a ThankuMail 💛",
     htmlContent: `
-      <div style="font-family: Arial, sans-serif; line-height:1.5; max-width:600px">
-        <h2>You’ve received a ThankuMail 💛</h2>
-        <p><strong>${formatAmount(amountCents)}</strong> has been sent to you.</p>
-        <p style="white-space:pre-wrap">${message || ""}</p>
-        <p>
+      <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.5; max-width:600px">
+        <h2 style="margin:0 0 12px">You’ve received a ThankuMail 💛</h2>
+
+        <p style="margin:0 0 8px">
+          <strong>${formatAmount(amountCents)}</strong> has been sent to you.
+        </p>
+
+        ${
+          message
+            ? `<p style="margin:0 0 16px; font-style:italic; color:#555">“${message}”</p>`
+            : ""
+        }
+
+        <p style="margin:0 0 20px">
           <a href="${claimUrl}"
-             style="display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:6px">
+             style="display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:6px;font-weight:600">
             Open your ThankuMail
           </a>
         </p>
-        <p style="font-size:12px;color:#666">
+
+        <p style="margin:0 0 16px; font-size:13px; color:#666">
           If the button doesn’t work, copy and paste this link:<br/>
           ${claimUrl}
+        </p>
+
+        <hr style="border:none;border-top:1px solid #eee;margin:24px 0"/>
+
+        <p style="margin:0; font-size:13px; color:#777">
+          ThankuMail is a simple way for someone to send a message of kindness along with a gift.
+          <br/>
+          No pressure to claim it — and we’ll never ask for personal information.
         </p>
       </div>
     `,
@@ -63,12 +80,9 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
 
   const started = Date.now();
 
-  // IMPORTANT: never log api keys or full recipient email
   logEvent("email_api_send_start", {
-    attempt: 1,
     toDomain,
     fromEmail: FROM_EMAIL,
-    fromName: FROM_NAME,
     endpoint: BREVO_ENDPOINT,
   });
 
@@ -87,7 +101,6 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     logEvent("email_api_send_failed", {
-      attempt: 1,
       toDomain,
       status: res.status,
       ms,
@@ -99,7 +112,6 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
   const json: any = await res.json().catch(() => null);
 
   logEvent("email_api_send_ok", {
-    attempt: 1,
     toDomain,
     messageId: json?.messageId || null,
     ms,
