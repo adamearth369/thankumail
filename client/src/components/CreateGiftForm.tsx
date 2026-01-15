@@ -1,217 +1,329 @@
-import { useState } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { insertGiftSchema, type InsertGift } from "@shared/schema";
-import { useCreateGift } from "@/hooks/use-gifts";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Gift, Loader2, DollarSign, Send, Copy, Check } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import confetti from "canvas-confetti";
+// ===============================
+// FILE TO REPLACE (FULL FILE)
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// PURPOSE:
+// - Fix "Unexpected response" false error
+// - Clear fields on success
+// - Robust Turnstile token handling + reset
+// - Success = HTTP 200 + JSON contains { publicId }
+// ===============================
 
-export function CreateGiftForm() {
-  const createGift = useCreateGift();
-  const [createdLink, setCreatedLink] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-  // Extend schema for form handling (amount is number but input might be string initially)
-  const form = useForm<InsertGift>({
-    resolver: zodResolver(insertGiftSchema),
-    defaultValues: {
-      recipientEmail: "",
-      message: "",
-      amount: 1000,
-    },
+declare global {
+  interface Window {
+    turnstile?: any;
+    __TURNSTILE_SITE_KEY__?: string;
+  }
+}
+
+type CreateGiftResponse = { publicId: string };
+
+function isEmail(s: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
+function safeJsonParse(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function getTurnstileSiteKey() {
+  // Try Vite env first
+  const viteKey =
+    (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY ||
+    (import.meta as any)?.env?.VITE_CF_TURNSTILE_SITE_KEY ||
+    "";
+  if (viteKey) return String(viteKey);
+
+  // Optional server-injected global fallback
+  if (window.__TURNSTILE_SITE_KEY__) return String(window.__TURNSTILE_SITE_KEY__);
+
+  return "";
+}
+
+function injectTurnstileScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (window.turnstile) return resolve();
+
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src^="https://challenges.cloudflare.com/turnstile/v0/api.js"]'
+    );
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("Turnstile script failed to load")));
+      return;
+    }
+
+    const s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Turnstile script failed to load"));
+    document.head.appendChild(s);
   });
+}
 
-  const onSubmit = (data: InsertGift) => {
-    createGift.mutate(data, {
-      onSuccess: (gift) => {
-        const link = `${window.location.origin}/claim/${gift.publicId}`;
-        setCreatedLink(link);
-        confetti({
-          particleCount: 100,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#8B5CF6', '#F59E0B', '#14B8A6']
-        });
-      },
-    });
-  };
+export default function CreateGiftForm() {
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [amountCents, setAmountCents] = useState(1000);
 
-  const copyToClipboard = () => {
-    if (createdLink) {
-      navigator.clipboard.writeText(createdLink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-      
-      // Mini confetti burst on copy button
-      const btn = document.getElementById("copy-btn");
-      if (btn) {
-        const rect = btn.getBoundingClientRect();
-        confetti({
-          particleCount: 30,
-          spread: 40,
-          origin: {
-            x: (rect.left + rect.width / 2) / window.innerWidth,
-            y: (rect.top + rect.height / 2) / window.innerHeight
-          }
+  const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const [turnstileReady, setTurnstileReady] = useState(false);
+  const [turnstileError, setTurnstileError] = useState<string>("");
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorText, setErrorText] = useState<string>("");
+  const [successPublicId, setSuccessPublicId] = useState<string>("");
+
+  const siteKey = useMemo(() => getTurnstileSiteKey(), []);
+
+  const widgetRef = useRef<HTMLDivElement | null>(null);
+  const widgetIdRef = useRef<string | null>(null);
+
+  const presetAmounts = useMemo(
+    () => [
+      { label: "$10", cents: 1000 },
+      { label: "$25", cents: 2500 },
+      { label: "$50", cents: 5000 },
+      { label: "$100", cents: 10000 },
+    ],
+    []
+  );
+
+  function resetForm() {
+    setRecipientEmail("");
+    setMessage("");
+    setAmountCents(1000);
+    setTurnstileToken("");
+    setErrorText("");
+    // keep successPublicId (so user sees confirmation)
+  }
+
+  async function resetTurnstile() {
+    try {
+      if (window.turnstile && widgetIdRef.current) {
+        window.turnstile.reset(widgetIdRef.current);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setTurnstileToken("");
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function boot() {
+      setTurnstileError("");
+      if (!siteKey) {
+        setTurnstileError("Turnstile site key missing.");
+        return;
+      }
+
+      try {
+        await injectTurnstileScript();
+        if (cancelled) return;
+
+        if (!widgetRef.current) return;
+
+        // If already rendered, skip
+        if (widgetIdRef.current) {
+          setTurnstileReady(true);
+          return;
+        }
+
+        const id = window.turnstile.render(widgetRef.current, {
+          sitekey: siteKey,
+          callback: (token: string) => {
+            setTurnstileToken(token || "");
+            setErrorText("");
+          },
+          "error-callback": () => {
+            setTurnstileToken("");
+            setTurnstileError("CAPTCHA error. Refresh and try again.");
+          },
+          "expired-callback": () => {
+            setTurnstileToken("");
+          },
         });
+
+        widgetIdRef.current = id;
+        setTurnstileReady(true);
+      } catch (e: any) {
+        setTurnstileError(String(e?.message || e || "CAPTCHA failed to load."));
       }
     }
-  };
 
-  if (createdLink) {
-    return (
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="bg-white rounded-3xl p-8 shadow-xl shadow-primary/5 border border-primary/10 text-center space-y-6"
-      >
-        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce">
-          <Gift className="w-10 h-10 text-green-600" />
-        </div>
-        
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2 font-display">Your thank-you has been sent 💙</h2>
-          <p className="text-gray-500">Share this magic link with your friend.</p>
-        </div>
+    boot();
+    return () => {
+      cancelled = true;
+    };
+  }, [siteKey]);
 
-        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center gap-3 group hover:border-primary/30 transition-colors">
-          <code className="text-sm text-slate-600 flex-1 truncate font-mono bg-transparent">
-            {createdLink}
-          </code>
-          <button
-            id="copy-btn"
-            onClick={copyToClipboard}
-            className="p-2 hover:bg-white rounded-lg transition-colors text-slate-500 hover:text-primary shadow-sm"
-          >
-            {copied ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
-          </button>
-        </div>
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (isSubmitting) return;
 
-        <button
-          onClick={() => {
-            setCreatedLink(null);
-            form.reset();
-          }}
-          className="text-sm text-slate-400 hover:text-primary font-medium underline decoration-2 underline-offset-4"
-        >
-          Send another gift
-        </button>
-      </motion.div>
-    );
+    setErrorText("");
+    setSuccessPublicId("");
+
+    const to = recipientEmail.trim();
+    const msg = message.trim();
+
+    if (!isEmail(to)) {
+      setErrorText("Please enter a valid recipient email.");
+      return;
+    }
+    if (!Number.isFinite(amountCents) || amountCents < 1000) {
+      setErrorText("Minimum amount is $10.");
+      return;
+    }
+    if (!turnstileToken) {
+      setErrorText("Complete CAPTCHA.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const res = await fetch("/api/gifts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          recipientEmail: to,
+          message: msg,
+          amount: amountCents,
+          turnstileToken,
+        }),
+      });
+
+      const text = await res.text();
+      const data = safeJsonParse(text);
+
+      // If not ok, show server error if present
+      if (!res.ok) {
+        const serverMsg =
+          (data && (data.error || data.message)) ||
+          text?.slice(0, 200) ||
+          `Request failed (${res.status})`;
+        setErrorText(String(serverMsg));
+        await resetTurnstile();
+        return;
+      }
+
+      // Success if publicId exists
+      const publicId = (data as CreateGiftResponse | null)?.publicId;
+      if (publicId && typeof publicId === "string") {
+        setSuccessPublicId(publicId);
+        resetForm();
+        await resetTurnstile();
+        return;
+      }
+
+      // If API returned OK but shape unexpected, treat as success-ish but show details
+      setErrorText("Unexpected response from server (missing publicId).");
+      await resetTurnstile();
+    } catch (err: any) {
+      setErrorText(String(err?.message || err || "Network error"));
+      await resetTurnstile();
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
-    <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xl shadow-primary/5 border border-primary/10 relative overflow-hidden">
-      {/* Decorative gradient blob */}
-      <div className="absolute top-0 right-0 w-64 h-64 bg-secondary/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none" />
+    <form onSubmit={onSubmit} style={{ maxWidth: 560 }}>
+      <h2 style={{ margin: "12px 0 8px" }}>Create a ThanküMail</h2>
 
-      <div className="flex items-center gap-3 mb-8 relative z-10">
-        <div className="p-3 bg-primary/10 rounded-xl text-primary">
-          <Send className="w-6 h-6" />
-        </div>
-        <div>
-          <h2 className="text-xl font-bold text-gray-900 font-display">Send a Thank You</h2>
-          <p className="text-sm text-gray-500">Make someone's day special</p>
+      <label style={{ display: "block", marginTop: 10, fontWeight: 600 }}>Recipient email</label>
+      <input
+        value={recipientEmail}
+        onChange={(e) => setRecipientEmail(e.target.value)}
+        placeholder="name@example.com"
+        autoComplete="email"
+        style={{ width: "100%", padding: 10, marginTop: 6 }}
+      />
+
+      <label style={{ display: "block", marginTop: 10, fontWeight: 600 }}>Write something real…</label>
+      <textarea
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        rows={4}
+        style={{ width: "100%", padding: 10, marginTop: 6, resize: "vertical" }}
+      />
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+        {presetAmounts.map((a) => (
+          <button
+            key={a.cents}
+            type="button"
+            onClick={() => setAmountCents(a.cents)}
+            style={{
+              padding: "8px 12px",
+              border: "1px solid #ccc",
+              background: amountCents === a.cents ? "#111" : "#fff",
+              color: amountCents === a.cents ? "#fff" : "#111",
+              borderRadius: 8,
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            {a.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 14, fontWeight: 600 }}>Complete the CAPTCHA to create a gift.</div>
+
+      <div style={{ marginTop: 10 }}>
+        <div ref={widgetRef} />
+        {!turnstileReady && !turnstileError && (
+          <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>Loading CAPTCHA…</div>
+        )}
+        {turnstileError && (
+          <div style={{ marginTop: 8, fontSize: 13, color: "#b00020" }}>{turnstileError}</div>
+        )}
+        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>
+          Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
         </div>
       </div>
 
-      <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 relative z-10">
-          <FormField
-            control={form.control}
-            name="amount"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel className="text-gray-700 font-bold ml-1">Optional gift amount</FormLabel>
-                <FormControl>
-                  <div className="relative group">
-                    <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-primary transition-colors" />
-                    <Input 
-                      type="number" 
-                      placeholder="10" 
-                      className="pl-12 text-lg font-bold font-display" 
-                      {...field}
-                      onChange={(e) => field.onChange(Number(e.target.value) * 100)}
-                      value={field.value / 100}
-                    />
-                  </div>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+      <button
+        type="submit"
+        disabled={isSubmitting}
+        style={{
+          marginTop: 14,
+          padding: "10px 14px",
+          borderRadius: 10,
+          border: "1px solid #111",
+          background: isSubmitting ? "#444" : "#111",
+          color: "#fff",
+          fontWeight: 800,
+          cursor: isSubmitting ? "not-allowed" : "pointer",
+          width: "100%",
+        }}
+      >
+        {isSubmitting ? "Creating…" : "Create Gift"}
+      </button>
 
-          <FormField
-            control={form.control}
-            name="recipientEmail"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel className="text-gray-700 font-bold ml-1">Recipient’s email</FormLabel>
-                <FormControl>
-                  <Input placeholder="friend@example.com" className="font-medium" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+      {errorText && (
+        <div style={{ marginTop: 12, color: "#b00020", fontWeight: 700 }}>
+          {errorText}
+        </div>
+      )}
 
-          <FormField
-            control={form.control}
-            name="message"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel className="text-gray-700 font-bold ml-1">Your message (what do you want to say?)</FormLabel>
-                <FormControl>
-                  <div className="space-y-2">
-                    <Textarea 
-                      placeholder="Thanks for being awesome! Here's a little treat for you..." 
-                      className="min-h-[120px] resize-none font-hand text-xl leading-relaxed bg-amber-50/30 border-amber-100 focus:border-amber-300 focus:ring-amber-100" 
-                      {...field} 
-                    />
-                    <div className="flex justify-between text-xs font-medium">
-                      <span className="text-slate-400">Keep it short and sincere. This will be delivered exactly as written.</span>
-                      <span className="text-slate-400">Up to 500 characters</span>
-                    </div>
-                  </div>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <div className="space-y-3">
-            <button
-              type="submit"
-              disabled={createGift.isPending}
-              className="w-full btn-primary py-4 text-lg flex items-center justify-center gap-2 group"
-            >
-              {createGift.isPending ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Sending…
-                </>
-              ) : (
-                <>
-                  Send a Thank You
-                  <Gift className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-                </>
-              )}
-            </button>
-            <p className="text-center text-xs font-medium text-slate-400">
-              Anonymous by default • Anonymous by default • No signup required
-            </p>
-          </div>
-          {createGift.isError && (
-            <p className="text-center text-sm font-medium text-destructive">
-              Something went wrong. Please try again in a moment.
-            </p>
-          )}
-        </form>
-      </Form>
-    </div>
+      {successPublicId && (
+        <div style={{ marginTop: 12, color: "#0a7a2f", fontWeight: 800 }}>
+          Sent. Public ID: {successPublicId}
+        </div>
+      )}
+    </form>
   );
 }
