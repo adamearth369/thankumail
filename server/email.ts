@@ -1,5 +1,3 @@
-import fetch from "node-fetch";
-
 type SendGiftEmailArgs = {
   to: string;
   claimUrl: string;
@@ -34,10 +32,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
   }
 
   const payload = {
-    sender: {
-      email: FROM_EMAIL,
-      name: FROM_NAME,
-    },
+    sender: { email: FROM_EMAIL, name: FROM_NAME },
     to: [{ email: to }],
     subject: "You’ve received a ThankuMail 💛",
     htmlContent: `
@@ -46,7 +41,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
         <p><strong>${formatAmount(amountCents)}</strong> has been sent to you.</p>
         <p style="white-space:pre-wrap">${message || ""}</p>
         <p>
-          <a href="${claimUrl}" 
+          <a href="${claimUrl}"
              style="display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:6px">
             Open your ThankuMail
           </a>
@@ -67,6 +62,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
 
   const started = Date.now();
 
+  // Node 22+ provides global fetch
   const res = await fetch(BREVO_ENDPOINT, {
     method: "POST",
     headers: {
