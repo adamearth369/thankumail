@@ -1,3 +1,5 @@
+import type { Server } from "http";
+import type { Express } from "express";
 import { Router } from "express";
 import crypto from "crypto";
 import { db } from "./db";
@@ -14,6 +16,15 @@ const TURNSTILE_SECRET =
   process.env.TURNSTILE_SECRET_KEY ||
   process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY ||
   "";
+
+// DEV/TEST bypass (set TURNSTILE_BYPASS=1 in Render/locally ONLY when testing)
+const TURNSTILE_BYPASS = (process.env.TURNSTILE_BYPASS || "").toString() === "1";
+
+// Optional allowlist for bypass (recommended)
+const TURNSTILE_BYPASS_IPS = (process.env.TURNSTILE_BYPASS_IPS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 function nowIso() {
   return new Date().toISOString();
@@ -38,50 +49,6 @@ function clampInt(n: number) {
   return n < 0 ? 0 : Math.floor(n);
 }
 
-/* -------------------- TURNSTILE -------------------- */
-async function verifyTurnstile(turnstileToken: string, ip: string) {
-  if (!TURNSTILE_SECRET) {
-    // If you want to hard-require Turnstile always, change this to throw.
-    logEvent("turnstile_secret_missing");
-    return { ok: true };
-  }
-
-  try {
-    const form = new URLSearchParams();
-    form.set("secret", TURNSTILE_SECRET);
-    form.set("response", turnstileToken);
-    if (ip) form.set("remoteip", ip);
-
-    const resp = await fetch(
-      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-      {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: form.toString(),
-      }
-    );
-
-    const json: any = await resp.json().catch(() => null);
-    const success = !!json?.success;
-
-    if (!success) {
-      logEvent("turnstile_failed", {
-        ip,
-        codes: json?.["error-codes"] || [],
-      });
-      return { ok: false, codes: json?.["error-codes"] || [] };
-    }
-
-    logEvent("turnstile_passed", { ip });
-    return { ok: true };
-  } catch (e: any) {
-    logEvent("turnstile_error", { ip, error: String(e?.message || e) });
-    // Fail closed (safer): treat as failure
-    return { ok: false, codes: ["turnstile_unreachable"] };
-  }
-}
-
-/* -------------------- HELPERS -------------------- */
 function baseUrlFromReq(req: any) {
   const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
   if (envBase) return envBase.replace(/\/+$/, "");
@@ -96,13 +63,73 @@ function computeUnlockInSec(createdAt: Date) {
   return clampInt(remaining);
 }
 
+/* -------------------- TURNSTILE -------------------- */
+function bypassAllowed(ip: string) {
+  if (!TURNSTILE_BYPASS) return false;
+  if (TURNSTILE_BYPASS_IPS.length === 0) return true; // no allowlist set -> bypass allowed (dev only)
+  return TURNSTILE_BYPASS_IPS.includes(ip);
+}
+
+/* -------------------- TEMP DEBUG (SAFE) -------------------- */
+router.get("/api/__debug", (req, res) => {
+  const ip = getIp(req);
+  return res.json({
+    ok: true,
+    detectedIp: ip,
+    bypassEnabled: TURNSTILE_BYPASS,
+    bypassIps: TURNSTILE_BYPASS_IPS,
+    bypassWouldApply: bypassAllowed(ip),
+    turnstileSecretPresent: !!TURNSTILE_SECRET,
+    minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
+  });
+});
+
+async function verifyTurnstile(turnstileToken: string, ip: string) {
+  // DEV/TEST bypass
+  if (bypassAllowed(ip)) {
+    logEvent("turnstile_bypassed", { ip });
+    return { ok: true as const };
+  }
+
+  if (!turnstileToken) {
+    return { ok: false as const, codes: ["missing-input-response"] };
+  }
+
+  if (!TURNSTILE_SECRET) {
+    logEvent("turnstile_secret_missing");
+    return { ok: false as const, codes: ["missing-secret"] };
+  }
+
+  try {
+    const form = new URLSearchParams();
+    form.set("secret", TURNSTILE_SECRET);
+    form.set("response", turnstileToken);
+    if (ip) form.set("remoteip", ip);
+
+    const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    const json: any = await resp.json().catch(() => null);
+    const success = !!json?.success;
+
+    if (!success) {
+      logEvent("turnstile_failed", { ip, codes: json?.["error-codes"] || [] });
+      return { ok: false as const, codes: json?.["error-codes"] || [] };
+    }
+
+    logEvent("turnstile_passed", { ip });
+    return { ok: true as const };
+  } catch (e: any) {
+    logEvent("turnstile_error", { ip, error: String(e?.message || e) });
+    return { ok: false as const, codes: ["turnstile_unreachable"] };
+  }
+}
+
 /* ==================================================
    POST /api/gifts
-   - Requires turnstileToken
-   - Enforces min amount
-   - Generates claimToken (kept private)
-   - Returns publicId only (keeps claimToken private)
-   - Logs claimUrl so you can test without exposing token in API responses
 ================================================== */
 router.post("/api/gifts", async (req, res) => {
   const ip = getIp(req);
@@ -113,13 +140,14 @@ router.post("/api/gifts", async (req, res) => {
 
   const turnstileToken = (req.body?.turnstileToken || "").toString().trim();
 
-  if (!turnstileToken) {
-    return res.status(400).json({ error: "Missing CAPTCHA token", field: "turnstileToken" });
-  }
-
+  // Verify Turnstile unless bypass is enabled
   const ts = await verifyTurnstile(turnstileToken, ip);
   if (!ts.ok) {
-    return res.status(400).json({ error: "CAPTCHA failed", field: "turnstileToken" });
+    return res.status(400).json({
+      error: "Missing CAPTCHA token",
+      field: "turnstileToken",
+      codes: (ts as any).codes || [],
+    });
   }
 
   if (!recipientEmail || !recipientEmail.includes("@")) {
@@ -130,7 +158,6 @@ router.post("/api/gifts", async (req, res) => {
     return res.status(400).json({ error: "Minimum amount is $10", field: "amount" });
   }
 
-  // claimToken stays server-side; email uses /claim/<claimToken> in the future
   const claimToken = crypto.randomBytes(12).toString("hex");
 
   const [gift] = await db
@@ -153,18 +180,14 @@ router.post("/api/gifts", async (req, res) => {
     recipientDomain: recipientEmail.split("@")[1] || "",
     ip,
     minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
-    claimUrl, // ✅ critical for your testing
+    claimUrl,
   });
 
-  // Keep response stable for UI
-  return res.json({
-    publicId: (gift as any).publicId,
-  });
+  return res.json({ publicId: (gift as any).publicId });
 });
 
 /* ==================================================
    GET /api/gifts/:publicId
-   - Returns gift info + correct unlockInSec
 ================================================== */
 router.get("/api/gifts/:publicId", async (req, res) => {
   const publicId = (req.params.publicId || "").toString().trim();
@@ -179,25 +202,19 @@ router.get("/api/gifts/:publicId", async (req, res) => {
   const unlockInSec = computeUnlockInSec(createdAt);
 
   return res.json({
-    id: (gift as any).id,
     publicId: (gift as any).publicId,
-    recipientEmail: (gift as any).recipientEmail,
-    message: (gift as any).message,
     amount: (gift as any).amount,
+    message: (gift as any).message,
     isClaimed: (gift as any).isClaimed,
     createdAt: (gift as any).createdAt,
     claimedAt: (gift as any).claimedAt,
-    unlockInSec,
     minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
-    serverNow: new Date().toISOString(),
+    unlockInSec,
   });
 });
 
 /* ==================================================
-   POST /api/gifts/:publicId/claim
-   - Enforces delay: returns 429 + retryAfterSec
-   - Prevents double-claim: returns 409 Already claimed
-   - Atomic update: update where isClaimed=false
+   POST /api/gifts/:publicId/claim  (delay enforced)
 ================================================== */
 router.post("/api/gifts/:publicId/claim", async (req, res) => {
   const ip = getIp(req);
@@ -232,15 +249,12 @@ router.post("/api/gifts/:publicId/claim", async (req, res) => {
 
   const claimedAt = new Date();
 
-  // Atomic: only claim if still unclaimed
   const updated = await db
     .update(gifts)
     .set({ isClaimed: true, claimedAt } as any)
     .where(eq((gifts as any).publicId, publicId))
     .returning();
 
-  // If returning() returns the row even if already claimed depends on db;
-  // We already checked isClaimed above, but keep a sanity fallback.
   if (!updated || updated.length === 0) {
     logEvent("claim_update_failed", { publicId });
     return res.status(409).json({ error: "Already claimed" });
@@ -256,19 +270,8 @@ router.post("/api/gifts/:publicId/claim", async (req, res) => {
   });
 });
 
-/* ==================================================
-   (OPTIONAL) Back-compat route if something still calls /api/gifts/:token/claim
-   - It will treat param as publicId
-================================================== */
-router.post("/api/gifts/:token/claim", async (req, res, next) => {
-  // If the token looks like a publicId, hand off to the publicId claim handler by rewriting params.
-  // Otherwise, let it fall through.
-  const token = (req.params.token || "").toString().trim();
-  if (token && token.length >= 6 && token.length <= 32) {
-    (req as any).params.publicId = token;
-    return (router as any).handle(req, res, next);
-  }
-  return res.status(404).json({ error: "Gift not found" });
-});
+export async function registerRoutes(_httpServer: Server, app: Express) {
+  app.use(router);
+}
 
 export default router;
