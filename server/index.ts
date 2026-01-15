@@ -48,10 +48,9 @@ function logEmail(event: string, fields: Record<string, any> = {}) {
   );
 }
 
-function redact(s: string) {
-  if (!s) return "";
-  if (s.length <= 8) return "***";
-  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+function emailDomain(to: string) {
+  const parts = (to || "").split("@");
+  return parts.length === 2 ? parts[1] : "";
 }
 
 export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEmailResult> {
@@ -104,11 +103,11 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
 
     const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
 
+    // IMPORTANT: never log api keys or full recipient email
     logEmail("email_api_send_start", {
-      to,
+      toDomain: emailDomain(to),
       fromEmail,
       endpoint,
-      apiKey: redact(apiKey),
     });
 
     // IMPORTANT: Brevo API uses header "api-key"
@@ -138,7 +137,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
 
     if (!resp.ok) {
       logEmail("email_api_send_failed", {
-        to,
+        toDomain: emailDomain(to),
         status: resp.status,
         body: bodyJson ?? bodyText?.slice(0, 500),
         ms: Date.now() - started,
@@ -149,7 +148,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEm
     const messageId = (bodyJson && (bodyJson.messageId || bodyJson["messageId"])) || "unknown";
 
     logEmail("email_api_send_ok", {
-      to,
+      toDomain: emailDomain(to),
       messageId,
       ms: Date.now() - started,
     });
