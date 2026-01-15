@@ -23,11 +23,18 @@ function formatAmount(cents: number) {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+function domainOf(email: string) {
+  const parts = (email || "").split("@");
+  return parts.length === 2 ? parts[1] : "";
+}
+
 export async function sendGiftEmail(args: SendGiftEmailArgs) {
   const { to, claimUrl, message, amountCents } = args;
 
+  const toDomain = domainOf(to);
+
   if (!BREVO_API_KEY) {
-    logEvent("email_skipped_no_api_key", { toDomain: to.split("@")[1] || "" });
+    logEvent("email_skipped_no_api_key", { toDomain });
     return;
   }
 
@@ -54,15 +61,17 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
     `,
   };
 
+  const started = Date.now();
+
+  // IMPORTANT: never log api keys or full recipient email
   logEvent("email_api_send_start", {
-    toDomain: to.split("@")[1] || "",
+    attempt: 1,
+    toDomain,
     fromEmail: FROM_EMAIL,
+    fromName: FROM_NAME,
     endpoint: BREVO_ENDPOINT,
   });
 
-  const started = Date.now();
-
-  // Node 22+ provides global fetch
   const res = await fetch(BREVO_ENDPOINT, {
     method: "POST",
     headers: {
@@ -78,6 +87,8 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     logEvent("email_api_send_failed", {
+      attempt: 1,
+      toDomain,
       status: res.status,
       ms,
       response: text.slice(0, 300),
@@ -88,6 +99,8 @@ export async function sendGiftEmail(args: SendGiftEmailArgs) {
   const json: any = await res.json().catch(() => null);
 
   logEvent("email_api_send_ok", {
+    attempt: 1,
+    toDomain,
     messageId: json?.messageId || null,
     ms,
   });
