@@ -3,8 +3,8 @@ import cors from "cors";
 import path from "path";
 import { createServer } from "http";
 
-// NOTE: routes live in server/, not src/
-import { registerRoutes } from "../server/routes";
+// Import the default router from server/routes.ts
+import apiRouter from "../server/routes";
 
 const app = express();
 
@@ -15,8 +15,15 @@ app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
 
+// Register ALL API routes first (no SPA interference)
+app.use(apiRouter);
+
+// Hard rule: /api must never serve the SPA fallback
+app.all("/api", (_req, res) => res.status(404).json({ message: "Not found" }));
+app.all("/api/*", (_req, res) => res.status(404).json({ message: "Not found" }));
+
 function mountStaticAndSpa(app: express.Express) {
-  // dist/index.cjs lives in dist/, and client build outputs to dist/public
+  // In the built server, __dirname points to dist/ and client outputs to dist/public
   const publicDir = path.join(__dirname, "public");
 
   // Static assets
@@ -30,14 +37,6 @@ function mountStaticAndSpa(app: express.Express) {
 
 async function main() {
   const httpServer = createServer(app);
-
-  // Register ALL API routes first
-  await registerRoutes(httpServer, app);
-
-  // Hard rule: /api must never serve the SPA
-  // Covers: /api, /api/, /api/anything...
-  app.all("/api", (_req, res) => res.status(404).json({ message: "Not found" }));
-  app.all("/api/*", (_req, res) => res.status(404).json({ message: "Not found" }));
 
   // Now mount static + SPA fallback
   mountStaticAndSpa(app);
