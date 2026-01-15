@@ -1,17 +1,7 @@
-// ===============================
-// FILE TO REPLACE (FULL FILE)
-// WHERE TO PASTE: client/src/pages/Home.tsx
-// PURPOSE:
-// - Fix UI "Unexpected response" by matching the new API response { publicId }
-// - Clear fields on success
-// - Keep Turnstile behavior and error handling
-// - Show a simple "Gift created" box with the publicId
-// ===============================
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type CreateGiftResponse =
-  | { publicId: string } // NEW API SHAPE
+  | { publicId: string }
   | { error: string; issues?: any[]; field?: string; retryAfterSec?: number };
 
 function moneyToCents(dollars: number) {
@@ -63,14 +53,11 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string>("");
 
-  // NEW: result uses publicId only (backend returns publicId)
   const [result, setResult] = useState<{
-    publicId: string;
     recipient: string;
-    emailStatus: "sent";
   } | null>(null);
 
-  // Turnstile state
+  // Turnstile
   const siteKey = (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || "";
   const [turnstileReady, setTurnstileReady] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string>("");
@@ -84,44 +71,26 @@ export default function Home() {
   const canSubmit = useMemo(() => {
     if (!isEmail(recipientEmail)) return false;
     if (!message.trim()) return false;
-    if (!Number.isFinite(amountDollars)) return false;
     if (amountCents < 1000) return false;
-
-    // If a site key is present, require a token before enabling submit.
     if (siteKey && !turnstileToken) return false;
-
     return true;
-  }, [recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken]);
+  }, [recipientEmail, message, amountCents, siteKey, turnstileToken]);
 
-  // Initialize Turnstile widget (explicit render)
   useEffect(() => {
+    if (!siteKey) return;
+
     let cancelled = false;
 
     async function init() {
-      setTurnstileError("");
-      setTurnstileReady(false);
-
-      if (!siteKey) {
-        // No site key configured: run without widget (safe rollout / dev)
-        return;
-      }
-
       try {
         await loadTurnstileScript();
-        if (cancelled) return;
-
-        if (!window.turnstile) {
-          setTurnstileError("CAPTCHA failed to load. Please refresh.");
-          return;
-        }
+        if (cancelled || !window.turnstile || !turnstileContainerRef.current) return;
 
         setTurnstileReady(true);
 
-        // Render widget if not rendered yet
-        if (turnstileContainerRef.current && !turnstileWidgetIdRef.current) {
-          const widgetId = window.turnstile.render(turnstileContainerRef.current, {
+        if (!turnstileWidgetIdRef.current) {
+          turnstileWidgetIdRef.current = window.turnstile.render(turnstileContainerRef.current, {
             sitekey: siteKey,
-            theme: "light",
             callback: (token: string) => {
               setTurnstileToken(token || "");
               setTurnstileError("");
@@ -132,19 +101,16 @@ export default function Home() {
             },
             "error-callback": () => {
               setTurnstileToken("");
-              setTurnstileError("CAPTCHA error. Please refresh and try again.");
+              setTurnstileError("CAPTCHA error. Please refresh.");
             },
           });
-
-          turnstileWidgetIdRef.current = widgetId;
         }
-      } catch (e: any) {
-        setTurnstileError(String(e?.message || e || "CAPTCHA failed to load."));
+      } catch {
+        setTurnstileError("CAPTCHA failed to load. Please refresh.");
       }
     }
 
     init();
-
     return () => {
       cancelled = true;
     };
@@ -154,9 +120,7 @@ export default function Home() {
     if (!siteKey) return;
     try {
       const id = turnstileWidgetIdRef.current;
-      if (id && window.turnstile) {
-        window.turnstile.reset(id);
-      }
+      if (id && window.turnstile) window.turnstile.reset(id);
     } catch {}
     setTurnstileToken("");
   }
@@ -167,7 +131,6 @@ export default function Home() {
 
     setErr("");
     setTurnstileError("");
-    setResult(null);
 
     const email = recipientEmail.trim();
     const msg = message.trim();
@@ -175,10 +138,7 @@ export default function Home() {
     if (!isEmail(email)) return setErr("Please enter a valid email.");
     if (!msg) return setErr("Please write a message.");
     if (amountCents < 1000) return setErr("Minimum amount is $10.");
-
-    if (siteKey && !turnstileToken) {
-      return setTurnstileError("Please complete the CAPTCHA.");
-    }
+    if (siteKey && !turnstileToken) return setTurnstileError("Please complete the CAPTCHA.");
 
     setSubmitting(true);
     try {
@@ -196,50 +156,29 @@ export default function Home() {
       const data = (await r.json().catch(() => ({}))) as CreateGiftResponse;
 
       if (!r.ok) {
-        const zodIssue = Array.isArray((data as any)?.issues) && (data as any).issues?.[0]?.message;
-
-        const field = (data as any)?.field;
-        const apiErr = (data as any)?.error || zodIssue || "Something went wrong.";
-
-        const captchaish =
-          field === "turnstileToken" ||
-          /captcha/i.test(apiErr) ||
-          /turnstile/i.test(apiErr) ||
-          /verification failed/i.test(apiErr);
-
-        if (captchaish) {
+        const apiErr = (data as any)?.error || "Something went wrong.";
+        if ((data as any)?.field === "turnstileToken") {
           setTurnstileError(apiErr);
           resetTurnstile();
           return;
         }
-
         setErr(apiErr);
         resetTurnstile();
         return;
       }
 
-      // ✅ NEW SUCCESS CONDITION: publicId exists
-      const publicId = (data as any)?.publicId;
-      if (publicId && typeof publicId === "string") {
-        setResult({
-          publicId,
-          recipient: email,
-          emailStatus: "sent",
-        });
-
-        // Clear form on success
-        resetTurnstile();
+      if ((data as any)?.publicId) {
+        setResult({ recipient: email });
         setRecipientEmail("");
         setMessage("");
         setAmountDollars(10);
+        resetTurnstile();
         return;
       }
 
       setErr("Unexpected response.");
-      resetTurnstile();
     } catch (e: any) {
-      setErr(String(e?.message || e || "Network error"));
-      resetTurnstile();
+      setErr(String(e?.message || "Network error"));
     } finally {
       setSubmitting(false);
     }
@@ -254,110 +193,87 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-white via-white to-violet-50 text-slate-900">
-      <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-2xl bg-violet-600 shadow-sm" />
-          <div className="leading-tight">
-            <div className="text-sm font-semibold tracking-tight">ThanküMail</div>
-            <div className="text-xs text-slate-500">Send a gift with a real message.</div>
-          </div>
-        </div>
-      </header>
+      <main className="mx-auto max-w-xl px-6 pb-20 pt-10">
+        <h1 className="text-4xl font-extrabold tracking-tight">
+          A small gift.
+          <span className="block text-violet-700">A message they’ll remember.</span>
+        </h1>
 
-      <main className="mx-auto grid max-w-6xl grid-cols-1 gap-10 px-6 pb-20 pt-6 lg:grid-cols-2">
-        <section>
-          <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
-            A small gift.
-            <span className="block text-violet-700">A message they’ll remember.</span>
-          </h1>
-          <p className="mt-4 max-w-xl text-base leading-relaxed text-slate-600">
-            Your words arrive first. The gift follows when they’re ready.
-          </p>
-        </section>
+        {!result && (
+          <form onSubmit={onSubmit} className="mt-8 space-y-4 rounded-3xl border bg-white p-6 shadow-sm">
+            <input
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              placeholder="Recipient email"
+              className="w-full rounded-2xl border px-4 py-3"
+            />
 
-        <section>
-          <div className="rounded-3xl border border-violet-100 bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-bold tracking-tight">Create a ThanküMail</h2>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="Write something real…"
+              className="h-28 w-full rounded-2xl border px-4 py-3"
+            />
 
-            <form onSubmit={onSubmit} className="mt-6 space-y-4">
-              <input
-                value={recipientEmail}
-                onChange={(e) => setRecipientEmail(e.target.value)}
-                placeholder="Recipient email"
-                className="w-full rounded-2xl border px-4 py-3"
-              />
+            <div className="flex gap-2">
+              {presets.map((p) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => setAmountDollars(p.value)}
+                  className={`rounded-xl px-4 py-2 text-sm ${
+                    amountDollars === p.value ? "bg-violet-600 text-white" : "border bg-white"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
 
-              <textarea
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder="Write something real…"
-                className="h-28 w-full rounded-2xl border px-4 py-3"
-                maxLength={1000}
-              />
-
-              <div className="flex gap-2">
-                {presets.map((p) => (
-                  <button
-                    key={p.value}
-                    type="button"
-                    onClick={() => setAmountDollars(p.value)}
-                    className={`rounded-xl px-4 py-2 text-sm ${
-                      amountDollars === p.value ? "bg-violet-600 text-white" : "border bg-white"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
+            {siteKey && (
+              <div className="space-y-2">
+                <div ref={turnstileContainerRef} className="min-h-[70px] rounded-2xl border bg-white px-4 py-4" />
+                {turnstileError && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                    {turnstileError}
+                  </div>
+                )}
               </div>
+            )}
 
-              {siteKey ? (
-                <div className="space-y-2">
-                  <div className="text-xs text-slate-500">
-                    {turnstileReady ? "Complete the CAPTCHA to create a gift." : "Loading CAPTCHA…"}
-                  </div>
-                  <div ref={turnstileContainerRef} className="min-h-[70px] rounded-2xl border bg-white px-4 py-4" />
-                  {turnstileError ? (
-                    <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                      {turnstileError}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
+            {err && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {err}
+              </div>
+            )}
 
-              {err && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {err}
-                </div>
-              )}
+            <button
+              type="submit"
+              disabled={!canSubmit || submitting}
+              className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
+            >
+              {submitting ? "Creating…" : siteKey && !turnstileToken ? "Complete CAPTCHA" : "Create gift"}
+            </button>
 
-              {result && (
-                <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm">
-                  <div className="font-semibold text-slate-900">Gift created</div>
-                  <div className="mt-1 text-slate-700">
-                    Email sent to <span className="font-semibold">{result.recipient}</span>
-                  </div>
-                  <div className="mt-2 text-slate-700">
-                    Public ID: <span className="font-mono text-xs">{result.publicId}</span>
-                  </div>
-                </div>
-              )}
+            {siteKey && (
+              <div className="text-[11px] text-slate-500">
+                Protected by Cloudflare Turnstile.
+              </div>
+            )}
+          </form>
+        )}
 
-              <button
-                type="submit"
-                disabled={!canSubmit || submitting}
-                className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
-              >
-                {submitting ? "Creating…" : siteKey && !turnstileToken ? "Complete CAPTCHA" : "Create gift"}
-              </button>
-
-              {siteKey ? (
-                <div className="text-[11px] leading-relaxed text-slate-500">
-                  Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
-                </div>
-              ) : null}
-            </form>
+        {result && (
+          <div className="mt-8 rounded-3xl border border-violet-200 bg-violet-50 p-6 text-sm">
+            <div className="text-lg font-semibold">Your ThanküMail has been delivered.</div>
+            <div className="mt-2 text-slate-700">
+              Email sent to <span className="font-semibold">{result.recipient}</span>
+            </div>
+            <div className="mt-3 text-slate-600">
+              If they don’t receive it within 48 hours, a reminder email will be sent.
+            </div>
           </div>
-        </section>
+        )}
       </main>
     </div>
   );
