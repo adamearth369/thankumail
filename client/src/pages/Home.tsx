@@ -1,15 +1,17 @@
+// ===============================
+// FILE TO REPLACE (FULL FILE)
+// WHERE TO PASTE: client/src/pages/Home.tsx
+// PURPOSE:
+// - Fix UI "Unexpected response" by matching the new API response { publicId }
+// - Clear fields on success
+// - Keep Turnstile behavior and error handling
+// - Show a simple "Gift created" box with the publicId
+// ===============================
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type CreateGiftResponse =
-  | {
-      success: true;
-      giftId: string;
-      claimLink: string;
-      claimUrl?: string;
-      emailSent?: boolean;
-      emailError?: string | null;
-      email?: { ok: boolean };
-    }
+  | { publicId: string } // NEW API SHAPE
   | { error: string; issues?: any[]; field?: string; retryAfterSec?: number };
 
 function moneyToCents(dollars: number) {
@@ -19,14 +21,6 @@ function moneyToCents(dollars: number) {
 
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
-}
-
-function absoluteLink(maybeRelative: string) {
-  if (!maybeRelative) return maybeRelative;
-  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
-  return `${origin}${path}`;
 }
 
 /* -------------------- Turnstile helpers -------------------- */
@@ -68,13 +62,13 @@ export default function Home() {
 
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string>("");
+
+  // NEW: result uses publicId only (backend returns publicId)
   const [result, setResult] = useState<{
-    giftId: string;
-    claimLink: string;
-    emailStatus: "sent" | "queued";
+    publicId: string;
     recipient: string;
+    emailStatus: "sent";
   } | null>(null);
-  const [copied, setCopied] = useState(false);
 
   // Turnstile state
   const siteKey = (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || "";
@@ -94,7 +88,6 @@ export default function Home() {
     if (amountCents < 1000) return false;
 
     // If a site key is present, require a token before enabling submit.
-    // (When TURNSTILE_ENFORCE is flipped on server, this prevents confusing 400s.)
     if (siteKey && !turnstileToken) return false;
 
     return true;
@@ -170,10 +163,11 @@ export default function Home() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
+
     setErr("");
     setTurnstileError("");
     setResult(null);
-    setCopied(false);
 
     const email = recipientEmail.trim();
     const msg = message.trim();
@@ -207,7 +201,6 @@ export default function Home() {
         const field = (data as any)?.field;
         const apiErr = (data as any)?.error || zodIssue || "Something went wrong.";
 
-        // If server says captcha missing/failed, show it under the widget and reset.
         const captchaish =
           field === "turnstileToken" ||
           /captcha/i.test(apiErr) ||
@@ -221,22 +214,20 @@ export default function Home() {
         }
 
         setErr(apiErr);
-        // Some errors should also refresh token (safer)
         resetTurnstile();
         return;
       }
 
-      if ((data as any)?.success) {
-        const claimLink = absoluteLink((data as any).claimUrl || (data as any).claimLink);
-
+      // ✅ NEW SUCCESS CONDITION: publicId exists
+      const publicId = (data as any)?.publicId;
+      if (publicId && typeof publicId === "string") {
         setResult({
-          giftId: (data as any).giftId,
-          claimLink,
+          publicId,
           recipient: email,
-          emailStatus: (data as any)?.emailSent === false || (data as any)?.email?.ok === false ? "queued" : "sent",
+          emailStatus: "sent",
         });
 
-        // Reset token after a successful create (one-time use)
+        // Clear form on success
         resetTurnstile();
         setRecipientEmail("");
         setMessage("");
@@ -252,15 +243,6 @@ export default function Home() {
     } finally {
       setSubmitting(false);
     }
-  }
-
-  async function copyLink() {
-    if (!result?.claimLink) return;
-    try {
-      await navigator.clipboard.writeText(result.claimLink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {}
   }
 
   const presets = [
@@ -328,16 +310,12 @@ export default function Home() {
                 ))}
               </div>
 
-              {/* Turnstile widget (shows only when VITE_TURNSTILE_SITE_KEY is set) */}
               {siteKey ? (
                 <div className="space-y-2">
                   <div className="text-xs text-slate-500">
                     {turnstileReady ? "Complete the CAPTCHA to create a gift." : "Loading CAPTCHA…"}
                   </div>
-                  <div
-                    ref={turnstileContainerRef}
-                    className="min-h-[70px] rounded-2xl border bg-white px-4 py-4"
-                  />
+                  <div ref={turnstileContainerRef} className="min-h-[70px] rounded-2xl border bg-white px-4 py-4" />
                   {turnstileError ? (
                     <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                       {turnstileError}
@@ -356,19 +334,10 @@ export default function Home() {
                 <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm">
                   <div className="font-semibold text-slate-900">Gift created</div>
                   <div className="mt-1 text-slate-700">
-                    Email {result.emailStatus === "sent" ? "sent to" : "queued for"}{" "}
-                    <span className="font-semibold">{result.recipient}</span>
+                    Email sent to <span className="font-semibold">{result.recipient}</span>
                   </div>
-
-                  <div className="mt-3 flex gap-2">
-                    <input readOnly value={result.claimLink} className="flex-1 rounded-xl border bg-white px-3 py-2 text-xs" />
-                    <button
-                      type="button"
-                      onClick={copyLink}
-                      className="rounded-xl bg-violet-600 px-4 py-2 text-xs text-white"
-                    >
-                      {copied ? "Copied" : "Copy"}
-                    </button>
+                  <div className="mt-2 text-slate-700">
+                    Public ID: <span className="font-mono text-xs">{result.publicId}</span>
                   </div>
                 </div>
               )}
