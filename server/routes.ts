@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { sendGiftEmail } from "./email";
 
 const router = Router();
 
@@ -23,6 +24,9 @@ const TURNSTILE_BYPASS_IPS = (process.env.TURNSTILE_BYPASS_IPS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+// hard timeout for email send so we always log something
+const EMAIL_SEND_TIMEOUT_MS = Number(process.env.EMAIL_SEND_TIMEOUT_MS || 12000);
 
 function nowIso() {
   return new Date().toISOString();
@@ -59,6 +63,14 @@ function computeUnlockInSec(createdAt: Date) {
   const elapsed = secondsBetween(createdAt, new Date());
   const remaining = MIN_CLAIM_DELAY_SEC - elapsed;
   return clampInt(remaining);
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let t: any;
+  const timeout = new Promise<T>((_, reject) => {
+    t = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
 }
 
 /* -------------------- DB HELPERS -------------------- */
@@ -177,6 +189,34 @@ router.post("/api/gifts", async (req, res) => {
       minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
       claimUrl,
     });
+
+    // Non-blocking email send: always logs queued + sent/failed
+    logEvent("email_send_queued", { publicId: (gift as any).publicId });
+
+    (async () => {
+      try {
+        await withTimeout(
+          sendGiftEmail({
+            to: recipientEmail,
+            claimUrl,
+            message,
+            amountCents: amount,
+          } as any),
+          EMAIL_SEND_TIMEOUT_MS,
+          "sendGiftEmail"
+        );
+
+        logEvent("email_sent", {
+          publicId: (gift as any).publicId,
+          toDomain: recipientEmail.split("@")[1] || "",
+        });
+      } catch (e: any) {
+        logEvent("email_failed", {
+          publicId: (gift as any).publicId,
+          error: String(e?.message || e),
+        });
+      }
+    })();
 
     return res.json({ publicId: (gift as any).publicId });
   } catch (e: any) {
