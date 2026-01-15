@@ -78,20 +78,6 @@ function bypassAllowed(ip: string) {
   return TURNSTILE_BYPASS_IPS.includes(ip);
 }
 
-/* -------------------- TEMP DEBUG (SAFE) -------------------- */
-router.get("/api/__debug", (req, res) => {
-  const ip = getIp(req);
-  return res.json({
-    ok: true,
-    detectedIp: ip,
-    bypassEnabled: TURNSTILE_BYPASS,
-    bypassIps: TURNSTILE_BYPASS_IPS,
-    bypassWouldApply: bypassAllowed(ip),
-    turnstileSecretPresent: !!TURNSTILE_SECRET,
-    minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
-  });
-});
-
 async function verifyTurnstile(turnstileToken: string, ip: string) {
   if (bypassAllowed(ip)) {
     logEvent("turnstile_bypassed", { ip });
