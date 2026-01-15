@@ -17,10 +17,8 @@ const TURNSTILE_SECRET =
   process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY ||
   "";
 
-// DEV/TEST bypass (set TURNSTILE_BYPASS=1 in Render/locally ONLY when testing)
 const TURNSTILE_BYPASS = (process.env.TURNSTILE_BYPASS || "").toString() === "1";
 
-// Optional allowlist for bypass (recommended)
 const TURNSTILE_BYPASS_IPS = (process.env.TURNSTILE_BYPASS_IPS || "")
   .split(",")
   .map((s) => s.trim())
@@ -65,7 +63,6 @@ function computeUnlockInSec(createdAt: Date) {
 
 /* -------------------- DB HELPERS -------------------- */
 async function getGiftByPublicId(publicId: string) {
-  // IMPORTANT: avoid db.query.* (it is undefined in your runtime)
   const rows = await db
     .select()
     .from(gifts as any)
@@ -77,7 +74,7 @@ async function getGiftByPublicId(publicId: string) {
 /* -------------------- TURNSTILE -------------------- */
 function bypassAllowed(ip: string) {
   if (!TURNSTILE_BYPASS) return false;
-  if (TURNSTILE_BYPASS_IPS.length === 0) return true; // dev only
+  if (TURNSTILE_BYPASS_IPS.length === 0) return true;
   return TURNSTILE_BYPASS_IPS.includes(ip);
 }
 
@@ -96,7 +93,6 @@ router.get("/api/__debug", (req, res) => {
 });
 
 async function verifyTurnstile(turnstileToken: string, ip: string) {
-  // DEV/TEST bypass
   if (bypassAllowed(ip)) {
     logEvent("turnstile_bypassed", { ip });
     return { ok: true as const };
@@ -151,7 +147,6 @@ router.post("/api/gifts", async (req, res) => {
 
   const turnstileToken = (req.body?.turnstileToken || "").toString().trim();
 
-  // Verify Turnstile unless bypass is enabled
   const ts = await verifyTurnstile(turnstileToken, ip);
   if (!ts.ok) {
     return res.status(400).json({
@@ -169,7 +164,6 @@ router.post("/api/gifts", async (req, res) => {
     return res.status(400).json({ error: "Minimum amount is $10", field: "amount" });
   }
 
-  // public_id is NOT NULL in DB
   const publicId = crypto.randomBytes(12).toString("hex");
   const claimToken = crypto.randomBytes(12).toString("hex");
 
@@ -236,7 +230,7 @@ router.get("/api/gifts/:publicId", async (req, res) => {
 });
 
 /* ==================================================
-   POST /api/gifts/:publicId/claim  (delay enforced)
+   POST /api/gifts/:publicId/claim
 ================================================== */
 router.post("/api/gifts/:publicId/claim", async (req, res) => {
   const ip = getIp(req);
