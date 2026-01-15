@@ -66,7 +66,7 @@ function computeUnlockInSec(createdAt: Date) {
 /* -------------------- TURNSTILE -------------------- */
 function bypassAllowed(ip: string) {
   if (!TURNSTILE_BYPASS) return false;
-  if (TURNSTILE_BYPASS_IPS.length === 0) return true; // no allowlist set -> bypass allowed (dev only)
+  if (TURNSTILE_BYPASS_IPS.length === 0) return true; // dev only
   return TURNSTILE_BYPASS_IPS.includes(ip);
 }
 
@@ -158,32 +158,40 @@ router.post("/api/gifts", async (req, res) => {
     return res.status(400).json({ error: "Minimum amount is $10", field: "amount" });
   }
 
+  // FIX: public_id is NOT NULL in DB, so we must generate it
+  const publicId = crypto.randomBytes(12).toString("hex"); // 24 chars, collision-resistant
   const claimToken = crypto.randomBytes(12).toString("hex");
 
-  const [gift] = await db
-    .insert(gifts)
-    .values({
-      recipientEmail,
-      message,
+  try {
+    const [gift] = await db
+      .insert(gifts)
+      .values({
+        publicId,
+        recipientEmail,
+        message,
+        amount,
+        isClaimed: false,
+        claimToken,
+      } as any)
+      .returning();
+
+    const base = baseUrlFromReq(req);
+    const claimUrl = `${base}/claim/${claimToken}`;
+
+    logEvent("gift_created", {
+      publicId: (gift as any).publicId,
       amount,
-      isClaimed: false,
-      claimToken,
-    } as any)
-    .returning();
+      recipientDomain: recipientEmail.split("@")[1] || "",
+      ip,
+      minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
+      claimUrl,
+    });
 
-  const base = baseUrlFromReq(req);
-  const claimUrl = `${base}/claim/${claimToken}`;
-
-  logEvent("gift_created", {
-    publicId: (gift as any).publicId,
-    amount,
-    recipientDomain: recipientEmail.split("@")[1] || "",
-    ip,
-    minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
-    claimUrl,
-  });
-
-  return res.json({ publicId: (gift as any).publicId });
+    return res.json({ publicId: (gift as any).publicId });
+  } catch (e: any) {
+    logEvent("gift_create_error", { ip, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Failed to create gift" });
+  }
 });
 
 /* ==================================================
