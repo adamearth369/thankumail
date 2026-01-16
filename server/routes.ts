@@ -1,4 +1,4 @@
-import type { Express, Request, Response } from "express";
+import type { Request, Response } from "express";
 import { Router } from "express";
 import crypto from "crypto";
 import { z } from "zod";
@@ -44,219 +44,215 @@ const CreateGiftSchema = z.object({
   turnstileToken: z.string().min(1).optional(),
 });
 
-function isProbablyCaptchaError(msg: string) {
-  return /captcha|turnstile|verification/i.test(msg || "");
-}
+/* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
+/**
+ * IMPORTANT:
+ * src/index.ts imports this as a default export:
+ *   import apiRouter from "../server/routes";
+ */
+const router = Router();
 
-/* -------------------- ROUTES -------------------- */
-export function registerRoutes(app: Express) {
-  const router = Router();
+/* -------------------- CREATE GIFT -------------------- */
+router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response) => {
+  try {
+    const parsed = CreateGiftSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const first = parsed.error.issues?.[0];
+      return res.status(400).json({
+        error: first?.message || "Invalid request",
+        issues: parsed.error.issues,
+        field: first?.path?.[0] ? String(first.path[0]) : undefined,
+      });
+    }
 
-  /* -------------------- CREATE GIFT -------------------- */
-  router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response) => {
-    try {
-      const parsed = CreateGiftSchema.safeParse(req.body);
-      if (!parsed.success) {
-        const first = parsed.error.issues?.[0];
+    const { recipientEmail, message, amount, turnstileToken } = parsed.data;
+
+    // Enforce CAPTCHA if site key configured
+    const siteKey = safeStr(process.env.TURNSTILE_SITE_KEY || process.env.VITE_TURNSTILE_SITE_KEY);
+    const secretKey = safeStr(process.env.TURNSTILE_SECRET_KEY);
+
+    if (siteKey) {
+      if (!turnstileToken) {
+        return res.status(400).json({ error: "Missing CAPTCHA token", field: "turnstileToken" });
+      }
+      if (!secretKey) {
+        return res.status(500).json({ error: "Server missing Turnstile secret key" });
+      }
+
+      const form = new URLSearchParams();
+      form.set("secret", secretKey);
+      form.set("response", turnstileToken);
+      form.set("remoteip", safeStr(req.ip));
+
+      const verify = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+      }).then((r) => r.json().catch(() => ({} as any)));
+
+      if (!verify?.success) {
         return res.status(400).json({
-          error: first?.message || "Invalid request",
-          issues: parsed.error.issues,
-          field: first?.path?.[0] ? String(first.path[0]) : undefined,
+          error: "CAPTCHA verification failed",
+          field: "turnstileToken",
+          codes: Array.isArray(verify?.["error-codes"]) ? verify["error-codes"] : undefined,
         });
       }
-
-      const { recipientEmail, message, amount, turnstileToken } = parsed.data;
-
-      // Enforce CAPTCHA if site key configured
-      const siteKey = safeStr(process.env.TURNSTILE_SITE_KEY || process.env.VITE_TURNSTILE_SITE_KEY);
-      const secretKey = safeStr(process.env.TURNSTILE_SECRET_KEY);
-
-      if (siteKey) {
-        if (!turnstileToken) {
-          return res.status(400).json({ error: "Missing CAPTCHA token", field: "turnstileToken" });
-        }
-        if (!secretKey) {
-          return res.status(500).json({ error: "Server missing Turnstile secret key" });
-        }
-
-        // Verify Turnstile with Cloudflare
-        const form = new URLSearchParams();
-        form.set("secret", secretKey);
-        form.set("response", turnstileToken);
-        form.set("remoteip", safeStr(req.ip));
-
-        const verify = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: form.toString(),
-        }).then((r) => r.json().catch(() => ({} as any)));
-
-        if (!verify?.success) {
-          return res.status(400).json({
-            error: "CAPTCHA verification failed",
-            field: "turnstileToken",
-            codes: Array.isArray(verify?.["error-codes"]) ? verify["error-codes"] : undefined,
-          });
-        }
-      }
-
-      const publicId = crypto.randomBytes(12).toString("hex");
-      const claimToken = crypto.randomBytes(12).toString("hex");
-
-      logEvent("gift_created", { publicId, amount, toDomain: recipientEmail.split("@")[1] || "" });
-
-      const inserted = await db
-        .insert(gifts as any)
-        .values({
-          publicId,
-          claimToken,
-          recipientEmail,
-          message,
-          amount,
-          isClaimed: false,
-          createdAt: new Date(),
-        })
-        .returning();
-
-      const gift = inserted?.[0];
-
-      const base = getBaseUrl(req);
-      const claimUrl = `${base}/claim/${claimToken}`;
-
-      // Fire-and-forget email
-      const pid = (gift as any)?.publicId || publicId;
-      logEvent("email_send_queued", { publicId: pid });
-
-      const emailRes = await sendGiftEmail({
-        to: recipientEmail,
-        message,
-        claimLink: claimUrl,
-      });
-
-      if (emailRes?.ok) {
-        logEvent("email_sent", { publicId: pid, toDomain: recipientEmail.split("@")[1] || "" });
-      } else {
-        logEvent("email_send_failed", { publicId: pid, error: emailRes?.error || "unknown" });
-      }
-
-      return res.json({
-        publicId: pid,
-        giftId: pid,
-        claimUrl,
-        claimLink: claimUrl,
-        emailSent: emailRes?.ok ? true : false,
-      });
-    } catch (e: any) {
-      logEvent("gift_create_failed", { error: String(e?.message || e) });
-      return res.status(500).json({ error: "Server error" });
     }
-  });
 
-  /* -------------------- GET GIFT (accept publicId OR claimToken) -------------------- */
-  router.get("/api/gifts/:id", async (req: Request, res: Response) => {
-    const id = (req.params.id || "").toString().trim();
+    const publicId = crypto.randomBytes(12).toString("hex");
+    const claimToken = crypto.randomBytes(12).toString("hex");
 
-    try {
-      const rows = await db
-        .select()
-        .from(gifts as any)
-        .where(or(eq((gifts as any).publicId, id), eq((gifts as any).claimToken, id)))
-        .limit(1);
+    logEvent("gift_created", { publicId, amount, toDomain: recipientEmail.split("@")[1] || "" });
 
-      const gift = rows?.[0];
-      if (!gift) {
-        logEvent("gift_get_not_found", { id });
-        return res.status(404).json({ error: "Not found" });
-      }
-
-      return res.json({
-        publicId: (gift as any).publicId,
-        giftId: (gift as any).publicId,
-        claimToken: (gift as any).claimToken,
-        amount: (gift as any).amount,
-        message: (gift as any).message,
-        recipientEmail: (gift as any).recipientEmail,
-        isClaimed: !!(gift as any).isClaimed,
-        createdAt: (gift as any).createdAt,
-        claimedAt: (gift as any).claimedAt,
-      });
-    } catch (e: any) {
-      logEvent("gift_get_failed", { id, error: String(e?.message || e) });
-      return res.status(500).json({ error: "Server error" });
-    }
-  });
-
-  /* -------------------- CLAIM (accept publicId OR claimToken) -------------------- */
-  router.post("/api/gifts/:id/claim", async (req: Request, res: Response) => {
-    const id = (req.params.id || "").toString().trim();
-    const ip = safeStr(req.ip);
-
-    logEvent("claim_attempted", { id, ip });
-
-    try {
-      const rows = await db
-        .select()
-        .from(gifts as any)
-        .where(or(eq((gifts as any).publicId, id), eq((gifts as any).claimToken, id)))
-        .limit(1);
-
-      const gift = rows?.[0];
-      if (!gift) {
-        logEvent("claim_not_found", { id });
-        return res.status(404).json({ error: "Not found" });
-      }
-
-      if ((gift as any).isClaimed) {
-        logEvent("claim_already_claimed", { publicId: (gift as any).publicId });
-        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED" });
-      }
-
-      const createdAt = (gift as any).createdAt ? new Date((gift as any).createdAt) : null;
-      if (createdAt) {
-        const unlockAtMs = createdAt.getTime() + minClaimDelaySec * 1000;
-        const nowMs = Date.now();
-        if (nowMs < unlockAtMs) {
-          const unlockInSec = Math.ceil((unlockAtMs - nowMs) / 1000);
-          logEvent("claim_too_soon", {
-            publicId: (gift as any).publicId,
-            unlockInSec,
-            minClaimDelaySec,
-          });
-          return res.status(429).json({
-            error: "Too soon",
-            code: "TOO_SOON",
-            retryAfterSec: unlockInSec,
-          });
-        }
-      }
-
-      const claimedAt = new Date();
-
-      // Mark claimed by publicId (canonical)
-      const publicId = (gift as any).publicId;
-      const updated = await db
-        .update(gifts as any)
-        .set({ isClaimed: true, claimedAt })
-        .where(eq((gifts as any).publicId, publicId))
-        .returning();
-
-      if (!updated?.[0]) {
-        logEvent("claim_update_failed", { publicId });
-        return res.status(500).json({ error: "Failed to claim" });
-      }
-
-      logEvent("claim_completed", { publicId, claimedAt: claimedAt.toISOString() });
-
-      return res.json({
-        ok: true,
+    const inserted = await db
+      .insert(gifts as any)
+      .values({
         publicId,
-        claimedAt: claimedAt.toISOString(),
-      });
-    } catch (e: any) {
-      logEvent("claim_failed", { id, ip, error: String(e?.message || e) });
-      return res.status(500).json({ error: "Server error" });
-    }
-  });
+        claimToken,
+        recipientEmail,
+        message,
+        amount,
+        isClaimed: false,
+        createdAt: new Date(),
+      })
+      .returning();
 
-  app.use(router);
-}
+    const gift = inserted?.[0];
+
+    const base = getBaseUrl(req);
+    const claimUrl = `${base}/claim/${claimToken}`;
+
+    const pid = (gift as any)?.publicId || publicId;
+    logEvent("email_send_queued", { publicId: pid });
+
+    const emailRes = await sendGiftEmail({
+      to: recipientEmail,
+      message,
+      claimLink: claimUrl,
+    });
+
+    if (emailRes?.ok) {
+      logEvent("email_sent", { publicId: pid, toDomain: recipientEmail.split("@")[1] || "" });
+    } else {
+      logEvent("email_send_failed", { publicId: pid, error: emailRes?.error || "unknown" });
+    }
+
+    return res.json({
+      publicId: pid,
+      giftId: pid,
+      claimUrl,
+      claimLink: claimUrl,
+      emailSent: emailRes?.ok ? true : false,
+    });
+  } catch (e: any) {
+    logEvent("gift_create_failed", { error: String(e?.message || e) });
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+/* -------------------- GET GIFT (publicId OR claimToken) -------------------- */
+router.get("/api/gifts/:id", async (req: Request, res: Response) => {
+  const id = (req.params.id || "").toString().trim();
+
+  try {
+    const rows = await db
+      .select()
+      .from(gifts as any)
+      .where(or(eq((gifts as any).publicId, id), eq((gifts as any).claimToken, id)))
+      .limit(1);
+
+    const gift = rows?.[0];
+    if (!gift) {
+      logEvent("gift_get_not_found", { id });
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    return res.json({
+      publicId: (gift as any).publicId,
+      giftId: (gift as any).publicId,
+      claimToken: (gift as any).claimToken,
+      amount: (gift as any).amount,
+      message: (gift as any).message,
+      recipientEmail: (gift as any).recipientEmail,
+      isClaimed: !!(gift as any).isClaimed,
+      createdAt: (gift as any).createdAt,
+      claimedAt: (gift as any).claimedAt,
+    });
+  } catch (e: any) {
+    logEvent("gift_get_failed", { id, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+/* -------------------- CLAIM (publicId OR claimToken) -------------------- */
+router.post("/api/gifts/:id/claim", async (req: Request, res: Response) => {
+  const id = (req.params.id || "").toString().trim();
+  const ip = safeStr(req.ip);
+
+  logEvent("claim_attempted", { id, ip });
+
+  try {
+    const rows = await db
+      .select()
+      .from(gifts as any)
+      .where(or(eq((gifts as any).publicId, id), eq((gifts as any).claimToken, id)))
+      .limit(1);
+
+    const gift = rows?.[0];
+    if (!gift) {
+      logEvent("claim_not_found", { id });
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    if ((gift as any).isClaimed) {
+      logEvent("claim_already_claimed", { publicId: (gift as any).publicId });
+      return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED" });
+    }
+
+    const createdAt = (gift as any).createdAt ? new Date((gift as any).createdAt) : null;
+    if (createdAt) {
+      const unlockAtMs = createdAt.getTime() + minClaimDelaySec * 1000;
+      const nowMs = Date.now();
+      if (nowMs < unlockAtMs) {
+        const unlockInSec = Math.ceil((unlockAtMs - nowMs) / 1000);
+        logEvent("claim_too_soon", {
+          publicId: (gift as any).publicId,
+          unlockInSec,
+          minClaimDelaySec: minClaimDelaySec,
+        });
+        return res.status(429).json({
+          error: "Too soon",
+          code: "TOO_SOON",
+          retryAfterSec: unlockInSec,
+        });
+      }
+    }
+
+    const claimedAt = new Date();
+    const publicId = (gift as any).publicId;
+
+    const updated = await db
+      .update(gifts as any)
+      .set({ isClaimed: true, claimedAt })
+      .where(eq((gifts as any).publicId, publicId))
+      .returning();
+
+    if (!updated?.[0]) {
+      logEvent("claim_update_failed", { publicId });
+      return res.status(500).json({ error: "Failed to claim" });
+    }
+
+    logEvent("claim_completed", { publicId, claimedAt: claimedAt.toISOString() });
+
+    return res.json({
+      ok: true,
+      publicId,
+      claimedAt: claimedAt.toISOString(),
+    });
+  } catch (e: any) {
+    logEvent("claim_failed", { id, ip, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+export default router;
