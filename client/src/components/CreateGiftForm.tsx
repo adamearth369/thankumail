@@ -1,69 +1,58 @@
-// ===============================
-// FILE TO REPLACE (FULL FILE)
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// PURPOSE:
-// - Fix "Unexpected response" false error
-// - Clear fields on success
-// - Robust Turnstile token handling + reset
-// - Success = HTTP 200 + JSON contains { publicId }
-// ===============================
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+type CreateGiftResponse =
+  | {
+      publicId: string;
+      claimUrl: string;
+      emailSent?: boolean;
+    }
+  | { error: string; issues?: any[]; field?: string; retryAfterSec?: number; code?: string; codes?: string[] };
+
+function moneyToCents(dollars: number) {
+  const cents = Math.round(dollars * 100);
+  return Number.isFinite(cents) ? cents : 0;
+}
+
+function isEmail(s: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+}
+
+function absoluteLink(maybeRelative: string) {
+  if (!maybeRelative) return maybeRelative;
+  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
+  return `${origin}${path}`;
+}
+
+/* -------------------- Turnstile helpers -------------------- */
 declare global {
   interface Window {
     turnstile?: any;
-    __TURNSTILE_SITE_KEY__?: string;
   }
 }
 
-type CreateGiftResponse = { publicId: string };
+const TURNSTILE_SCRIPT_ID = "cf-turnstile-script";
 
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
-}
-
-function safeJsonParse(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-function getTurnstileSiteKey() {
-  // Try Vite env first
-  const viteKey =
-    (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY ||
-    (import.meta as any)?.env?.VITE_CF_TURNSTILE_SITE_KEY ||
-    "";
-  if (viteKey) return String(viteKey);
-
-  // Optional server-injected global fallback
-  if (window.__TURNSTILE_SITE_KEY__) return String(window.__TURNSTILE_SITE_KEY__);
-
-  return "";
-}
-
-function injectTurnstileScript(): Promise<void> {
+function loadTurnstileScript(): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (typeof window === "undefined") return resolve();
     if (window.turnstile) return resolve();
 
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[src^="https://challenges.cloudflare.com/turnstile/v0/api.js"]'
-    );
+    const existing = document.getElementById(TURNSTILE_SCRIPT_ID) as HTMLScriptElement | null;
     if (existing) {
       existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () => reject(new Error("Turnstile script failed to load")));
+      existing.addEventListener("error", () => reject(new Error("Failed to load Turnstile script")));
       return;
     }
 
     const s = document.createElement("script");
+    s.id = TURNSTILE_SCRIPT_ID;
     s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
     s.async = true;
     s.defer = true;
     s.onload = () => resolve();
-    s.onerror = () => reject(new Error("Turnstile script failed to load"));
+    s.onerror = () => reject(new Error("Failed to load Turnstile script"));
     document.head.appendChild(s);
   });
 }
@@ -71,259 +60,318 @@ function injectTurnstileScript(): Promise<void> {
 export default function CreateGiftForm() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [message, setMessage] = useState("");
-  const [amountCents, setAmountCents] = useState(1000);
+  const [amountDollars, setAmountDollars] = useState<number>(10);
 
-  const [turnstileToken, setTurnstileToken] = useState<string>("");
-  const [turnstileReady, setTurnstileReady] = useState(false);
-  const [turnstileError, setTurnstileError] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string>("");
+  const [result, setResult] = useState<{
+    publicId: string;
+    claimUrl: string;
+    emailStatus: "sent" | "queued";
+    recipient: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [errorText, setErrorText] = useState<string>("");
-  const [successPublicId, setSuccessPublicId] = useState<string>("");
-
-  const siteKey = useMemo(() => getTurnstileSiteKey(), []);
-
-  const widgetRef = useRef<HTMLDivElement | null>(null);
-  const widgetIdRef = useRef<string | null>(null);
-
-  const presetAmounts = useMemo(
+  // Non-KYC preset messages (must match server)
+  const PRESET_MESSAGES = useMemo(
     () => [
-      { label: "$10", cents: 1000 },
-      { label: "$25", cents: 2500 },
-      { label: "$50", cents: 5000 },
-      { label: "$100", cents: 10000 },
+      "Someone wanted you to know they’re genuinely grateful for you. Thank you.",
+      "What you did made a real difference — you matter to someone. Thank you.",
+      "This message is a simple expression of appreciation from someone who noticed. Thank you.",
+      "Someone wanted to send you encouragement, because you deserve it. Thank you.",
+      "You matter to people in a meaningful way. Your presence and actions had a positive impact. Thank you.",
+      "Someone thought of you today and decided to send you a message of gratitude and kindness. Thank you.",
     ],
-    []
+    [],
   );
 
-  function resetForm() {
-    setRecipientEmail("");
-    setMessage("");
-    setAmountCents(1000);
-    setTurnstileToken("");
-    setErrorText("");
-    // keep successPublicId (so user sees confirmation)
-  }
+  const [selectedPreset, setSelectedPreset] = useState<string>("");
 
-  async function resetTurnstile() {
-    try {
-      if (window.turnstile && widgetIdRef.current) {
-        window.turnstile.reset(widgetIdRef.current);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setTurnstileToken("");
-    }
-  }
+  // Turnstile state
+  const siteKey = (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || "";
+  const [turnstileReady, setTurnstileReady] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const [turnstileError, setTurnstileError] = useState<string>("");
 
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetIdRef = useRef<any>(null);
+
+  const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
+
+  const canSubmit = useMemo(() => {
+    if (!isEmail(recipientEmail)) return false;
+    if (!message.trim()) return false;
+    if (!Number.isFinite(amountDollars)) return false;
+    if (amountCents < 1000) return false;
+    if (siteKey && !turnstileToken) return false;
+    return true;
+  }, [recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken]);
+
+  // Keep message locked to preset (non-KYC mode)
+  useEffect(() => {
+    if (!selectedPreset) return;
+    setMessage(selectedPreset);
+  }, [selectedPreset]);
+
+  // Initialize Turnstile widget (explicit render)
   useEffect(() => {
     let cancelled = false;
 
-    async function boot() {
+    async function init() {
       setTurnstileError("");
-      if (!siteKey) {
-        setTurnstileError("Turnstile site key missing.");
-        return;
-      }
+      setTurnstileReady(false);
+
+      if (!siteKey) return;
 
       try {
-        await injectTurnstileScript();
+        await loadTurnstileScript();
         if (cancelled) return;
 
-        if (!widgetRef.current) return;
-
-        // If already rendered, skip
-        if (widgetIdRef.current) {
-          setTurnstileReady(true);
+        if (!window.turnstile) {
+          setTurnstileError("CAPTCHA failed to load. Please refresh.");
           return;
         }
 
-        const id = window.turnstile.render(widgetRef.current, {
-          sitekey: siteKey,
-          callback: (token: string) => {
-            setTurnstileToken(token || "");
-            setErrorText("");
-          },
-          "error-callback": () => {
-            setTurnstileToken("");
-            setTurnstileError("CAPTCHA error. Refresh and try again.");
-          },
-          "expired-callback": () => {
-            setTurnstileToken("");
-          },
-        });
-
-        widgetIdRef.current = id;
         setTurnstileReady(true);
+
+        if (turnstileContainerRef.current && !turnstileWidgetIdRef.current) {
+          const widgetId = window.turnstile.render(turnstileContainerRef.current, {
+            sitekey: siteKey,
+            theme: "light",
+            callback: (token: string) => {
+              setTurnstileToken(token || "");
+              setTurnstileError("");
+            },
+            "expired-callback": () => {
+              setTurnstileToken("");
+              setTurnstileError("CAPTCHA expired. Please try again.");
+            },
+            "error-callback": () => {
+              setTurnstileToken("");
+              setTurnstileError("CAPTCHA error. Please refresh and try again.");
+            },
+          });
+
+          turnstileWidgetIdRef.current = widgetId;
+        }
       } catch (e: any) {
         setTurnstileError(String(e?.message || e || "CAPTCHA failed to load."));
       }
     }
 
-    boot();
+    init();
+
     return () => {
       cancelled = true;
     };
   }, [siteKey]);
 
+  function resetTurnstile() {
+    if (!siteKey) return;
+    try {
+      const id = turnstileWidgetIdRef.current;
+      if (id && window.turnstile) window.turnstile.reset(id);
+    } catch {}
+    setTurnstileToken("");
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (isSubmitting) return;
+    setErr("");
+    setTurnstileError("");
+    setResult(null);
+    setCopied(false);
 
-    setErrorText("");
-    setSuccessPublicId("");
-
-    const to = recipientEmail.trim();
+    const email = recipientEmail.trim();
     const msg = message.trim();
 
-    if (!isEmail(to)) {
-      setErrorText("Please enter a valid recipient email.");
-      return;
-    }
-    if (!Number.isFinite(amountCents) || amountCents < 1000) {
-      setErrorText("Minimum amount is $10.");
-      return;
-    }
-    if (!turnstileToken) {
-      setErrorText("Complete CAPTCHA.");
-      return;
-    }
+    if (!isEmail(email)) return setErr("Please enter a valid email.");
+    if (!msg) return setErr("Please choose a message.");
+    if (amountCents < 1000) return setErr("Minimum amount is $10.");
 
-    setIsSubmitting(true);
+    if (siteKey && !turnstileToken) return setTurnstileError("Please complete the CAPTCHA.");
 
+    setSubmitting(true);
     try {
-      const res = await fetch("/api/gifts", {
+      const r = await fetch("/api/gifts", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          recipientEmail: to,
+          recipientEmail: email,
           message: msg,
           amount: amountCents,
-          turnstileToken,
+          ...(turnstileToken ? { turnstileToken } : {}),
         }),
       });
 
-      const text = await res.text();
-      const data = safeJsonParse(text);
+      const data = (await r.json().catch(() => ({}))) as CreateGiftResponse;
 
-      // If not ok, show server error if present
-      if (!res.ok) {
-        const serverMsg =
-          (data && (data.error || data.message)) ||
-          text?.slice(0, 200) ||
-          `Request failed (${res.status})`;
-        setErrorText(String(serverMsg));
-        await resetTurnstile();
+      if (!r.ok) {
+        const zodIssue = Array.isArray((data as any)?.issues) && (data as any).issues?.[0]?.message;
+        const field = (data as any)?.field;
+        const apiErr = (data as any)?.error || zodIssue || "Something went wrong.";
+
+        const captchaish =
+          field === "turnstileToken" ||
+          /captcha/i.test(apiErr) ||
+          /turnstile/i.test(apiErr) ||
+          /verification failed/i.test(apiErr);
+
+        if (captchaish) {
+          setTurnstileError(apiErr);
+          resetTurnstile();
+          return;
+        }
+
+        setErr(apiErr);
+        resetTurnstile();
         return;
       }
 
-      // Success if publicId exists
-      const publicId = (data as CreateGiftResponse | null)?.publicId;
-      if (publicId && typeof publicId === "string") {
-        setSuccessPublicId(publicId);
-        resetForm();
-        await resetTurnstile();
+      const publicId = (data as any)?.publicId;
+      const claimUrl = (data as any)?.claimUrl;
+
+      if (publicId && claimUrl) {
+        setResult({
+          publicId,
+          claimUrl: absoluteLink(claimUrl),
+          recipient: email,
+          emailStatus: (data as any)?.emailSent === false ? "queued" : "sent",
+        });
+
+        setRecipientEmail("");
+        setSelectedPreset("");
+        setMessage("");
+        setAmountDollars(10);
+        resetTurnstile();
         return;
       }
 
-      // If API returned OK but shape unexpected, treat as success-ish but show details
-      setErrorText("Unexpected response from server (missing publicId).");
-      await resetTurnstile();
-    } catch (err: any) {
-      setErrorText(String(err?.message || err || "Network error"));
-      await resetTurnstile();
+      setErr("Unexpected response from server.");
+      resetTurnstile();
+    } catch (e: any) {
+      setErr(String(e?.message || e || "Network error"));
+      resetTurnstile();
     } finally {
-      setIsSubmitting(false);
+      setSubmitting(false);
     }
   }
 
+  async function copyLink() {
+    if (!result?.claimUrl) return;
+    try {
+      await navigator.clipboard.writeText(result.claimUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {}
+  }
+
+  const moneyPresets = [
+    { label: "$10", value: 10 },
+    { label: "$25", value: 25 },
+    { label: "$50", value: 50 },
+    { label: "$100", value: 100 },
+  ];
+
   return (
-    <form onSubmit={onSubmit} style={{ maxWidth: 560 }}>
-      <h2 style={{ margin: "12px 0 8px" }}>Create a ThanküMail</h2>
+    <div className="rounded-3xl border border-violet-100 bg-white p-6 shadow-sm">
+      <h2 className="text-xl font-bold tracking-tight">Create a ThanküMail</h2>
 
-      <label style={{ display: "block", marginTop: 10, fontWeight: 600 }}>Recipient email</label>
-      <input
-        value={recipientEmail}
-        onChange={(e) => setRecipientEmail(e.target.value)}
-        placeholder="name@example.com"
-        autoComplete="email"
-        style={{ width: "100%", padding: 10, marginTop: 6 }}
-      />
+      <form onSubmit={onSubmit} className="mt-6 space-y-4">
+        <input
+          value={recipientEmail}
+          onChange={(e) => setRecipientEmail(e.target.value)}
+          placeholder="Recipient email"
+          className="w-full rounded-2xl border px-4 py-3"
+        />
 
-      <label style={{ display: "block", marginTop: 10, fontWeight: 600 }}>Write something real…</label>
-      <textarea
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-        rows={4}
-        style={{ width: "100%", padding: 10, marginTop: 6, resize: "vertical" }}
-      />
+        <select
+          value={selectedPreset}
+          onChange={(e) => setSelectedPreset(e.target.value)}
+          className="w-full rounded-2xl border px-4 py-3"
+        >
+          <option value="">Choose a message…</option>
+          {PRESET_MESSAGES.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-        {presetAmounts.map((a) => (
-          <button
-            key={a.cents}
-            type="button"
-            onClick={() => setAmountCents(a.cents)}
-            style={{
-              padding: "8px 12px",
-              border: "1px solid #ccc",
-              background: amountCents === a.cents ? "#111" : "#fff",
-              color: amountCents === a.cents ? "#fff" : "#111",
-              borderRadius: 8,
-              cursor: "pointer",
-              fontWeight: 700,
-            }}
-          >
-            {a.label}
-          </button>
-        ))}
-      </div>
+        <textarea
+          value={message}
+          readOnly
+          placeholder="Select a preset message above…"
+          className="h-28 w-full rounded-2xl border px-4 py-3 bg-slate-50"
+        />
 
-      <div style={{ marginTop: 14, fontWeight: 600 }}>Complete the CAPTCHA to create a gift.</div>
+        <div className="flex gap-2">
+          {moneyPresets.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              onClick={() => setAmountDollars(p.value)}
+              className={`rounded-xl px-4 py-2 text-sm ${
+                amountDollars === p.value ? "bg-violet-600 text-white" : "border bg-white"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
 
-      <div style={{ marginTop: 10 }}>
-        <div ref={widgetRef} />
-        {!turnstileReady && !turnstileError && (
-          <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>Loading CAPTCHA…</div>
+        {siteKey && !result ? (
+          <div className="space-y-2">
+            <div className="text-xs text-slate-500">
+              {turnstileReady ? "Complete the CAPTCHA to create a gift." : "Loading CAPTCHA…"}
+            </div>
+            <div ref={turnstileContainerRef} className="min-h-[70px] rounded-2xl border bg-white px-4 py-4" />
+            {turnstileError ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {turnstileError}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {err && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{err}</div>
         )}
-        {turnstileError && (
-          <div style={{ marginTop: 8, fontSize: 13, color: "#b00020" }}>{turnstileError}</div>
+
+        {result && (
+          <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm">
+            <div className="font-semibold text-slate-900">Your ThanküMail has been delivered.</div>
+            <div className="mt-1 text-slate-700">
+              Email {result.emailStatus === "sent" ? "sent to" : "queued for"}{" "}
+              <span className="font-semibold">{result.recipient}</span>
+            </div>
+            <div className="mt-2 text-slate-700">If they don’t receive it within 48 hours, a reminder email will be sent.</div>
+
+            <div className="mt-3 flex gap-2">
+              <input readOnly value={result.claimUrl} className="flex-1 rounded-xl border bg-white px-3 py-2 text-xs" />
+              <button type="button" onClick={copyLink} className="rounded-xl bg-violet-600 px-4 py-2 text-xs text-white">
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+
+            <div className="mt-3 text-[11px] text-slate-500">Reference ID: {result.publicId}</div>
+          </div>
         )}
-        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>
-          Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
-        </div>
-      </div>
 
-      <button
-        type="submit"
-        disabled={isSubmitting}
-        style={{
-          marginTop: 14,
-          padding: "10px 14px",
-          borderRadius: 10,
-          border: "1px solid #111",
-          background: isSubmitting ? "#444" : "#111",
-          color: "#fff",
-          fontWeight: 800,
-          cursor: isSubmitting ? "not-allowed" : "pointer",
-          width: "100%",
-        }}
-      >
-        {isSubmitting ? "Creating…" : "Create Gift"}
-      </button>
+        <button
+          type="submit"
+          disabled={!canSubmit || submitting}
+          className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
+        >
+          {submitting ? "Creating…" : siteKey && !turnstileToken ? "Complete CAPTCHA" : "Create gift"}
+        </button>
 
-      {errorText && (
-        <div style={{ marginTop: 12, color: "#b00020", fontWeight: 700 }}>
-          {errorText}
-        </div>
-      )}
-
-      {successPublicId && (
-        <div style={{ marginTop: 12, color: "#0a7a2f", fontWeight: 800 }}>
-          Sent. Public ID: {successPublicId}
-        </div>
-      )}
-    </form>
+        {siteKey && !result ? (
+          <div className="text-[11px] leading-relaxed text-slate-500">
+            Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
+          </div>
+        ) : null}
+      </form>
+    </div>
   );
 }
