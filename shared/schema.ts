@@ -4,13 +4,7 @@ import { z } from "zod";
 
 export const gifts = pgTable("gifts", {
   id: serial("id").primaryKey(),
-
-  // public id used for legacy links / reference IDs
   publicId: text("public_id").notNull().unique(),
-
-  // claim token used for /claim/:token links
-  claimToken: text("claim_token").notNull().unique(),
-
   recipientEmail: text("recipient_email").notNull(),
   message: text("message").notNull(),
   amount: integer("amount").notNull(),
@@ -29,7 +23,6 @@ export const insertGiftSchema = createInsertSchema(gifts)
     claimedAt: true,
     isClaimed: true,
     publicId: true,
-    claimToken: true,
   });
 
 export type Gift = typeof gifts.$inferSelect;
