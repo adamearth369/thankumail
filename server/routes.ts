@@ -5,10 +5,10 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
-import { eq, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { sendGiftEmail } from "./email";
 
-/* -------------------- STRUCTURED LOGGING -------------------- */
+/* -------------------- LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
 }
@@ -25,15 +25,12 @@ function getBaseUrl(req: any) {
   return `${proto}://${host}`.replace(/\/+$/, "");
 }
 
-/* -------------------- LIMITS / CONFIG -------------------- */
+/* -------------------- CONFIG -------------------- */
 const MIN_CLAIM_DELAY_SEC = Number(process.env.MIN_CLAIM_DELAY_SEC || "60");
-const minClaimDelaySec = Number.isFinite(MIN_CLAIM_DELAY_SEC) ? MIN_CLAIM_DELAY_SEC : 60;
 
 const giftCreateLimiter = rateLimit({
   windowMs: 60_000,
   max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
 });
 
 /* -------------------- VALIDATION -------------------- */
@@ -41,15 +38,9 @@ const CreateGiftSchema = z.object({
   recipientEmail: z.string().email(),
   message: z.string().min(1),
   amount: z.number().int().min(1000),
-  turnstileToken: z.string().min(1).optional(),
+  turnstileToken: z.string().optional(),
 });
 
-/* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
-/**
- * IMPORTANT:
- * src/index.ts imports this as a default export:
- *   import apiRouter from "../server/routes";
- */
 const router = Router();
 
 /* -------------------- CREATE GIFT -------------------- */
@@ -57,58 +48,17 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
   try {
     const parsed = CreateGiftSchema.safeParse(req.body);
     if (!parsed.success) {
-      const first = parsed.error.issues?.[0];
-      return res.status(400).json({
-        error: first?.message || "Invalid request",
-        issues: parsed.error.issues,
-        field: first?.path?.[0] ? String(first.path[0]) : undefined,
-      });
+      return res.status(400).json({ error: "Invalid request" });
     }
 
-    const { recipientEmail, message, amount, turnstileToken } = parsed.data;
-
-    // Enforce CAPTCHA if site key configured
-    const siteKey = safeStr(process.env.TURNSTILE_SITE_KEY || process.env.VITE_TURNSTILE_SITE_KEY);
-    const secretKey = safeStr(process.env.TURNSTILE_SECRET_KEY);
-
-    if (siteKey) {
-      if (!turnstileToken) {
-        return res.status(400).json({ error: "Missing CAPTCHA token", field: "turnstileToken" });
-      }
-      if (!secretKey) {
-        return res.status(500).json({ error: "Server missing Turnstile secret key" });
-      }
-
-      const form = new URLSearchParams();
-      form.set("secret", secretKey);
-      form.set("response", turnstileToken);
-      form.set("remoteip", safeStr(req.ip));
-
-      const verify = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: form.toString(),
-      }).then((r) => r.json().catch(() => ({} as any)));
-
-      if (!verify?.success) {
-        return res.status(400).json({
-          error: "CAPTCHA verification failed",
-          field: "turnstileToken",
-          codes: Array.isArray(verify?.["error-codes"]) ? verify["error-codes"] : undefined,
-        });
-      }
-    }
+    const { recipientEmail, message, amount } = parsed.data;
 
     const publicId = crypto.randomBytes(12).toString("hex");
-    const claimToken = crypto.randomBytes(12).toString("hex");
-
-    logEvent("gift_created", { publicId, amount, toDomain: recipientEmail.split("@")[1] || "" });
 
     const inserted = await db
       .insert(gifts as any)
       .values({
         publicId,
-        claimToken,
         recipientEmail,
         message,
         amount,
@@ -118,31 +68,23 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
       .returning();
 
     const gift = inserted?.[0];
+    if (!gift) throw new Error("Insert failed");
 
     const base = getBaseUrl(req);
-    const claimUrl = `${base}/claim/${claimToken}`;
+    const claimUrl = `${base}/claim/${publicId}`;
 
-    const pid = (gift as any)?.publicId || publicId;
-    logEvent("email_send_queued", { publicId: pid });
-
-    const emailRes = await sendGiftEmail({
+    await sendGiftEmail({
       to: recipientEmail,
       message,
       claimLink: claimUrl,
     });
 
-    if (emailRes?.ok) {
-      logEvent("email_sent", { publicId: pid, toDomain: recipientEmail.split("@")[1] || "" });
-    } else {
-      logEvent("email_send_failed", { publicId: pid, error: emailRes?.error || "unknown" });
-    }
+    logEvent("gift_created", { publicId });
 
     return res.json({
-      publicId: pid,
-      giftId: pid,
+      publicId,
       claimUrl,
       claimLink: claimUrl,
-      emailSent: emailRes?.ok ? true : false,
     });
   } catch (e: any) {
     logEvent("gift_create_failed", { error: String(e?.message || e) });
@@ -150,107 +92,54 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
   }
 });
 
-/* -------------------- GET GIFT (publicId OR claimToken) -------------------- */
-router.get("/api/gifts/:id", async (req: Request, res: Response) => {
-  const id = (req.params.id || "").toString().trim();
-
+/* -------------------- GET GIFT -------------------- */
+router.get("/api/gifts/:publicId", async (req: Request, res: Response) => {
   try {
+    const publicId = req.params.publicId;
+
     const rows = await db
       .select()
       .from(gifts as any)
-      .where(or(eq((gifts as any).publicId, id), eq((gifts as any).claimToken, id)))
+      .where(eq((gifts as any).publicId, publicId))
       .limit(1);
 
     const gift = rows?.[0];
-    if (!gift) {
-      logEvent("gift_get_not_found", { id });
-      return res.status(404).json({ error: "Not found" });
-    }
+    if (!gift) return res.status(404).json({ error: "Not found" });
 
-    return res.json({
-      publicId: (gift as any).publicId,
-      giftId: (gift as any).publicId,
-      claimToken: (gift as any).claimToken,
-      amount: (gift as any).amount,
-      message: (gift as any).message,
-      recipientEmail: (gift as any).recipientEmail,
-      isClaimed: !!(gift as any).isClaimed,
-      createdAt: (gift as any).createdAt,
-      claimedAt: (gift as any).claimedAt,
-    });
-  } catch (e: any) {
-    logEvent("gift_get_failed", { id, error: String(e?.message || e) });
+    return res.json(gift);
+  } catch (e) {
     return res.status(500).json({ error: "Server error" });
   }
 });
 
-/* -------------------- CLAIM (publicId OR claimToken) -------------------- */
-router.post("/api/gifts/:id/claim", async (req: Request, res: Response) => {
-  const id = (req.params.id || "").toString().trim();
-  const ip = safeStr(req.ip);
-
-  logEvent("claim_attempted", { id, ip });
-
+/* -------------------- CLAIM -------------------- */
+router.post("/api/gifts/:publicId/claim", async (req: Request, res: Response) => {
   try {
+    const publicId = req.params.publicId;
+
     const rows = await db
       .select()
       .from(gifts as any)
-      .where(or(eq((gifts as any).publicId, id), eq((gifts as any).claimToken, id)))
+      .where(eq((gifts as any).publicId, publicId))
       .limit(1);
 
     const gift = rows?.[0];
-    if (!gift) {
-      logEvent("claim_not_found", { id });
-      return res.status(404).json({ error: "Not found" });
+    if (!gift) return res.status(404).json({ error: "Not found" });
+    if (gift.isClaimed) return res.status(409).json({ error: "Already claimed" });
+
+    const createdAt = new Date(gift.createdAt);
+    const unlockAt = createdAt.getTime() + MIN_CLAIM_DELAY_SEC * 1000;
+    if (Date.now() < unlockAt) {
+      return res.status(429).json({ error: "Too soon" });
     }
 
-    if ((gift as any).isClaimed) {
-      logEvent("claim_already_claimed", { publicId: (gift as any).publicId });
-      return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED" });
-    }
-
-    const createdAt = (gift as any).createdAt ? new Date((gift as any).createdAt) : null;
-    if (createdAt) {
-      const unlockAtMs = createdAt.getTime() + minClaimDelaySec * 1000;
-      const nowMs = Date.now();
-      if (nowMs < unlockAtMs) {
-        const unlockInSec = Math.ceil((unlockAtMs - nowMs) / 1000);
-        logEvent("claim_too_soon", {
-          publicId: (gift as any).publicId,
-          unlockInSec,
-          minClaimDelaySec: minClaimDelaySec,
-        });
-        return res.status(429).json({
-          error: "Too soon",
-          code: "TOO_SOON",
-          retryAfterSec: unlockInSec,
-        });
-      }
-    }
-
-    const claimedAt = new Date();
-    const publicId = (gift as any).publicId;
-
-    const updated = await db
+    await db
       .update(gifts as any)
-      .set({ isClaimed: true, claimedAt })
-      .where(eq((gifts as any).publicId, publicId))
-      .returning();
+      .set({ isClaimed: true, claimedAt: new Date() })
+      .where(eq((gifts as any).publicId, publicId));
 
-    if (!updated?.[0]) {
-      logEvent("claim_update_failed", { publicId });
-      return res.status(500).json({ error: "Failed to claim" });
-    }
-
-    logEvent("claim_completed", { publicId, claimedAt: claimedAt.toISOString() });
-
-    return res.json({
-      ok: true,
-      publicId,
-      claimedAt: claimedAt.toISOString(),
-    });
-  } catch (e: any) {
-    logEvent("claim_failed", { id, ip, error: String(e?.message || e) });
+    return res.json({ ok: true });
+  } catch (e) {
     return res.status(500).json({ error: "Server error" });
   }
 });
