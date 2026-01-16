@@ -1,5 +1,20 @@
-import type { Server } from "http";
+// ===============================
+// FILE TO REPLACE (FULL FILE)
+// WHERE TO PASTE: server/routes.ts
+//
+// PURPOSE (THIS STEP):
+// - Enforce NON-KYC users can ONLY send preset messages (no custom text)
+// - Keep existing endpoints:
+//    POST /api/gifts
+//    GET  /api/gifts/:publicId
+//    POST /api/gifts/:publicId/claim
+// - Keep Turnstile verification (+ optional dev bypass)
+// - Use db.select (NOT db.query) to avoid runtime crashes
+// - Make server response compatible with BOTH client UIs (publicId + giftId + claimUrl + claimLink)
+// ===============================
+
 import type { Express } from "express";
+import type { Server } from "http";
 import { Router } from "express";
 import crypto from "crypto";
 import { db } from "./db";
@@ -7,7 +22,15 @@ import { gifts } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { sendGiftEmail } from "./email";
 
-const router = Router();
+/* -------------------- PRESET MESSAGES (NON-KYC ONLY) -------------------- */
+const PRESET_MESSAGES = [
+  "Someone wanted you to know they’re genuinely grateful for you. Thank you.",
+  "What you did made a real difference — you matter to someone. Thank you.",
+  "This message is a simple expression of appreciation from someone who noticed. Thank you.",
+  "Someone wanted to send you encouragement, because you deserve it. Thank you.",
+  "You matter to people in a meaningful way. Your presence and actions had a positive impact. Thank you.",
+  "Someone thought of you today and decided to send you a message of gratitude and kindness. Thank you.",
+] as const;
 
 /* -------------------- CONFIG -------------------- */
 const MIN_AMOUNT_CENTS = 1000;
@@ -18,16 +41,17 @@ const TURNSTILE_SECRET =
   process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY ||
   "";
 
+// DEV/TEST bypass (ONLY for testing)
 const TURNSTILE_BYPASS = (process.env.TURNSTILE_BYPASS || "").toString() === "1";
 
+// Optional allowlist for bypass
+// Example: TURNSTILE_BYPASS_IPS="208.114.128.15,1.2.3.4"
 const TURNSTILE_BYPASS_IPS = (process.env.TURNSTILE_BYPASS_IPS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// hard timeout for email send so we always log something
-const EMAIL_SEND_TIMEOUT_MS = Number(process.env.EMAIL_SEND_TIMEOUT_MS || 12000);
-
+/* -------------------- HELPERS -------------------- */
 function nowIso() {
   return new Date().toISOString();
 }
@@ -65,24 +89,6 @@ function computeUnlockInSec(createdAt: Date) {
   return clampInt(remaining);
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let t: any;
-  const timeout = new Promise<T>((_, reject) => {
-    t = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
-}
-
-/* -------------------- DB HELPERS -------------------- */
-async function getGiftByPublicId(publicId: string) {
-  const rows = await db
-    .select()
-    .from(gifts as any)
-    .where(eq((gifts as any).publicId, publicId))
-    .limit(1);
-  return rows?.[0] || null;
-}
-
 /* -------------------- TURNSTILE -------------------- */
 function bypassAllowed(ip: string) {
   if (!TURNSTILE_BYPASS) return false;
@@ -91,6 +97,7 @@ function bypassAllowed(ip: string) {
 }
 
 async function verifyTurnstile(turnstileToken: string, ip: string) {
+  // DEV/TEST bypass
   if (bypassAllowed(ip)) {
     logEvent("turnstile_bypassed", { ip });
     return { ok: true as const };
@@ -133,8 +140,12 @@ async function verifyTurnstile(turnstileToken: string, ip: string) {
   }
 }
 
+/* -------------------- ROUTES -------------------- */
+const router = Router();
+
 /* ==================================================
    POST /api/gifts
+   - NON-KYC: preset messages only (locked)
 ================================================== */
 router.post("/api/gifts", async (req, res) => {
   const ip = getIp(req);
@@ -145,6 +156,7 @@ router.post("/api/gifts", async (req, res) => {
 
   const turnstileToken = (req.body?.turnstileToken || "").toString().trim();
 
+  // Verify Turnstile (unless bypass enabled)
   const ts = await verifyTurnstile(turnstileToken, ip);
   if (!ts.ok) {
     return res.status(400).json({
@@ -162,16 +174,35 @@ router.post("/api/gifts", async (req, res) => {
     return res.status(400).json({ error: "Minimum amount is $10", field: "amount" });
   }
 
+  // -------------------- NON-KYC MESSAGE LOCK --------------------
+  // Step-1 implementation: treat ALL senders as NON-KYC.
+  // Later you will replace this with real KYC verification.
+  const isKycVerified = false;
+
+  const msg = message.trim();
+  if (!isKycVerified) {
+    const allowed = (PRESET_MESSAGES as readonly string[]).includes(msg);
+    if (!allowed) {
+      return res.status(403).json({
+        error: "Custom messages require identity verification.",
+        field: "message",
+        code: "KYC_REQUIRED",
+      });
+    }
+  }
+  // --------------------------------------------------------------
+
+  // Generate IDs
   const publicId = crypto.randomBytes(12).toString("hex");
   const claimToken = crypto.randomBytes(12).toString("hex");
 
   try {
     const [gift] = await db
-      .insert(gifts as any)
+      .insert(gifts)
       .values({
         publicId,
         recipientEmail,
-        message,
+        message: msg,
         amount,
         isClaimed: false,
         claimToken,
@@ -182,7 +213,7 @@ router.post("/api/gifts", async (req, res) => {
     const claimUrl = `${base}/claim/${claimToken}`;
 
     logEvent("gift_created", {
-      publicId: (gift as any).publicId,
+      publicId: (gift as any).publicId || publicId,
       amount,
       recipientDomain: recipientEmail.split("@")[1] || "",
       ip,
@@ -190,37 +221,39 @@ router.post("/api/gifts", async (req, res) => {
       claimUrl,
     });
 
-    // Non-blocking email send: always logs queued + sent/failed
-    logEvent("email_send_queued", { publicId: (gift as any).publicId });
+    // Email send (best effort)
+    const pid = (gift as any).publicId || publicId;
+    logEvent("email_send_queued", { publicId: pid });
 
-    (async () => {
-      try {
-        await withTimeout(
-          sendGiftEmail({
-            to: recipientEmail,
-            claimUrl,
-            message,
-            amountCents: amount,
-          } as any),
-          EMAIL_SEND_TIMEOUT_MS,
-          "sendGiftEmail"
-        );
+    const emailRes = await sendGiftEmail({
+      to: recipientEmail,
+      claimLink: claimUrl,
+      message: msg,
+      amountCents: amount,
+    });
 
-        logEvent("email_sent", {
-          publicId: (gift as any).publicId,
-          toDomain: recipientEmail.split("@")[1] || "",
-        });
-      } catch (e: any) {
-        logEvent("email_failed", {
-          publicId: (gift as any).publicId,
-          error: String(e?.message || e),
-        });
-      }
-    })();
+    if (emailRes.ok) {
+      logEvent("email_sent", { publicId: pid, toDomain: recipientEmail.split("@")[1] || "" });
+    } else {
+      logEvent("email_send_failed", { publicId: pid, error: emailRes.error });
+    }
 
-    return res.json({ publicId: (gift as any).publicId });
+    // IMPORTANT: respond with multiple aliases for compatibility across client variants
+    return res.json({
+      success: true,
+
+      // new/legacy client compatibility
+      publicId: pid,
+      giftId: pid,
+
+      claimUrl,
+      claimLink: claimUrl,
+
+      emailSent: emailRes.ok,
+      email: { ok: emailRes.ok },
+    });
   } catch (e: any) {
-    logEvent("gift_create_error", { ip, error: String(e?.message || e) });
+    logEvent("gift_create_failed", { ip, error: String(e?.message || e) });
     return res.status(500).json({ error: "Failed to create gift" });
   }
 });
@@ -232,11 +265,16 @@ router.get("/api/gifts/:publicId", async (req, res) => {
   const publicId = (req.params.publicId || "").toString().trim();
 
   try {
-    const gift = await getGiftByPublicId(publicId);
+    const rows = await db
+      .select()
+      .from(gifts as any)
+      .where(eq((gifts as any).publicId, publicId))
+      .limit(1);
+
+    const gift = rows?.[0];
     if (!gift) return res.status(404).json({ error: "Not found" });
 
-    const createdAtRaw = (gift as any).createdAt;
-    const createdAt = createdAtRaw ? new Date(createdAtRaw) : new Date();
+    const createdAt = new Date((gift as any).createdAt);
     const unlockInSec = computeUnlockInSec(createdAt);
 
     return res.json({
@@ -250,22 +288,29 @@ router.get("/api/gifts/:publicId", async (req, res) => {
       unlockInSec,
     });
   } catch (e: any) {
-    logEvent("gift_get_error", { publicId, error: String(e?.message || e) });
-    return res.status(500).json({ error: "Failed to fetch gift" });
+    logEvent("gift_get_failed", { publicId, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Failed to load gift" });
   }
 });
 
 /* ==================================================
-   POST /api/gifts/:publicId/claim
+   POST /api/gifts/:publicId/claim  (delay enforced)
 ================================================== */
 router.post("/api/gifts/:publicId/claim", async (req, res) => {
   const ip = getIp(req);
   const publicId = (req.params.publicId || "").toString().trim();
 
-  try {
-    logEvent("claim_attempted", { publicId, ip });
+  logEvent("claim_attempted", { publicId, ip });
 
-    const gift = await getGiftByPublicId(publicId);
+  try {
+    const rows = await db
+      .select()
+      .from(gifts as any)
+      .where(eq((gifts as any).publicId, publicId))
+      .limit(1);
+
+    const gift = rows?.[0];
+
     if (!gift) {
       logEvent("claim_not_found", { publicId });
       return res.status(404).json({ error: "Gift not found" });
@@ -276,8 +321,7 @@ router.post("/api/gifts/:publicId/claim", async (req, res) => {
       return res.status(409).json({ error: "Already claimed" });
     }
 
-    const createdAtRaw = (gift as any).createdAt;
-    const createdAt = createdAtRaw ? new Date(createdAtRaw) : new Date();
+    const createdAt = new Date((gift as any).createdAt);
     const unlockInSec = computeUnlockInSec(createdAt);
 
     if (unlockInSec > 0) {
@@ -310,13 +354,15 @@ router.post("/api/gifts/:publicId/claim", async (req, res) => {
       gift: updated[0],
     });
   } catch (e: any) {
-    logEvent("claim_error", { publicId, ip, error: String(e?.message || e) });
-    return res.status(500).json({ error: "Failed to claim gift" });
+    logEvent("claim_failed", { publicId, ip, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Claim failed" });
   }
 });
 
-export async function registerRoutes(_httpServer: Server, app: Express) {
+/* -------------------- REGISTER ROUTES -------------------- */
+export function registerRoutes(httpServer: Server, app: Express) {
   app.use(router);
+  return httpServer;
 }
 
 export default router;
