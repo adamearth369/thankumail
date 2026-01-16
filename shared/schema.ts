@@ -5,10 +5,10 @@ import { z } from "zod";
 export const gifts = pgTable("gifts", {
   id: serial("id").primaryKey(),
 
-  // Public reference (used in logs/admin/reference)
+  // public id used for legacy links / reference IDs
   publicId: text("public_id").notNull().unique(),
 
-  // Claim token (used in emailed /claim/:token links)
+  // claim token used for /claim/:token links
   claimToken: text("claim_token").notNull().unique(),
 
   recipientEmail: text("recipient_email").notNull(),
