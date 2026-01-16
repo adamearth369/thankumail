@@ -4,7 +4,13 @@ import { z } from "zod";
 
 export const gifts = pgTable("gifts", {
   id: serial("id").primaryKey(),
+
+  // Public reference (used in logs/admin/reference)
   publicId: text("public_id").notNull().unique(),
+
+  // Claim token (used in emailed /claim/:token links)
+  claimToken: text("claim_token").notNull().unique(),
+
   recipientEmail: text("recipient_email").notNull(),
   message: text("message").notNull(),
   amount: integer("amount").notNull(),
@@ -13,15 +19,18 @@ export const gifts = pgTable("gifts", {
   claimedAt: timestamp("claimed_at"),
 });
 
-export const insertGiftSchema = createInsertSchema(gifts).extend({
-  amount: z.coerce.number().min(1000, "Minimum amount is $10").max(100000, "Maximum amount is $1000"),
-}).omit({
-  id: true,
-  createdAt: true,
-  claimedAt: true,
-  isClaimed: true,
-  publicId: true,
-});
+export const insertGiftSchema = createInsertSchema(gifts)
+  .extend({
+    amount: z.coerce.number().min(1000, "Minimum amount is $10").max(100000, "Maximum amount is $1000"),
+  })
+  .omit({
+    id: true,
+    createdAt: true,
+    claimedAt: true,
+    isClaimed: true,
+    publicId: true,
+    claimToken: true,
+  });
 
 export type Gift = typeof gifts.$inferSelect;
 export type InsertGift = z.infer<typeof insertGiftSchema>;
