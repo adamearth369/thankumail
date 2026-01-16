@@ -298,13 +298,6 @@ export default function CreateGiftForm() {
           ))}
         </select>
 
-        <textarea
-          value={message}
-          readOnly
-          placeholder="Select a preset message above…"
-          className="h-28 w-full rounded-2xl border px-4 py-3 bg-slate-50"
-        />
-
         <div className="flex gap-2">
           {moneyPresets.map((p) => (
             <button
@@ -323,55 +316,3 @@ export default function CreateGiftForm() {
         {siteKey && !result ? (
           <div className="space-y-2">
             <div className="text-xs text-slate-500">
-              {turnstileReady ? "Complete the CAPTCHA to create a gift." : "Loading CAPTCHA…"}
-            </div>
-            <div ref={turnstileContainerRef} className="min-h-[70px] rounded-2xl border bg-white px-4 py-4" />
-            {turnstileError ? (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                {turnstileError}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {err && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{err}</div>
-        )}
-
-        {result && (
-          <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm">
-            <div className="font-semibold text-slate-900">Your ThanküMail has been delivered.</div>
-            <div className="mt-1 text-slate-700">
-              Email {result.emailStatus === "sent" ? "sent to" : "queued for"}{" "}
-              <span className="font-semibold">{result.recipient}</span>
-            </div>
-            <div className="mt-2 text-slate-700">If they don’t receive it within 48 hours, a reminder email will be sent.</div>
-
-            <div className="mt-3 flex gap-2">
-              <input readOnly value={result.claimUrl} className="flex-1 rounded-xl border bg-white px-3 py-2 text-xs" />
-              <button type="button" onClick={copyLink} className="rounded-xl bg-violet-600 px-4 py-2 text-xs text-white">
-                {copied ? "Copied" : "Copy"}
-              </button>
-            </div>
-
-            <div className="mt-3 text-[11px] text-slate-500">Reference ID: {result.publicId}</div>
-          </div>
-        )}
-
-        <button
-          type="submit"
-          disabled={!canSubmit || submitting}
-          className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
-        >
-          {submitting ? "Creating…" : siteKey && !turnstileToken ? "Complete CAPTCHA" : "Create gift"}
-        </button>
-
-        {siteKey && !result ? (
-          <div className="text-[11px] leading-relaxed text-slate-500">
-            Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
-          </div>
-        ) : null}
-      </form>
-    </div>
-  );
-}
