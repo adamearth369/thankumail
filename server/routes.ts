@@ -44,7 +44,7 @@ const CreateGiftSchema = z.object({
   turnstileToken: z.string().min(1).optional(),
 });
 
-/* -------------------- ROUTER -------------------- */
+/* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
 const router = Router();
 
 /* -------------------- CREATE GIFT -------------------- */
@@ -94,7 +94,6 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
       }
     }
 
-    // TEMPORARY: claim link uses publicId (no claim_token column required)
     const publicId = crypto.randomBytes(12).toString("hex");
 
     logEvent("gift_created", { publicId });
@@ -109,14 +108,14 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
         isClaimed: false,
         createdAt: new Date(),
       })
-      .returning({
-        publicId: (gifts as any).publicId,
-      });
+      .returning();
 
     const gift = inserted?.[0];
     const pid = (gift as any)?.publicId || publicId;
 
     const base = getBaseUrl(req);
+
+    // ✅ IMPORTANT: claim link uses publicId (no DB migration required)
     const claimUrl = `${base}/claim/${pid}`;
 
     logEvent("email_send_queued", { publicId: pid });
@@ -125,6 +124,7 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
       to: recipientEmail,
       message,
       claimLink: claimUrl,
+      // (optional) if your email.ts supports amount, you can add it later
     });
 
     if (emailRes?.ok) {
@@ -146,21 +146,13 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
   }
 });
 
-/* -------------------- GET GIFT (publicId) -------------------- */
+/* -------------------- GET GIFT -------------------- */
 router.get("/api/gifts/:publicId", async (req: Request, res: Response) => {
   const publicId = (req.params.publicId || "").toString().trim();
 
   try {
     const rows = await db
-      .select({
-        publicId: (gifts as any).publicId,
-        recipientEmail: (gifts as any).recipientEmail,
-        message: (gifts as any).message,
-        amount: (gifts as any).amount,
-        isClaimed: (gifts as any).isClaimed,
-        createdAt: (gifts as any).createdAt,
-        claimedAt: (gifts as any).claimedAt,
-      })
+      .select()
       .from(gifts as any)
       .where(eq((gifts as any).publicId, publicId))
       .limit(1);
@@ -171,14 +163,23 @@ router.get("/api/gifts/:publicId", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Not found" });
     }
 
-    return res.json(gift);
+    return res.json({
+      publicId: (gift as any).publicId,
+      giftId: (gift as any).publicId,
+      amount: (gift as any).amount,
+      message: (gift as any).message,
+      recipientEmail: (gift as any).recipientEmail,
+      isClaimed: !!(gift as any).isClaimed,
+      createdAt: (gift as any).createdAt,
+      claimedAt: (gift as any).claimedAt,
+    });
   } catch (e: any) {
     logEvent("gift_get_failed", { publicId, error: String(e?.message || e) });
     return res.status(500).json({ error: "Server error" });
   }
 });
 
-/* -------------------- CLAIM (publicId) -------------------- */
+/* -------------------- CLAIM (delay enforced) -------------------- */
 router.post("/api/gifts/:publicId/claim", async (req: Request, res: Response) => {
   const publicId = (req.params.publicId || "").toString().trim();
   const ip = safeStr(req.ip);
@@ -187,11 +188,7 @@ router.post("/api/gifts/:publicId/claim", async (req: Request, res: Response) =>
 
   try {
     const rows = await db
-      .select({
-        publicId: (gifts as any).publicId,
-        isClaimed: (gifts as any).isClaimed,
-        createdAt: (gifts as any).createdAt,
-      })
+      .select()
       .from(gifts as any)
       .where(eq((gifts as any).publicId, publicId))
       .limit(1);
@@ -214,7 +211,11 @@ router.post("/api/gifts/:publicId/claim", async (req: Request, res: Response) =>
       if (nowMs < unlockAtMs) {
         const unlockInSec = Math.ceil((unlockAtMs - nowMs) / 1000);
         logEvent("claim_too_soon", { publicId, unlockInSec, minClaimDelaySec });
-        return res.status(429).json({ error: "Too soon", code: "TOO_SOON", retryAfterSec: unlockInSec });
+        return res.status(429).json({
+          error: "Too soon",
+          code: "TOO_SOON",
+          retryAfterSec: unlockInSec,
+        });
       }
     }
 
@@ -224,10 +225,7 @@ router.post("/api/gifts/:publicId/claim", async (req: Request, res: Response) =>
       .update(gifts as any)
       .set({ isClaimed: true, claimedAt })
       .where(eq((gifts as any).publicId, publicId))
-      .returning({
-        publicId: (gifts as any).publicId,
-        claimedAt: (gifts as any).claimedAt,
-      });
+      .returning();
 
     if (!updated?.[0]) {
       logEvent("claim_update_failed", { publicId });
