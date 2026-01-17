@@ -1,3 +1,4 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type CreateGiftResponse =
@@ -14,7 +15,7 @@ function moneyToCents(dollars: number) {
 }
 
 function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || "").trim());
 }
 
 function absoluteLink(maybeRelative: string) {
@@ -99,13 +100,12 @@ export default function CreateGiftForm() {
   const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
 
   const canSubmit = useMemo(() => {
-    if (!isEmail(recipientEmail)) return false;
-    if (!message.trim()) return false;
-    if (!Number.isFinite(amountDollars)) return false;
-    if (amountCents < 1000) return false;
-    if (siteKey && !turnstileToken) return false;
-    return true;
-  }, [recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken]);
+    const emailOk = isEmail(recipientEmail);
+    const msgOk = !!message.trim();
+    const amtOk = Number.isFinite(amountDollars) && amountCents >= 1000;
+    const captchaOk = !siteKey || !!turnstileToken;
+    return emailOk && msgOk && amtOk && captchaOk && !submitting;
+  }, [recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
 
   // Keep message locked to preset (non-KYC mode)
   useEffect(() => {
@@ -189,9 +189,10 @@ export default function CreateGiftForm() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    // IMPORTANT: clear stale UI states so "Server error" can't linger after success
     setErr("");
     setTurnstileError("");
-    setResult(null);
     setCopied(false);
 
     const email = recipientEmail.trim();
@@ -244,6 +245,10 @@ export default function CreateGiftForm() {
       const claimUrl = (data as any)?.claimUrl;
 
       if (publicId && claimUrl) {
+        // IMPORTANT: success should wipe any previous error states
+        setErr("");
+        setTurnstileError("");
+
         setResult({
           publicId,
           claimUrl: absoluteLink(claimUrl),
@@ -251,7 +256,7 @@ export default function CreateGiftForm() {
           emailStatus: (data as any)?.emailSent === false ? "queued" : "sent",
         });
 
-        // Hide form after success. Keep Turnstile reset so next send is clean.
+        // Keep Turnstile reset so next send is clean.
         resetTurnstile();
         return;
       }
@@ -292,6 +297,8 @@ export default function CreateGiftForm() {
             value={recipientEmail}
             onChange={(e) => setRecipientEmail(e.target.value)}
             placeholder="Recipient email"
+            inputMode="email"
+            autoComplete="email"
             className="w-full rounded-2xl border px-4 py-3"
           />
 
@@ -343,7 +350,7 @@ export default function CreateGiftForm() {
 
           <button
             type="submit"
-            disabled={!canSubmit || submitting}
+            disabled={!canSubmit}
             className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
           >
             {submitting ? "Creating…" : siteKey && !turnstileToken ? "Complete CAPTCHA" : "Create gift"}
@@ -369,7 +376,11 @@ export default function CreateGiftForm() {
 
             <div className="mt-3 flex gap-2">
               <input readOnly value={result.claimUrl} className="flex-1 rounded-xl border bg-white px-3 py-2 text-xs" />
-              <button type="button" onClick={copyLink} className="rounded-xl bg-violet-600 px-4 py-2 text-xs text-white">
+              <button
+                type="button"
+                onClick={copyLink}
+                className="rounded-xl bg-violet-600 px-4 py-2 text-xs text-white"
+              >
                 {copied ? "Copied" : "Copy"}
               </button>
             </div>
