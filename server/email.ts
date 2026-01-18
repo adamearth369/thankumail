@@ -1,252 +1,173 @@
-// ============================================================
-// FILE TO REPLACE (FULL FILE)
-// WHERE TO PASTE: server/email.ts
-// PURPOSE:
-// - Subject line update (B)
-// - Add reminder email sender (A)
-// - Remove API key from logs + safer logging
-// - FIX: Never output $NaN (safe amount formatting)
-// ============================================================
+import nodemailer from "nodemailer";
 
-type SendEmailResult =
-  | { ok: true; messageId: string }
-  | { ok: false; error: string };
+/**
+ * NOTE:
+ * - Uses SMTP env vars (Brevo-compatible)
+ * - Keeps a single transport instance
+ * - Provides: sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail
+ */
 
-function env(name: string, fallback = "") {
-  const v = process.env[name];
-  return (v ?? fallback).trim();
+function env(name: string, fallback = ""): string {
+  return (process.env[name] || fallback).trim();
 }
 
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+const SMTP_HOST = env("SMTP_HOST", "smtp-relay.brevo.com");
+const SMTP_PORT = parseInt(env("SMTP_PORT", "587"), 10);
+const SMTP_USER = env("SMTP_USER"); // Brevo SMTP login
+const SMTP_PASS = env("SMTP_PASS"); // Brevo SMTP key
+const EMAIL_FROM = env("EMAIL_FROM", env("SMTP_FROM", "no-reply@thankumail.com"));
+const EMAIL_REPLY_TO = env("EMAIL_REPLY_TO", "");
+
+const transport = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_PORT === 465,
+  auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
+});
+
+function safeStr(v: any) {
+  return typeof v === "string" ? v : "";
 }
 
-function toDomain(email: string) {
-  const at = email.lastIndexOf("@");
-  return at >= 0 ? email.slice(at + 1).toLowerCase() : "";
+function subjectPrefix() {
+  const p = env("EMAIL_SUBJECT_PREFIX");
+  return p ? `${p} ` : "";
 }
 
-function escapeHtml(input: string) {
-  return input
+async function sendMail(opts: {
+  to: string;
+  subject: string;
+  html: string;
+  text?: string;
+}) {
+  const to = safeStr(opts.to).trim();
+  if (!to) throw new Error("Missing to");
+
+  await transport.sendMail({
+    from: EMAIL_FROM,
+    to,
+    replyTo: EMAIL_REPLY_TO || undefined,
+    subject: opts.subject,
+    html: opts.html,
+    text: opts.text,
+  });
+}
+
+/**
+ * Original gift email (existing behavior)
+ */
+export async function sendGiftEmail(args: {
+  to: string;
+  claimUrl: string;
+  message: string;
+  amountCents?: number;
+}) {
+  const claimUrl = safeStr(args.claimUrl);
+  const message = safeStr(args.message);
+
+  const subject = `${subjectPrefix()}You’ve received a ThankuMail`;
+  const html = `
+  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; line-height:1.5;">
+    <h2 style="margin:0 0 12px 0;">You’ve received a ThankuMail</h2>
+    <p style="margin:0 0 12px 0;">A message was sent to you:</p>
+    <div style="padding:12px 14px; border:1px solid #e5e7eb; border-radius:10px; background:#fafafa; margin:0 0 16px 0;">
+      ${message ? `<div style="white-space:pre-wrap;">${escapeHtml(message)}</div>` : `<em>(No message)</em>`}
+    </div>
+    <a href="${claimUrl}" style="display:inline-block; padding:12px 16px; border-radius:10px; text-decoration:none; background:#111827; color:#fff;">
+      Open your ThankuMail
+    </a>
+    <p style="margin:16px 0 0 0; color:#6b7280; font-size:13px;">
+      If you don’t see it, check your spam/junk folder.
+    </p>
+  </div>`;
+
+  const text = `You’ve received a ThankuMail.\n\nMessage:\n${message}\n\nOpen: ${claimUrl}\n\nIf you don’t see it, check your spam/junk folder.`;
+
+  await sendMail({ to: args.to, subject, html, text });
+}
+
+/**
+ * Reminder email (used by /api/reminders/run)
+ */
+export async function sendReminderEmail(args: {
+  to: string;
+  claimUrl: string;
+  message: string;
+  reminderNumber: number; // 1..3
+}) {
+  const claimUrl = safeStr(args.claimUrl);
+  const message = safeStr(args.message);
+  const n = Math.max(1, Math.min(3, args.reminderNumber || 1));
+
+  const subject = `${subjectPrefix()}Reminder ${n}/3: Your ThankuMail is waiting`;
+  const html = `
+  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; line-height:1.5;">
+    <h2 style="margin:0 0 12px 0;">Your ThankuMail is still waiting</h2>
+    <p style="margin:0 0 12px 0;">This is reminder ${n} of 3.</p>
+    <div style="padding:12px 14px; border:1px solid #e5e7eb; border-radius:10px; background:#fafafa; margin:0 0 16px 0;">
+      ${message ? `<div style="white-space:pre-wrap;">${escapeHtml(message)}</div>` : `<em>(No message)</em>`}
+    </div>
+    <a href="${claimUrl}" style="display:inline-block; padding:12px 16px; border-radius:10px; text-decoration:none; background:#111827; color:#fff;">
+      Open your ThankuMail
+    </a>
+    <p style="margin:16px 0 0 0; color:#6b7280; font-size:13px;">
+      If you already claimed it, you can ignore this.
+    </p>
+  </div>`;
+
+  const text = `Reminder ${n}/3: Your ThankuMail is waiting.\n\nMessage:\n${message}\n\nOpen: ${claimUrl}\n\nIf you already claimed it, you can ignore this.`;
+
+  await sendMail({ to: args.to, subject, html, text });
+}
+
+/**
+ * Return-to-sender email (after 3 reminders, still unclaimed)
+ */
+export async function sendReturnToSenderEmail(args: {
+  to: string;
+  recipientEmail: string;
+  publicId: string;
+  createdAtIso?: string;
+  claimUrl?: string;
+  remindersAttempted?: number;
+}) {
+  const to = safeStr(args.to);
+  const recipientEmail = safeStr(args.recipientEmail);
+  const publicId = safeStr(args.publicId);
+  const createdAtIso = safeStr(args.createdAtIso);
+  const claimUrl = safeStr(args.claimUrl);
+  const remindersAttempted = typeof args.remindersAttempted === "number" ? args.remindersAttempted : 3;
+
+  const subject = `${subjectPrefix()}Your ThankuMail wasn’t claimed`;
+  const html = `
+  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; line-height:1.5;">
+    <h2 style="margin:0 0 12px 0;">Your ThankuMail wasn’t claimed</h2>
+    <p style="margin:0 0 12px 0;">
+      We tried notifying <strong>${escapeHtml(recipientEmail)}</strong> up to ${remindersAttempted} times, but it wasn’t claimed.
+    </p>
+    <div style="padding:12px 14px; border:1px solid #e5e7eb; border-radius:10px; background:#fafafa; margin:0 0 16px 0;">
+      <div><strong>Gift ID:</strong> ${escapeHtml(publicId)}</div>
+      ${createdAtIso ? `<div><strong>Created:</strong> ${escapeHtml(createdAtIso)}</div>` : ``}
+    </div>
+    ${claimUrl ? `<p style="margin:0 0 12px 0;">If you want to resend manually, you can use this link:</p>
+    <a href="${claimUrl}" style="display:inline-block; padding:12px 16px; border-radius:10px; text-decoration:none; background:#111827; color:#fff;">
+      View the ThankuMail link
+    </a>` : ``}
+    <p style="margin:16px 0 0 0; color:#6b7280; font-size:13px;">
+      This is an automated notice.
+    </p>
+  </div>`;
+
+  const text = `Your ThankuMail wasn’t claimed.\n\nRecipient: ${recipientEmail}\nGift ID: ${publicId}\nCreated: ${createdAtIso}\nReminders attempted: ${remindersAttempted}\n${claimUrl ? `\nLink: ${claimUrl}\n` : ""}`;
+
+  await sendMail({ to, subject, html, text });
+}
+
+function escapeHtml(s: string) {
+  return s
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
-}
-
-function logEmail(event: string, fields: Record<string, any> = {}) {
-  console.log(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      event,
-      ...fields,
-    }),
-  );
-}
-
-function toAbsoluteUrl(maybeRelative: string) {
-  if (!maybeRelative) return maybeRelative;
-  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
-
-  const base =
-    env("PUBLIC_BASE_URL") ||
-    env("BASE_URL") ||
-    ""; // set PUBLIC_BASE_URL on Render to https://thankumail.com
-
-  if (!base) return maybeRelative;
-
-  const cleanBase = base.replace(/\/+$/, "");
-  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
-  return `${cleanBase}${path}`;
-}
-
-/* -------------------- amount formatting (NO NaN) -------------------- */
-function toFiniteCents(v: any) {
-  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-  if (!Number.isFinite(n)) return null;
-  const i = Math.floor(n);
-  if (!Number.isFinite(i)) return null;
-  return Math.max(0, i);
-}
-
-function formatDollarsFromCents(v: any) {
-  const cents = toFiniteCents(v);
-  if (cents === null) return null;
-  return (cents / 100).toFixed(2);
-}
-
-async function sendBrevoEmail(args: {
-  to: string;
-  subject: string;
-  textContent: string;
-  htmlContent: string;
-}): Promise<SendEmailResult> {
-  const started = Date.now();
-
-  try {
-    const to = (args.to || "").trim();
-    if (!isEmail(to)) return { ok: false, error: `Invalid recipient email: "${to}"` };
-
-    const apiKey = env("BREVO_API_KEY") || env("BREVO_SMTP_KEY");
-    if (!apiKey) return { ok: false, error: "Missing BREVO_API_KEY" };
-
-    const fromEmail = env("FROM_EMAIL", "noreply@thankumail.com");
-    const fromName = env("FROM_NAME", "ThankuMail");
-    const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
-
-    logEmail("email_api_send_start", {
-      toDomain: toDomain(to),
-      fromEmail,
-      fromName,
-      endpoint,
-    });
-
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": apiKey,
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        sender: { email: fromEmail, name: fromName },
-        to: [{ email: to }],
-        subject: args.subject,
-        textContent: args.textContent,
-        htmlContent: args.htmlContent,
-      }),
-    });
-
-    const bodyText = await resp.text();
-    let bodyJson: any = null;
-    try {
-      bodyJson = bodyText ? JSON.parse(bodyText) : null;
-    } catch {
-      bodyJson = null;
-    }
-
-    if (!resp.ok) {
-      logEmail("email_api_send_failed", {
-        toDomain: toDomain(to),
-        status: resp.status,
-        body: bodyJson ?? bodyText?.slice(0, 300),
-        ms: Date.now() - started,
-      });
-      return { ok: false, error: `Brevo API error (${resp.status})` };
-    }
-
-    const messageId =
-      (bodyJson && (bodyJson.messageId || bodyJson["messageId"])) || "unknown";
-
-    logEmail("email_api_send_ok", {
-      toDomain: toDomain(to),
-      messageId,
-      ms: Date.now() - started,
-    });
-
-    return { ok: true, messageId: String(messageId) };
-  } catch (err: any) {
-    const msg = String(err?.message || err);
-    logEmail("email_api_crash", {
-      message: msg,
-      code: err?.code,
-      ms: Date.now() - started,
-    });
-    return { ok: false, error: msg };
-  }
-}
-
-/* ============================================================
-   B) PRIMARY SEND (subject tuned for deliverability)
-============================================================ */
-export async function sendGiftEmail(args: {
-  to: string;
-  claimLink: string; // relative "/claim/abc" or absolute
-  message: string;
-  amountCents?: number; // ✅ optional, safe
-}): Promise<SendEmailResult> {
-  const to = (args.to || "").trim();
-
-  const claimUrl = toAbsoluteUrl(args.claimLink);
-  const dollars = formatDollarsFromCents(args.amountCents);
-
-  const subject = "Someone sent you a ThanküMail";
-
-  const amountLineText = dollars ? `Gift amount: $${dollars}` : `Gift amount: (not available)`;
-  const amountLineHtml = dollars
-    ? `<p style="margin:0 0 10px"><b>Gift amount:</b> $${dollars}</p>`
-    : `<p style="margin:0 0 10px"><b>Gift amount:</b> (not available)</p>`;
-
-  const textContent = [
-    `Someone sent you a ThanküMail.`,
-    ``,
-    `Message: ${args.message}`,
-    amountLineText,
-    ``,
-    `Open it when you're ready: ${claimUrl}`,
-    ``,
-    `You're never required to claim anything, and no personal information is requested.`,
-  ].join("\n");
-
-  const htmlContent = `
-    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.5; color:#111">
-      <h2 style="margin:0 0 12px">Someone sent you a ThanküMail</h2>
-      ${amountLineHtml}
-      <p style="margin:0 0 6px"><b>Message:</b></p>
-      <p style="margin:0 0 16px; font-style:italic; color:#444">"${escapeHtml(args.message)}"</p>
-      <p style="margin:0 0 16px">
-        <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
-          Open your ThanküMail →
-        </a>
-      </p>
-      <p style="margin:0; color:#666; font-size:13px">
-        ThanküMail is a simple way for someone to send a message of appreciation along with a gift.
-        You’re never required to claim anything, and no personal information is requested.
-      </p>
-    </div>
-  `;
-
-  return sendBrevoEmail({ to, subject, textContent, htmlContent });
-}
-
-/* ============================================================
-   A) REMINDER SEND (48-hour reminder)
-============================================================ */
-export async function sendGiftReminderEmail(args: {
-  to: string;
-  claimLink: string; // relative "/claim/abc" or absolute
-}): Promise<SendEmailResult> {
-  const to = (args.to || "").trim();
-  const claimUrl = toAbsoluteUrl(args.claimLink);
-
-  const subject = "A ThanküMail is waiting for you";
-
-  const textContent = [
-    `A ThanküMail is still waiting for you.`,
-    ``,
-    `If you'd like to read it, it's here: ${claimUrl}`,
-    ``,
-    `You're never required to claim anything, and no personal information is requested.`,
-  ].join("\n");
-
-  const htmlContent = `
-    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.5; color:#111">
-      <h2 style="margin:0 0 12px">A ThanküMail is waiting for you</h2>
-      <p style="margin:0 0 16px; color:#333">
-        Someone sent you a ThanküMail earlier. If you'd like to read it, it's still here for you.
-      </p>
-      <p style="margin:0 0 16px">
-        <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
-          Open your ThanküMail →
-        </a>
-      </p>
-      <p style="margin:0; color:#666; font-size:13px">
-        ThanküMail is a simple way for someone to send a message of appreciation along with a gift.
-        You’re never required to claim anything, and no personal information is requested.
-      </p>
-    </div>
-  `;
-
-  return sendBrevoEmail({ to, subject, textContent, htmlContent });
 }
