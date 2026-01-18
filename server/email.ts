@@ -5,6 +5,7 @@
 // - Subject line update (B)
 // - Add reminder email sender (A)
 // - Remove API key from logs + safer logging
+// - FIX: Never output $NaN (safe amount formatting)
 // ============================================================
 
 type SendEmailResult =
@@ -58,6 +59,21 @@ function toAbsoluteUrl(maybeRelative: string) {
   const cleanBase = base.replace(/\/+$/, "");
   const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
   return `${cleanBase}${path}`;
+}
+
+/* -------------------- amount formatting (NO NaN) -------------------- */
+function toFiniteCents(v: any) {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return null;
+  const i = Math.floor(n);
+  if (!Number.isFinite(i)) return null;
+  return Math.max(0, i);
+}
+
+function formatDollarsFromCents(v: any) {
+  const cents = toFiniteCents(v);
+  if (cents === null) return null;
+  return (cents / 100).toFixed(2);
 }
 
 async function sendBrevoEmail(args: {
@@ -148,20 +164,25 @@ export async function sendGiftEmail(args: {
   to: string;
   claimLink: string; // relative "/claim/abc" or absolute
   message: string;
-  amountCents: number;
+  amountCents?: number; // ✅ optional, safe
 }): Promise<SendEmailResult> {
   const to = (args.to || "").trim();
-  const dollars = (args.amountCents / 100).toFixed(2);
-  const claimUrl = toAbsoluteUrl(args.claimLink);
 
-  // UPDATED SUBJECT (B)
+  const claimUrl = toAbsoluteUrl(args.claimLink);
+  const dollars = formatDollarsFromCents(args.amountCents);
+
   const subject = "Someone sent you a ThanküMail";
+
+  const amountLineText = dollars ? `Gift amount: $${dollars}` : `Gift amount: (not available)`;
+  const amountLineHtml = dollars
+    ? `<p style="margin:0 0 10px"><b>Gift amount:</b> $${dollars}</p>`
+    : `<p style="margin:0 0 10px"><b>Gift amount:</b> (not available)</p>`;
 
   const textContent = [
     `Someone sent you a ThanküMail.`,
     ``,
     `Message: ${args.message}`,
-    `Gift amount: $${dollars}`,
+    amountLineText,
     ``,
     `Open it when you're ready: ${claimUrl}`,
     ``,
@@ -171,7 +192,7 @@ export async function sendGiftEmail(args: {
   const htmlContent = `
     <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.5; color:#111">
       <h2 style="margin:0 0 12px">Someone sent you a ThanküMail</h2>
-      <p style="margin:0 0 10px"><b>Gift amount:</b> $${dollars}</p>
+      ${amountLineHtml}
       <p style="margin:0 0 6px"><b>Message:</b></p>
       <p style="margin:0 0 16px; font-style:italic; color:#444">"${escapeHtml(args.message)}"</p>
       <p style="margin:0 0 16px">

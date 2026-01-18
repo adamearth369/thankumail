@@ -5,8 +5,8 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
-import { eq } from "drizzle-orm";
-import { sendGiftEmail } from "./email";
+import { and, eq, lt } from "drizzle-orm";
+import { sendGiftEmail, sendGiftReminderEmail } from "./email";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -36,6 +36,12 @@ const giftCreateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const DEFAULT_REMINDER_HOURS = Number(process.env.REMINDER_OLDER_THAN_HOURS || "48");
+const reminderOlderThanHours = Number.isFinite(DEFAULT_REMINDER_HOURS) ? DEFAULT_REMINDER_HOURS : 48;
+
+const DEFAULT_REMINDER_LIMIT = Number(process.env.REMINDER_BATCH_SIZE || "50");
+const reminderBatchSize = Number.isFinite(DEFAULT_REMINDER_LIMIT) ? DEFAULT_REMINDER_LIMIT : 50;
+
 /* -------------------- VALIDATION -------------------- */
 const CreateGiftSchema = z.object({
   recipientEmail: z.string().email(),
@@ -44,8 +50,34 @@ const CreateGiftSchema = z.object({
   turnstileToken: z.string().min(1).optional(),
 });
 
+const AdminReminderSchema = z.object({
+  dryRun: z.boolean().optional(),
+  olderThanHours: z.number().int().min(1).max(720).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+});
+
+function requireAdmin(req: Request, res: Response) {
+  const expected = safeStr(process.env.ADMIN_TOKEN);
+  if (!expected) {
+    res.status(500).json({ error: "Server missing ADMIN_TOKEN" });
+    return true;
+  }
+  const got = safeStr(req.header("x-admin-token"));
+  if (!got || got !== expected) {
+    res.status(401).json({ error: "Unauthorized" });
+    return true;
+  }
+  return false;
+}
+
 /* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
 const router = Router();
+
+/* -------------------- VERSION MARKER (DEPLOY PROOF) -------------------- */
+router.get("/api/__version", (_req: Request, res: Response) => {
+  // bump this string whenever we need to prove deploy updated
+  return res.json({ ok: true, version: "reminders_v1_2026-01-18" });
+});
 
 /* -------------------- CREATE GIFT -------------------- */
 router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response) => {
@@ -62,7 +94,6 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
 
     const { recipientEmail, message, amount, turnstileToken } = parsed.data;
 
-    // Enforce CAPTCHA if site key configured
     const siteKey = safeStr(process.env.TURNSTILE_SITE_KEY || process.env.VITE_TURNSTILE_SITE_KEY);
     const secretKey = safeStr(process.env.TURNSTILE_SECRET_KEY);
 
@@ -95,7 +126,6 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
     }
 
     const publicId = crypto.randomBytes(12).toString("hex");
-
     logEvent("gift_created", { publicId });
 
     const inserted = await db
@@ -114,8 +144,6 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
     const pid = (gift as any)?.publicId || publicId;
 
     const base = getBaseUrl(req);
-
-    // ✅ IMPORTANT: claim link uses publicId (no DB migration required)
     const claimUrl = `${base}/claim/${pid}`;
 
     logEvent("email_send_queued", { publicId: pid });
@@ -124,14 +152,11 @@ router.post("/api/gifts", giftCreateLimiter, async (req: Request, res: Response)
       to: recipientEmail,
       message,
       claimLink: claimUrl,
-      // (optional) if your email.ts supports amount, you can add it later
+      amountCents: amount,
     });
 
-    if (emailRes?.ok) {
-      logEvent("email_sent", { publicId: pid });
-    } else {
-      logEvent("email_send_failed", { publicId: pid, error: emailRes?.error || "unknown" });
-    }
+    if (emailRes?.ok) logEvent("email_sent", { publicId: pid });
+    else logEvent("email_send_failed", { publicId: pid, error: emailRes?.error || "unknown" });
 
     return res.json({
       publicId: pid,
@@ -241,6 +266,88 @@ router.post("/api/gifts/:publicId/claim", async (req: Request, res: Response) =>
     });
   } catch (e: any) {
     logEvent("claim_failed", { publicId, ip, error: String(e?.message || e) });
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+/* -------------------- ADMIN: SEND REMINDERS (manual trigger) -------------------- */
+router.post("/api/admin/reminders/send", async (req: Request, res: Response) => {
+  if (requireAdmin(req, res)) return;
+
+  const parsed = AdminReminderSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+  }
+
+  const dryRun = !!parsed.data.dryRun;
+  const olderThanHours = parsed.data.olderThanHours ?? reminderOlderThanHours;
+  const limit = parsed.data.limit ?? reminderBatchSize;
+
+  const cutoff = new Date(Date.now() - olderThanHours * 60 * 60 * 1000);
+
+  logEvent("reminders_scan_start", {
+    dryRun,
+    olderThanHours,
+    limit,
+    cutoff: cutoff.toISOString(),
+  });
+
+  let scanned = 0;
+  let eligible = 0;
+  let sent = 0;
+  let failed = 0;
+
+  try {
+    const rows = await db
+      .select()
+      .from(gifts as any)
+      .where(and(eq((gifts as any).isClaimed, false), lt((gifts as any).createdAt, cutoff)))
+      .limit(limit);
+
+    scanned = rows?.length || 0;
+    eligible = scanned;
+
+    for (const g of rows || []) {
+      const publicId = safeStr((g as any).publicId);
+      const to = safeStr((g as any).recipientEmail);
+      const claimUrl = `${getBaseUrl(req)}/claim/${encodeURIComponent(publicId)}`;
+
+      if (dryRun) {
+        logEvent("reminder_dryrun", { publicId });
+        continue;
+      }
+
+      logEvent("reminder_send_queued", { publicId });
+
+      const r = await sendGiftReminderEmail({
+        to,
+        claimLink: claimUrl,
+      });
+
+      if ((r as any)?.ok) {
+        sent += 1;
+        logEvent("reminder_sent", { publicId, messageId: (r as any).messageId });
+      } else {
+        failed += 1;
+        logEvent("reminder_failed", { publicId, error: (r as any)?.error || "unknown" });
+      }
+    }
+
+    logEvent("reminders_scan_done", { scanned, eligible, sent, failed });
+
+    return res.json({
+      ok: true,
+      scanned,
+      eligible,
+      sent,
+      failed,
+      dryRun,
+      olderThanHours,
+      limit,
+      cutoff: cutoff.toISOString(),
+    });
+  } catch (e: any) {
+    logEvent("reminders_scan_failed", { error: String(e?.message || e) });
     return res.status(500).json({ error: "Server error" });
   }
 });
