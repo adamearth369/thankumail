@@ -1,3 +1,4 @@
+// server/routes.ts
 import { Router } from "express";
 import type { Request, Response } from "express";
 import crypto from "crypto";
@@ -48,13 +49,38 @@ async function verifyTurnstile(token: string, remoteip?: string) {
 }
 
 /* -------------------- VALIDATION -------------------- */
-const CreateGiftSchema = z.object({
-  senderEmail: z.string().email(),
-  recipientEmail: z.string().email(),
-  message: z.string().max(2000).optional().default(""),
-  amount: z.number().int().min(1000),
-  turnstileToken: z.string().optional(),
-});
+const E164 = /^\+[1-9]\d{7,14}$/;
+
+const CreateGiftSchema = z
+  .object({
+    senderEmail: z.string().email(),
+
+    // Email now OPTIONAL (allow "", undefined)
+    recipientEmail: z
+      .string()
+      .optional()
+      .or(z.literal(""))
+      .transform((v) => (typeof v === "string" ? v.trim() : "")),
+
+    // NEW: phone optional (E.164)
+    recipientPhone: z
+      .string()
+      .optional()
+      .or(z.literal(""))
+      .transform((v) => (typeof v === "string" ? v.trim() : ""))
+      .refine((v) => !v || E164.test(v), {
+        message: "Invalid phone number (use E.164 like +15551234567)",
+      }),
+
+    message: z.string().max(2000).optional().default(""),
+    amount: z.number().int().min(1000),
+    turnstileToken: z.string().optional(),
+  })
+  // Require at least ONE delivery method
+  .refine((d) => !!d.recipientEmail || !!d.recipientPhone, {
+    message: "Provide recipientEmail or recipientPhone",
+    path: ["recipientEmail"],
+  });
 
 /* -------------------- RATE LIMITS -------------------- */
 const createLimiter = rateLimit({
@@ -95,7 +121,7 @@ async function createGiftHandler(req: Request, res: Response) {
     return res.status(400).json({ error: msg });
   }
 
-  const { senderEmail, recipientEmail, message, amount, turnstileToken } = parsed.data;
+  const { senderEmail, recipientEmail, recipientPhone, message, amount, turnstileToken } = parsed.data;
 
   if (process.env.TURNSTILE_SECRET_KEY) {
     const v = await verifyTurnstile(turnstileToken || "", req.ip);
@@ -119,8 +145,11 @@ async function createGiftHandler(req: Request, res: Response) {
     if ((gifts as any).amount) values.amount = amount;
     if ((gifts as any).message) values.message = message || "";
 
-    if ((gifts as any).recipientEmail) values.recipientEmail = recipientEmail;
-    else if ((gifts as any).recipient_email) values.recipient_email = recipientEmail;
+    // Store recipientEmail if provided (phone-only gifts can store empty email)
+    if (recipientEmail) {
+      if ((gifts as any).recipientEmail) values.recipientEmail = recipientEmail;
+      else if ((gifts as any).recipient_email) values.recipient_email = recipientEmail;
+    }
 
     if ((gifts as any).senderEmail) values.senderEmail = senderEmail;
     else if ((gifts as any).sender_email) values.sender_email = senderEmail;
@@ -150,42 +179,51 @@ async function createGiftHandler(req: Request, res: Response) {
 
     const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
 
-    logEvent("gift_created", { publicId, recipientEmail, senderEmail, amount });
+    // Log both delivery options (phone is not stored yet; SMS comes next step)
+    logEvent("gift_created", {
+      publicId,
+      recipientEmail: recipientEmail || "",
+      recipientPhone: recipientPhone || "",
+      senderEmail,
+      amount,
+    });
 
-    // Fire-and-forget email
-    (async () => {
-      try {
-        logEvent("email_send_start", { kind: "gift", publicId, to: recipientEmail });
-        const r = await sendGiftEmail({
-          to: recipientEmail,
-          publicId,
-          claimUrl,
-          amountCents: amount,
-          senderEmail,
-          message,
-        });
-        logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: r.ok, error: r.error || null });
-
-        if (!r.ok && senderEmail) {
-          logEvent("email_send_start", { kind: "return_to_sender", publicId, to: senderEmail });
-          const r2 = await sendReturnToSenderEmail({
-            to: senderEmail,
+    // Fire-and-forget email ONLY when recipientEmail exists
+    if (recipientEmail) {
+      (async () => {
+        try {
+          logEvent("email_send_start", { kind: "gift", publicId, to: recipientEmail });
+          const r = await sendGiftEmail({
+            to: recipientEmail,
             publicId,
+            claimUrl,
             amountCents: amount,
-            reason: r.error || "Delivery failed",
+            senderEmail,
+            message,
           });
-          logEvent("email_sent", {
-            kind: "return_to_sender",
-            publicId,
-            to: senderEmail,
-            ok: r2.ok,
-            error: r2.error || null,
-          });
+          logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: r.ok, error: r.error || null });
+
+          if (!r.ok && senderEmail) {
+            logEvent("email_send_start", { kind: "return_to_sender", publicId, to: senderEmail });
+            const r2 = await sendReturnToSenderEmail({
+              to: senderEmail,
+              publicId,
+              amountCents: amount,
+              reason: r.error || "Delivery failed",
+            });
+            logEvent("email_sent", {
+              kind: "return_to_sender",
+              publicId,
+              to: senderEmail,
+              ok: r2.ok,
+              error: r2.error || null,
+            });
+          }
+        } catch (e: any) {
+          logEvent("email_send_crash", { publicId, error: e?.message || "Unknown error" });
         }
-      } catch (e: any) {
-        logEvent("email_send_crash", { publicId, error: e?.message || "Unknown error" });
-      }
-    })();
+      })();
+    }
 
     return res.json({ ok: true, publicId, claimUrl });
   } catch (e: any) {
