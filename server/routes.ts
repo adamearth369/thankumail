@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import crypto from "crypto";
 import { z } from "zod";
-import { db } from "./db";
+import { db, pool } from "./db";
 import { gifts } from "@shared/schema";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
@@ -38,20 +38,23 @@ function toIso(d: any) {
   }
 }
 
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let t: any;
+  const timeout = new Promise<T>((_resolve, reject) => {
+    t = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
+  });
+  return Promise.race([p.finally(() => clearTimeout(t)), timeout]);
+}
+
 /* -------------------- SCHEMAS -------------------- */
-/**
- * Sender + recipient are MANDATORY.
- * This guarantees "return to sender" can work.
- */
 const CreateGiftSchema = z.object({
   senderEmail: z.string().email(),
   recipientEmail: z.string().email(),
   message: z.string().max(2000).optional().default(""),
-  amount: z.number().int().min(1000), // cents, min $10
+  amount: z.number().int().min(1000),
   turnstileToken: z.string().optional(),
 });
 
-// IMPORTANT: coerce numbers so strings like "1" are handled safely.
 const RunRemindersSchema = z.object({
   olderThanHours: z.coerce.number().int().min(1).max(24 * 365).optional().default(48),
   limit: z.coerce.number().int().min(1).max(500).optional().default(50),
@@ -76,60 +79,65 @@ router.post("/gifts", async (req: Request, res: Response) => {
   const amount = parsed.data.amount;
 
   const publicId = crypto.randomBytes(16).toString("hex");
+  const baseUrl = getBaseUrl(req);
+  const claimUrl = `${baseUrl}/claim/${publicId}`;
 
-  // 1) Insert first (fast)
+  logEvent("gift_create_start", { publicId });
+
+  // IMPORTANT:
+  // Use a raw INSERT with a hard timeout so we *never* hang the HTTP request.
+  // This also avoids any Drizzle schema mismatch issues.
   try {
-    logEvent("gift_create_start", { publicId });
+    logEvent("gift_db_insert_start", { publicId });
 
-    await db
-      .insert(gifts)
-      .values({
-        publicId,
-        recipientEmail,
+    const insertPromise = pool.query(
+      `
+      INSERT INTO gifts (
+        public_id,
+        sender_email,
+        recipient_email,
         message,
         amount,
-        isClaimed: false,
-        senderEmail,
-        reminderCount: 0,
-        lastReminderSentAt: null,
-        returnedToSenderAt: null,
-      } as any)
-      .returning();
+        is_claimed,
+        reminder_count,
+        last_reminder_sent_at,
+        returned_to_sender_at
+      )
+      VALUES ($1,$2,$3,$4,$5,false,0,NULL,NULL)
+      RETURNING public_id;
+      `,
+      [publicId, senderEmail, recipientEmail, message, amount]
+    );
 
-    const baseUrl = getBaseUrl(req);
-    const claimUrl = `${baseUrl}/claim/${publicId}`;
+    await withTimeout(insertPromise, 8000, "db_insert");
 
-    // 2) Respond immediately (never hang the request on email)
+    logEvent("gift_db_insert_ok", { publicId });
+
+    // Respond immediately (no waiting on email)
     res.json({ ok: true, publicId, claimUrl });
 
-    // 3) Fire-and-forget email send with logging (no await)
+    // Fire-and-forget email send
     Promise.resolve()
       .then(async () => {
         logEvent("email_send_start", { kind: "gift", publicId, to: recipientEmail });
-
-        await sendGiftEmail({
-          to: recipientEmail,
-          claimUrl,
-          message,
-          amountCents: amount,
-        });
-
+        await sendGiftEmail({ to: recipientEmail, claimUrl, message, amountCents: amount });
         logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: true });
       })
       .catch((err: any) => {
-        logEvent("email_sent", {
-          kind: "gift",
-          publicId,
-          to: recipientEmail,
-          ok: false,
-          error: safeStr(err?.message || err),
-        });
+        logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: false, error: safeStr(err?.message || err) });
       });
 
     logEvent("gift_created", { publicId, recipientEmail, senderEmail, amount });
     return;
   } catch (err: any) {
-    logEvent("gift_create_failed", { publicId, error: safeStr(err?.message || err) });
+    const msg = safeStr(err?.message || err);
+    logEvent("gift_create_failed", { publicId, error: msg });
+
+    // If DB is stalling, return a clear error immediately.
+    if (/_timeout_/.test(msg) || /timeout/i.test(msg)) {
+      return res.status(504).json({ error: "Database timeout creating gift" });
+    }
+
     return res.status(500).json({ error: "Failed to create gift" });
   }
 });
@@ -180,10 +188,7 @@ router.post("/gifts/:publicId/claim", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * ---------- Reminder Job Endpoint ----------
- * POST /reminders/run
- */
+/* ---------- Reminder Job Endpoint ---------- */
 router.post("/reminders/run", async (req: Request, res: Response) => {
   const parsed = RunRemindersSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
@@ -267,13 +272,7 @@ router.post("/reminders/run", async (req: Request, res: Response) => {
         returnsSent++;
         logEvent("email_sent", { kind: "return_to_sender", publicId, to: senderEmail, ok: true });
       } catch (err: any) {
-        logEvent("email_sent", {
-          kind: "return_to_sender",
-          publicId,
-          to: senderEmail,
-          ok: false,
-          error: safeStr(err?.message || err),
-        });
+        logEvent("email_sent", { kind: "return_to_sender", publicId, to: senderEmail, ok: false, error: safeStr(err?.message || err) });
       }
 
       continue;
@@ -301,42 +300,21 @@ router.post("/reminders/run", async (req: Request, res: Response) => {
 
     try {
       await sendReminderEmail({ to: recipientEmail, claimUrl, message, reminderNumber: nextReminderNumber });
-
       remindersSent++;
       logEvent("email_sent", { kind: "reminder", publicId, to: recipientEmail, n: nextReminderNumber, ok: true });
     } catch (err: any) {
-      // Roll back counters so next run can retry
       try {
         await db
           .update(gifts)
-          .set({
-            reminderCount: reminderCount,
-            lastReminderSentAt: (g as any).lastReminderSentAt || null,
-          } as any)
+          .set({ reminderCount: reminderCount, lastReminderSentAt: (g as any).lastReminderSentAt || null } as any)
           .where(eq((gifts as any).publicId, publicId));
       } catch {}
 
-      logEvent("email_sent", {
-        kind: "reminder",
-        publicId,
-        to: recipientEmail,
-        n: nextReminderNumber,
-        ok: false,
-        error: safeStr(err?.message || err),
-      });
+      logEvent("email_sent", { kind: "reminder", publicId, to: recipientEmail, n: nextReminderNumber, ok: false, error: safeStr(err?.message || err) });
     }
   }
 
-  return res.json({
-    ok: true,
-    scanned: candidates.length,
-    remindersSent,
-    returnsSent,
-    skippedNoSender,
-    olderThanHours,
-    spacingHours,
-    limit,
-  });
+  return res.json({ ok: true, scanned: candidates.length, remindersSent, returnsSent, skippedNoSender, olderThanHours, spacingHours, limit });
 });
 
 export default router;
