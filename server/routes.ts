@@ -39,32 +39,27 @@ function toIso(d: any) {
 }
 
 /* -------------------- SCHEMAS -------------------- */
+/**
+ * Sender + recipient are MANDATORY.
+ * This guarantees "return to sender" can work.
+ */
 const CreateGiftSchema = z.object({
+  senderEmail: z.string().email(),
   recipientEmail: z.string().email(),
   message: z.string().max(2000).optional().default(""),
   amount: z.number().int().min(1000), // cents, min $10
-  senderEmail: z.string().email().optional(), // NEW (frontend update comes next)
-  turnstileToken: z.string().optional(), // keep optional (your existing enforcement may be elsewhere)
+  turnstileToken: z.string().optional(),
 });
 
+// IMPORTANT: coerce numbers so strings like "1" are handled safely.
 const RunRemindersSchema = z.object({
-  olderThanHours: z.number().int().min(1).max(24 * 365).optional().default(48),
-  limit: z.number().int().min(1).max(500).optional().default(50),
-  spacingHours: z.number().int().min(1).max(24 * 365).optional().default(48),
+  olderThanHours: z.coerce.number().int().min(1).max(24 * 365).optional().default(48),
+  limit: z.coerce.number().int().min(1).max(500).optional().default(50),
+  spacingHours: z.coerce.number().int().min(1).max(24 * 365).optional().default(48),
 });
 
 /* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
 const router = Router();
-
-/**
- * NOTE: This router is typically mounted at /api in src/index.ts
- * So these paths are relative to /api:
- * - GET /api/health
- * - POST /api/gifts
- * - GET  /api/gifts/:publicId
- * - POST /api/gifts/:publicId/claim
- * - POST /api/reminders/run
- */
 
 router.get("/health", (_req: Request, res: Response) => res.json({ ok: true }));
 
@@ -75,15 +70,18 @@ router.post("/gifts", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Bad request", issues: parsed.error.issues });
   }
 
+  const senderEmail = parsed.data.senderEmail.trim().toLowerCase();
   const recipientEmail = parsed.data.recipientEmail.trim().toLowerCase();
   const message = parsed.data.message || "";
   const amount = parsed.data.amount;
-  const senderEmail = parsed.data.senderEmail ? parsed.data.senderEmail.trim().toLowerCase() : null;
 
   const publicId = crypto.randomBytes(16).toString("hex");
 
+  // 1) Insert first (fast)
   try {
-    const created = await db
+    logEvent("gift_create_start", { publicId });
+
+    await db
       .insert(gifts)
       .values({
         publicId,
@@ -98,23 +96,40 @@ router.post("/gifts", async (req: Request, res: Response) => {
       } as any)
       .returning();
 
-    const gift = created?.[0];
     const baseUrl = getBaseUrl(req);
     const claimUrl = `${baseUrl}/claim/${publicId}`;
 
-    await sendGiftEmail({ to: recipientEmail, claimUrl, message, amountCents: amount });
+    // 2) Respond immediately (never hang the request on email)
+    res.json({ ok: true, publicId, claimUrl });
 
-    logEvent("gift_created", { publicId, recipientEmail, senderEmail: senderEmail || "", amount });
-    logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: true });
+    // 3) Fire-and-forget email send with logging (no await)
+    Promise.resolve()
+      .then(async () => {
+        logEvent("email_send_start", { kind: "gift", publicId, to: recipientEmail });
 
-    return res.json({
-      ok: true,
-      publicId,
-      claimUrl,
-      gift: gift ? { publicId, recipientEmail, amount, isClaimed: false } : undefined,
-    });
+        await sendGiftEmail({
+          to: recipientEmail,
+          claimUrl,
+          message,
+          amountCents: amount,
+        });
+
+        logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: true });
+      })
+      .catch((err: any) => {
+        logEvent("email_sent", {
+          kind: "gift",
+          publicId,
+          to: recipientEmail,
+          ok: false,
+          error: safeStr(err?.message || err),
+        });
+      });
+
+    logEvent("gift_created", { publicId, recipientEmail, senderEmail, amount });
+    return;
   } catch (err: any) {
-    logEvent("gift_create_failed", { error: safeStr(err?.message || err) });
+    logEvent("gift_create_failed", { publicId, error: safeStr(err?.message || err) });
     return res.status(500).json({ error: "Failed to create gift" });
   }
 });
@@ -130,6 +145,7 @@ router.get("/gifts/:publicId", async (req: Request, res: Response) => {
 
   return res.json({
     publicId: (gift as any).publicId,
+    senderEmail: (gift as any).senderEmail,
     recipientEmail: (gift as any).recipientEmail,
     message: (gift as any).message,
     amount: (gift as any).amount,
@@ -154,8 +170,7 @@ router.post("/gifts/:publicId/claim", async (req: Request, res: Response) => {
       .where(and(eq((gifts as any).publicId, publicId), eq((gifts as any).isClaimed, false)))
       .returning();
 
-    const row = updated?.[0];
-    if (!row) return res.status(400).json({ error: "Already claimed or not found" });
+    if (!updated?.[0]) return res.status(400).json({ error: "Already claimed or not found" });
 
     logEvent("claim_completed", { publicId });
     return res.json({ ok: true });
@@ -167,27 +182,28 @@ router.post("/gifts/:publicId/claim", async (req: Request, res: Response) => {
 
 /**
  * ---------- Reminder Job Endpoint ----------
- * POST /api/reminders/run  (router path is /reminders/run)
- * Body: { olderThanHours: 48, limit: 50, spacingHours: 48 }
- *
- * Behavior:
- * - Finds unclaimed gifts older than olderThanHours
- * - Sends up to 3 reminders max, spaced by spacingHours
- * - After 3 reminders and still unclaimed: send "return to sender" once
+ * POST /reminders/run
  */
 router.post("/reminders/run", async (req: Request, res: Response) => {
-  const parsed = RunRemindersSchema.safeParse(req.body || {});
+  const parsed = RunRemindersSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
     return res.status(400).json({ error: "Bad request", issues: parsed.error.issues });
   }
 
-  const olderThanHours = parsed.data.olderThanHours;
-  const limit = parsed.data.limit;
-  const spacingHours = parsed.data.spacingHours;
+  let olderThanHours = Number(parsed.data.olderThanHours);
+  let spacingHours = Number(parsed.data.spacingHours);
+  let limit = Number(parsed.data.limit);
+
+  if (!Number.isFinite(olderThanHours) || olderThanHours < 1) olderThanHours = 48;
+  if (!Number.isFinite(spacingHours) || spacingHours < 1) spacingHours = 48;
+  if (!Number.isFinite(limit) || limit < 1) limit = 50;
+  if (limit > 500) limit = 500;
 
   const now = new Date();
   const olderThan = hoursAgoDate(olderThanHours);
   const reminderCutoff = hoursAgoDate(spacingHours);
+
+  logEvent("reminders_run", { olderThanHours, spacingHours, limit });
 
   const candidates = await db
     .select()
@@ -215,7 +231,6 @@ router.post("/reminders/run", async (req: Request, res: Response) => {
     const message = safeStr((g as any).message);
     const reminderCount = Number((g as any).reminderCount ?? 0);
 
-    // If already at 3 reminders -> return-to-sender once
     if (reminderCount >= 3) {
       if (!senderEmail) {
         skippedNoSender++;
@@ -264,7 +279,6 @@ router.post("/reminders/run", async (req: Request, res: Response) => {
       continue;
     }
 
-    // Otherwise: send next reminder and increment counters (idempotent)
     const nextReminderNumber = reminderCount + 1;
 
     const updated = await db
