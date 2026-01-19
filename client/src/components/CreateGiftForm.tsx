@@ -1,4 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type CreateGiftResponse =
@@ -24,6 +23,27 @@ function absoluteLink(maybeRelative: string) {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
   return `${origin}${path}`;
+}
+
+function safeText(v: any) {
+  return typeof v === "string" ? v : "";
+}
+
+function buildClaimUrlFromPublicId(publicId: string) {
+  const pid = safeText(publicId).trim();
+  if (!pid) return "";
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return `${origin}/claim/${encodeURIComponent(pid)}`;
+}
+
+function saveLastPublicId(publicId: string) {
+  try {
+    if (!publicId) return;
+    localStorage.setItem("tm_last_publicId", publicId);
+    localStorage.setItem("tm_last_savedAt", new Date().toISOString());
+  } catch {
+    // ignore
+  }
 }
 
 /* -------------------- Turnstile helpers -------------------- */
@@ -58,7 +78,30 @@ function loadTurnstileScript(): Promise<void> {
   });
 }
 
+/* -------------------- API helper -------------------- */
+/**
+ * Try root first (/gifts), then fallback to /api (/api/gifts) if root 404s.
+ */
+async function postJsonWithApiFallback(pathNoApi: string, body: any) {
+  const rootUrl = pathNoApi.startsWith("/") ? pathNoApi : `/${pathNoApi}`;
+  const apiUrl = `/api${rootUrl}`;
+
+  const doPost = async (url: string) => {
+    return await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  };
+
+  const r1 = await doPost(rootUrl);
+  if (r1.status !== 404) return r1;
+
+  return await doPost(apiUrl);
+}
+
 export default function CreateGiftForm() {
+  const [senderEmail, setSenderEmail] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
   const [message, setMessage] = useState("");
   const [amountDollars, setAmountDollars] = useState<number>(10);
@@ -73,7 +116,6 @@ export default function CreateGiftForm() {
   } | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Non-KYC preset messages (must match server)
   const PRESET_MESSAGES = useMemo(
     () => [
       "Someone wanted you to know they’re genuinely grateful for you. Thank you.",
@@ -100,20 +142,19 @@ export default function CreateGiftForm() {
   const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
 
   const canSubmit = useMemo(() => {
-    const emailOk = isEmail(recipientEmail);
+    const recipientOk = isEmail(recipientEmail);
+    const senderOk = !senderEmail.trim() || isEmail(senderEmail);
     const msgOk = !!message.trim();
     const amtOk = Number.isFinite(amountDollars) && amountCents >= 1000;
     const captchaOk = !siteKey || !!turnstileToken;
-    return emailOk && msgOk && amtOk && captchaOk && !submitting;
-  }, [recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
+    return recipientOk && senderOk && msgOk && amtOk && captchaOk && !submitting;
+  }, [recipientEmail, senderEmail, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
 
-  // Keep message locked to preset (non-KYC mode)
   useEffect(() => {
     if (!selectedPreset) return;
     setMessage(selectedPreset);
   }, [selectedPreset]);
 
-  // Initialize Turnstile widget (explicit render)
   useEffect(() => {
     let cancelled = false;
 
@@ -176,6 +217,7 @@ export default function CreateGiftForm() {
   }
 
   function resetFormForAnother() {
+    setSenderEmail("");
     setRecipientEmail("");
     setSelectedPreset("");
     setMessage("");
@@ -190,31 +232,28 @@ export default function CreateGiftForm() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
 
-    // IMPORTANT: clear stale UI states so "Server error" can't linger after success
     setErr("");
     setTurnstileError("");
     setCopied(false);
 
-    const email = recipientEmail.trim();
+    const sender = senderEmail.trim();
+    const recipient = recipientEmail.trim();
     const msg = message.trim();
 
-    if (!isEmail(email)) return setErr("Please enter a valid email.");
+    if (sender && !isEmail(sender)) return setErr("Please enter a valid sender email (or leave it blank).");
+    if (!isEmail(recipient)) return setErr("Please enter a valid recipient email.");
     if (!msg) return setErr("Please choose a message.");
     if (amountCents < 1000) return setErr("Minimum amount is $10.");
-
     if (siteKey && !turnstileToken) return setTurnstileError("Please complete the CAPTCHA.");
 
     setSubmitting(true);
     try {
-      const r = await fetch("/api/gifts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipientEmail: email,
-          message: msg,
-          amount: amountCents,
-          ...(turnstileToken ? { turnstileToken } : {}),
-        }),
+      const r = await postJsonWithApiFallback("/gifts", {
+        recipientEmail: recipient,
+        message: msg,
+        amount: amountCents,
+        ...(sender ? { senderEmail: sender } : {}),
+        ...(turnstileToken ? { turnstileToken } : {}),
       });
 
       const data = (await r.json().catch(() => ({}))) as CreateGiftResponse;
@@ -241,22 +280,33 @@ export default function CreateGiftForm() {
         return;
       }
 
-      const publicId = (data as any)?.publicId;
-      const claimUrl = (data as any)?.claimUrl;
+      const publicId = safeText((data as any)?.publicId);
+      const serverClaimUrl = safeText((data as any)?.claimUrl);
 
-      if (publicId && claimUrl) {
-        // IMPORTANT: success should wipe any previous error states
+      if (publicId) {
+        saveLastPublicId(publicId);
+
+        const deterministic = buildClaimUrlFromPublicId(publicId);
+        const fallback = serverClaimUrl ? absoluteLink(serverClaimUrl) : "";
+        const finalClaimUrl = deterministic || fallback;
+
         setErr("");
         setTurnstileError("");
 
         setResult({
           publicId,
-          claimUrl: absoluteLink(claimUrl),
-          recipient: email,
+          claimUrl: finalClaimUrl,
+          recipient,
           emailStatus: (data as any)?.emailSent === false ? "queued" : "sent",
         });
 
-        // Keep Turnstile reset so next send is clean.
+        // Clear inputs for next send
+        setSenderEmail("");
+        setRecipientEmail("");
+        setSelectedPreset("");
+        setMessage("");
+        setAmountDollars(10);
+
         resetTurnstile();
         return;
       }
@@ -293,6 +343,15 @@ export default function CreateGiftForm() {
 
       {!result ? (
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
+          <input
+            value={senderEmail}
+            onChange={(e) => setSenderEmail(e.target.value)}
+            placeholder="Sender email (optional — for return-to-sender)"
+            inputMode="email"
+            autoComplete="email"
+            className="w-full rounded-2xl border px-4 py-3"
+          />
+
           <input
             value={recipientEmail}
             onChange={(e) => setRecipientEmail(e.target.value)}
@@ -371,7 +430,8 @@ export default function CreateGiftForm() {
               <span className="font-semibold">{result.recipient}</span>
             </div>
             <div className="mt-2 text-slate-700">
-              If they don’t receive it within 48 hours, a reminder email will be sent.
+              If they don’t receive it within 48 hours, reminder emails will be sent (up to 3). After that, it can be
+              returned to the sender (if provided).
             </div>
 
             <div className="mt-3 flex gap-2">
