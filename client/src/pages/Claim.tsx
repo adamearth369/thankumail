@@ -17,15 +17,21 @@ type ClaimResponse =
       publicId: string;
       claimedAt: string | null;
     }
-  | { error: string };
-
-function centsToDollars(cents: number) {
-  const n = Number(cents || 0);
-  return (n / 100).toFixed(2);
-}
+  | { error: string; code?: string; retryAfterSec?: number };
 
 function safeText(v: any) {
   return typeof v === "string" ? v : "";
+}
+
+function toFiniteIntCents(v: any) {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
+function dollarsLabelFromCents(v: any) {
+  const cents = toFiniteIntCents(v);
+  return `$${(cents / 100).toFixed(2)}`;
 }
 
 function absoluteLink(pathOrUrl: string) {
@@ -36,7 +42,7 @@ function absoluteLink(pathOrUrl: string) {
   return `${origin}${path}`;
 }
 
-const MIN_CLAIM_DELAY_SEC = 30;
+const MIN_CLAIM_DELAY_SEC = 60;
 
 function clampInt(n: number) {
   if (!Number.isFinite(n)) return 0;
@@ -60,15 +66,21 @@ export default function Claim() {
   const [claiming, setClaiming] = useState(false);
 
   const [copied, setCopied] = useState(false);
-  const claimUrl = useMemo(() => absoluteLink(`/claim/${encodeURIComponent(publicId)}`), [publicId]);
-
-  const amountLabel = useMemo(() => {
-    if (!gift) return "$0.00";
-    return `$${centsToDollars(gift.amount)}`;
-  }, [gift]);
+  const claimUrl = useMemo(
+    () => absoluteLink(`/claim/${encodeURIComponent(publicId)}`),
+    [publicId],
+  );
 
   const createdAtMsRef = useRef<number>(Date.now());
   const [unlockInSec, setUnlockInSec] = useState<number>(0);
+
+  const amountCents = useMemo(() => (gift ? toFiniteIntCents(gift.amount) : 0), [gift]);
+  const amountLabel = useMemo(() => (gift ? dollarsLabelFromCents(gift.amount) : "$0.00"), [gift]);
+
+  const amountValid = useMemo(() => {
+    // Server minimum is 1000 cents ($10.00)
+    return gift ? amountCents >= 1000 : false;
+  }, [gift, amountCents]);
 
   const isLocked = useMemo(() => {
     if (!gift) return false;
@@ -76,12 +88,16 @@ export default function Claim() {
     return unlockInSec > 0;
   }, [gift, unlockInSec]);
 
-  function recomputeUnlock() {
-    if (!gift) {
-      setUnlockInSec(0);
-      return;
-    }
-    if (gift.isClaimed) {
+  const canClaim = useMemo(() => {
+    if (!gift) return false;
+    if (gift.isClaimed) return false;
+    if (isLocked) return false;
+    if (!amountValid) return false;
+    return true;
+  }, [gift, isLocked, amountValid]);
+
+  function recomputeUnlock(nextGift: Gift | null) {
+    if (!nextGift || nextGift.isClaimed) {
       setUnlockInSec(0);
       return;
     }
@@ -115,29 +131,34 @@ export default function Claim() {
 
     try {
       const r = await fetch(`/api/gifts/${encodeURIComponent(publicId)}`, { method: "GET" });
-      const data = (await r.json().catch(() => ({}))) as Gift & { error?: string };
+      const data = (await r.json().catch(() => ({}))) as any;
 
       if (!r.ok) {
-        setErr(safeText((data as any)?.error) || "This link is invalid or expired.");
+        setErr(safeText(data?.error) || "This link is invalid or expired.");
         setGift(null);
         setLoading(false);
         return;
       }
 
       const nextGift: Gift = {
-        publicId: safeText((data as any).publicId),
-        message: safeText((data as any).message),
-        amount: Number((data as any).amount || 0),
-        isClaimed: Boolean((data as any).isClaimed),
-        createdAt: safeText((data as any).createdAt),
-        claimedAt: (data as any).claimedAt ?? null,
+        publicId: safeText(data?.publicId),
+        message: safeText(data?.message),
+        amount: toFiniteIntCents(data?.amount), // ✅ always finite
+        isClaimed: Boolean(data?.isClaimed),
+        createdAt: safeText(data?.createdAt),
+        claimedAt: data?.claimedAt ?? null,
       };
 
       setGift(nextGift);
 
-      // establish a stable createdAt reference for countdown
       const ms = parseIsoMs(nextGift.createdAt);
       createdAtMsRef.current = Number.isFinite(ms) ? ms : Date.now();
+      recomputeUnlock(nextGift);
+
+      // If invalid amount, show a clear message (and button will be disabled)
+      if (!nextGift.isClaimed && toFiniteIntCents(data?.amount) < 1000) {
+        setErr("This gift has an invalid amount and can’t be claimed. Please ask the sender to resend it.");
+      }
 
       setLoading(false);
     } catch (e: any) {
@@ -154,17 +175,15 @@ export default function Claim() {
 
   useEffect(() => {
     if (!gift) return;
-    recomputeUnlock();
-    const t = setInterval(() => {
-      recomputeUnlock();
-    }, 250);
+    recomputeUnlock(gift);
+    const t = setInterval(() => recomputeUnlock(gift), 250);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gift?.publicId, gift?.isClaimed, gift?.createdAt]);
 
   async function claim() {
     if (!publicId) return;
-    if (isLocked) return;
+    if (!canClaim) return;
 
     setClaiming(true);
     setErr("");
@@ -181,15 +200,11 @@ export default function Claim() {
       if (!r.ok) {
         const msg = safeText((data as any)?.error) || "Couldn’t claim right now. Please try again.";
         setErr(msg);
-
-        // If server says "too early", keep countdown honest
         await load();
-
         setClaiming(false);
         return;
       }
 
-      // Always refresh from DB so we never show a false claimed state
       await load();
       setClaiming(false);
     } catch (e: any) {
@@ -217,6 +232,8 @@ export default function Claim() {
           >
             {copied ? "Copied" : "Copy link"}
           </button>
+
+          {" "}
 
           <Link
             href="/"
@@ -250,6 +267,9 @@ export default function Claim() {
                 >
                   Try again
                 </button>
+
+                {" "}
+
                 <Link
                   href="/"
                   className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-violet-200"
@@ -279,9 +299,12 @@ export default function Claim() {
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <div className="text-xs font-semibold text-slate-500">AMOUNT</div>
-                    <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">
-                      {amountLabel}
-                    </div>
+                    <div className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">{amountLabel}</div>
+                    {!gift.isClaimed && !amountValid ? (
+                      <div className="mt-2 text-xs font-semibold text-rose-700">
+                        Invalid amount — this gift can’t be claimed.
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="sm:text-right">
@@ -292,12 +315,7 @@ export default function Claim() {
                         gift.isClaimed ? "bg-slate-100 text-slate-700" : "bg-violet-50 text-violet-700",
                       ].join(" ")}
                     >
-                      <span
-                        className={[
-                          "h-2 w-2 rounded-full",
-                          gift.isClaimed ? "bg-slate-500" : "bg-violet-600",
-                        ].join(" ")}
-                      />
+                      <span className={["h-2 w-2 rounded-full", gift.isClaimed ? "bg-slate-500" : "bg-violet-600"].join(" ")} />
                       {gift.isClaimed ? "Claimed" : isLocked ? `Unlocks in ${unlockInSec}s` : "Unclaimed"}
                     </div>
                   </div>
@@ -331,15 +349,17 @@ export default function Claim() {
                   ) : (
                     <button
                       onClick={claim}
-                      disabled={claiming || isLocked}
+                      disabled={claiming || !canClaim}
                       className={[
                         "flex-1 rounded-2xl px-5 py-3 text-sm font-semibold text-white shadow-sm transition",
-                        claiming || isLocked ? "bg-slate-300" : "bg-violet-600 hover:bg-violet-700",
+                        claiming || !canClaim ? "bg-slate-300" : "bg-violet-600 hover:bg-violet-700",
                       ].join(" ")}
                     >
-                      {claiming ? "Claiming…" : isLocked ? `Ready in ${unlockInSec}s` : "Claim gift"}
+                      {claiming ? "Claiming…" : isLocked ? `Ready in ${unlockInSec}s` : !amountValid ? "Cannot claim" : "Accept gift"}
                     </button>
                   )}
+
+                  {" "}
 
                   <Link
                     href="/"
@@ -349,9 +369,7 @@ export default function Claim() {
                   </Link>
                 </div>
 
-                <div className="mt-4 text-xs text-slate-500">
-                  If you weren’t expecting this, you can simply close this page.
-                </div>
+                <div className="mt-4 text-xs text-slate-500">If you weren’t expecting this, you can simply close this page.</div>
               </div>
             </div>
           ) : null}
@@ -367,12 +385,8 @@ export default function Claim() {
         <div className="mx-auto flex max-w-4xl flex-col gap-2 px-6 py-10 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
           <div>© {new Date().getFullYear()} ThanküMail</div>
           <div className="flex gap-4">
-            <a className="hover:text-slate-900" href="/health">
-              Status
-            </a>
-            <a className="hover:text-slate-900" href="/api/health">
-              API
-            </a>
+            <a className="hover:text-slate-900" href="/health">Status</a>
+            <a className="hover:text-slate-900" href="/api/health">API</a>
           </div>
         </div>
       </footer>
