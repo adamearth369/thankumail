@@ -1,4 +1,5 @@
-import type { Express, Request, Response } from "express";
+import { Router } from "express";
+import type { Request, Response } from "express";
 import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
@@ -71,21 +72,16 @@ const claimLimiter = rateLimit({
 });
 
 /* -------------------- SCHEMA-AWARE COLUMN PICKERS -------------------- */
-function pickCol<T = any>(...candidates: string[]) {
+function pickCol(...candidates: string[]) {
   for (const k of candidates) {
-    if ((gifts as any)[k]) return (gifts as any)[k] as T;
+    if ((gifts as any)[k]) return (gifts as any)[k];
   }
   return null;
 }
-
 const COL_PUBLIC_ID = () => pickCol("publicId", "public_id", "publicID");
-const COL_AMOUNT = () => pickCol("amount");
-const COL_MESSAGE = () => pickCol("message");
-const COL_RECIPIENT_EMAIL = () => pickCol("recipientEmail", "recipient_email");
-const COL_SENDER_EMAIL = () => pickCol("senderEmail", "sender_email");
-const COL_IS_CLAIMED = () => pickCol("isClaimed", "is_claimed");
-const COL_CREATED_AT = () => pickCol("createdAt", "created_at");
-const COL_CLAIMED_AT = () => pickCol("claimedAt", "claimed_at");
+
+/* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
+const router = Router();
 
 /* -------------------- HANDLERS -------------------- */
 async function createGiftHandler(req: Request, res: Response) {
@@ -112,23 +108,13 @@ async function createGiftHandler(req: Request, res: Response) {
   try {
     logEvent("gift_db_insert_start", { publicId });
 
+    // Only set keys that exist on the Drizzle schema object.
     const values: any = {};
 
-    const cPublicId = COL_PUBLIC_ID();
-    const cAmount = COL_AMOUNT();
-    const cMessage = COL_MESSAGE();
-    const cRecipient = COL_RECIPIENT_EMAIL();
-    const cSender = COL_SENDER_EMAIL();
-    const cClaimed = COL_IS_CLAIMED();
-    const cCreatedAt = COL_CREATED_AT();
-
-    if (!cPublicId) throw new Error("Schema missing publicId/public_id column");
-
-    // IMPORTANT: use schema keys (the property name on `gifts`), not raw SQL column names
-    // We get the property name by finding which candidate exists on `gifts`.
     if ((gifts as any).publicId) values.publicId = publicId;
     else if ((gifts as any).public_id) values.public_id = publicId;
     else if ((gifts as any).publicID) values.publicID = publicId;
+    else throw new Error("Schema missing publicId/public_id column");
 
     if ((gifts as any).amount) values.amount = amount;
     if ((gifts as any).message) values.message = message || "";
@@ -149,10 +135,15 @@ async function createGiftHandler(req: Request, res: Response) {
 
     logEvent("gift_db_insert_ok", { publicId });
 
-    // Readback sanity check
+    // Readback sanity check (shows if the publicId is truly stored)
     try {
-      const chk = await db.select().from(gifts).where(eq(cPublicId as any, publicId)).limit(1);
-      logEvent("gift_db_readback", { publicId, ok: !!chk?.[0] });
+      const pubCol = COL_PUBLIC_ID();
+      if (pubCol) {
+        const chk = await db.select().from(gifts).where(eq(pubCol as any, publicId)).limit(1);
+        logEvent("gift_db_readback", { publicId, ok: !!chk?.[0] });
+      } else {
+        logEvent("gift_db_readback", { publicId, ok: false, error: "No publicId column" });
+      }
     } catch (e: any) {
       logEvent("gift_db_readback", { publicId, ok: false, error: e?.message || "readback error" });
     }
@@ -208,10 +199,10 @@ async function getGiftHandler(req: Request, res: Response) {
   if (!key) return res.status(400).json({ message: "Missing id" });
 
   try {
-    const cPublicId = COL_PUBLIC_ID();
-    if (!cPublicId) return res.status(500).json({ message: "Server misconfigured: missing publicId column" });
+    const pubCol = COL_PUBLIC_ID();
+    if (!pubCol) return res.status(500).json({ message: "Server misconfigured: missing publicId column" });
 
-    const rows = await db.select().from(gifts).where(eq(cPublicId as any, key)).limit(1);
+    const rows = await db.select().from(gifts).where(eq(pubCol as any, key)).limit(1);
     const g: any = rows?.[0];
     if (!g) return res.status(404).json({ message: "Not found" });
 
@@ -235,10 +226,10 @@ async function claimGiftHandler(req: Request, res: Response) {
   const minDelaySec = Number(process.env.MIN_CLAIM_DELAY_SEC || "0");
 
   try {
-    const cPublicId = COL_PUBLIC_ID();
-    if (!cPublicId) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+    const pubCol = COL_PUBLIC_ID();
+    if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
 
-    const rows = await db.select().from(gifts).where(eq(cPublicId as any, key)).limit(1);
+    const rows = await db.select().from(gifts).where(eq(pubCol as any, key)).limit(1);
     const g: any = rows?.[0];
     if (!g) return res.status(404).json({ error: "Not found" });
 
@@ -263,7 +254,7 @@ async function claimGiftHandler(req: Request, res: Response) {
     if ((gifts as any).claimedAt) update.claimedAt = new Date();
     else if ((gifts as any).claimed_at) update.claimed_at = new Date();
 
-    await db.update(gifts).set(update).where(eq(cPublicId as any, key));
+    await db.update(gifts).set(update).where(eq(pubCol as any, key));
 
     logEvent("claim_completed", { publicId: key });
     return res.json({ ok: true });
@@ -273,31 +264,30 @@ async function claimGiftHandler(req: Request, res: Response) {
   }
 }
 
-/* -------------------- DEFAULT EXPORT REQUIRED BY src/index.ts -------------------- */
-export default function apiRouter(app: Express) {
-  app.post("/gifts", createLimiter, createGiftHandler);
-  app.post("/api/gifts", createLimiter, createGiftHandler);
-  app.get("/api/gifts/:id", getGiftHandler);
-  app.post("/api/gifts/:id/claim", claimLimiter, claimGiftHandler);
+/* -------------------- ROUTES -------------------- */
+// Create (support both endpoints)
+router.post("/gifts", createLimiter, (req, res) => void createGiftHandler(req, res));
+router.post("/api/gifts", createLimiter, (req, res) => void createGiftHandler(req, res));
 
-  app.post("/api/email/test", async (req: Request, res: Response) => {
-    const to = String(req.body?.to || req.body?.email || "").trim();
-    if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
+// Read + claim
+router.get("/api/gifts/:id", (req, res) => void getGiftHandler(req, res));
+router.post("/api/gifts/:id/claim", claimLimiter, (req, res) => void claimGiftHandler(req, res));
 
-    const r = await sendGiftEmail({
-      to,
-      publicId: "test",
-      claimUrl: `${getClaimSiteBaseUrl()}/claim/test`,
-      amountCents: 1000,
-      senderEmail: "sender@example.com",
-      message: "This is a test email from ThankuMail.",
-    });
+// Email test
+router.post("/api/email/test", async (req: Request, res: Response) => {
+  const to = String(req.body?.to || req.body?.email || "").trim();
+  if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
 
-    return res.json({ ok: r.ok, error: r.error || null });
+  const r = await sendGiftEmail({
+    to,
+    publicId: "test",
+    claimUrl: `${getClaimSiteBaseUrl()}/claim/test`,
+    amountCents: 1000,
+    senderEmail: "sender@example.com",
+    message: "This is a test email from ThankuMail.",
   });
-}
 
-// Keep named export too
-export function registerRoutes(app: Express) {
-  return apiRouter(app);
-}
+  return res.json({ ok: r.ok, error: r.error || null });
+});
+
+export default router;
