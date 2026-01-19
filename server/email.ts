@@ -1,5 +1,3 @@
-import fetch from "node-fetch";
-
 type SendGiftEmailArgs = {
   to: string;
   publicId: string;
@@ -21,8 +19,6 @@ function requireEnv(name: string) {
 }
 
 function fromEmail() {
-  // Use your verified Brevo sender/domain email here if you have it.
-  // Fallback is fine as long as Brevo allows it.
   return process.env.MAIL_FROM || process.env.BREVO_FROM || "no-reply@thankumail.com";
 }
 
