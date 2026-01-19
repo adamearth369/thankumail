@@ -1,320 +1,298 @@
-import { Router } from "express";
-import type { Request, Response } from "express";
+// server/routes.ts
+import type { Express, Request, Response } from "express";
 import crypto from "crypto";
+import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { db, pool } from "./db";
+import { eq } from "drizzle-orm";
+
+import { db } from "./db";
 import { gifts } from "@shared/schema";
-import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
 }
-function safeStr(v: any) {
-  return typeof v === "string" ? v : "";
+
+/* -------------------- BASE URL HELPERS -------------------- */
+function getClaimSiteBaseUrl() {
+  const env = process.env.PUBLIC_SITE_URL || process.env.PUBLIC_CLAIM_BASE_URL || "";
+  if (env) return env.replace(/\/+$/, "");
+  return "https://thankumail.com";
 }
 
-/* -------------------- BASE URL -------------------- */
-function getBaseUrl(req: any) {
-  const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
-  if (envBase) return envBase.replace(/\/+$/, "");
-  const proto = (req.headers["x-forwarded-proto"] || "https").toString();
-  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
-  return `${proto}://${host}`.replace(/\/+$/, "");
-}
+/* -------------------- TURNSTILE (OPTIONAL) -------------------- */
+async function verifyTurnstile(token: string, remoteip?: string) {
+  const secret = process.env.TURNSTILE_SECRET_KEY || "";
+  if (!secret) return { ok: true as const }; // not enabled
+  if (!token) return { ok: false as const, error: "Missing CAPTCHA token" };
 
-function hoursAgoDate(h: number) {
-  const ms = Math.max(0, h) * 60 * 60 * 1000;
-  return new Date(Date.now() - ms);
-}
-
-function toIso(d: any) {
   try {
-    const dd = d instanceof Date ? d : d ? new Date(d) : null;
-    return dd ? dd.toISOString() : "";
+    const form = new URLSearchParams();
+    form.set("secret", secret);
+    form.set("response", token);
+    if (remoteip) form.set("remoteip", remoteip);
+
+    const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    const json: any = await res.json().catch(() => null);
+    if (json && json.success) return { ok: true as const };
+    return { ok: false as const, error: "Invalid CAPTCHA token" };
   } catch {
-    return "";
+    return { ok: false as const, error: "CAPTCHA verification failed" };
   }
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let t: any;
-  const timeout = new Promise<T>((_resolve, reject) => {
-    t = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
-  });
-  return Promise.race([p.finally(() => clearTimeout(t)), timeout]);
-}
-
-/* -------------------- SCHEMAS -------------------- */
+/* -------------------- VALIDATION -------------------- */
 const CreateGiftSchema = z.object({
   senderEmail: z.string().email(),
   recipientEmail: z.string().email(),
   message: z.string().max(2000).optional().default(""),
-  amount: z.number().int().min(1000),
+  amount: z.number().int().min(1000), // cents; min $10
   turnstileToken: z.string().optional(),
 });
 
-const RunRemindersSchema = z.object({
-  olderThanHours: z.coerce.number().int().min(1).max(24 * 365).optional().default(48),
-  limit: z.coerce.number().int().min(1).max(500).optional().default(50),
-  spacingHours: z.coerce.number().int().min(1).max(24 * 365).optional().default(48),
+/* -------------------- RATE LIMITS -------------------- */
+const createLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
-/* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
-const router = Router();
+const claimLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
-router.get("/health", (_req: Request, res: Response) => res.json({ ok: true }));
+/* -------------------- REGISTER ROUTES -------------------- */
+export function registerRoutes(app: Express) {
+  app.post("/gifts", createLimiter, createGiftHandler);
+  app.post("/api/gifts", createLimiter, createGiftHandler);
 
-/* ---------- Create Gift ---------- */
-router.post("/gifts", async (req: Request, res: Response) => {
-  const parsed = CreateGiftSchema.safeParse(req.body || {});
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Bad request", issues: parsed.error.issues });
-  }
+  app.get("/api/gifts/:id", getGiftHandler);
 
-  const senderEmail = parsed.data.senderEmail.trim().toLowerCase();
-  const recipientEmail = parsed.data.recipientEmail.trim().toLowerCase();
-  const message = parsed.data.message || "";
-  const amount = parsed.data.amount;
+  app.post("/api/gifts/:id/claim", claimLimiter, claimGiftHandler);
 
+  app.post("/api/email/test", async (req: Request, res: Response) => {
+    const to = String(req.body?.to || req.body?.email || "").trim();
+    if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
+
+    const r = await sendGiftEmail({
+      to,
+      publicId: "test",
+      claimUrl: `${getClaimSiteBaseUrl()}/claim/test`,
+      amountCents: 1000,
+      senderEmail: "sender@example.com",
+      message: "This is a test email from ThankuMail.",
+    });
+
+    return res.json({ ok: r.ok, error: r.error || null });
+  });
+}
+
+/* -------------------- HANDLERS -------------------- */
+async function createGiftHandler(req: Request, res: Response) {
   const publicId = crypto.randomBytes(16).toString("hex");
-  const baseUrl = getBaseUrl(req);
-  const claimUrl = `${baseUrl}/claim/${publicId}`;
-
   logEvent("gift_create_start", { publicId });
 
-  // IMPORTANT:
-  // Use a raw INSERT with a hard timeout so we *never* hang the HTTP request.
-  // This also avoids any Drizzle schema mismatch issues.
+  const parsed = CreateGiftSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    const msg = parsed.error.issues?.[0]?.message || "Invalid request";
+    logEvent("gift_create_bad_request", { publicId, error: msg });
+    return res.status(400).json({ error: msg });
+  }
+
+  const { senderEmail, recipientEmail, message, amount, turnstileToken } = parsed.data;
+
+  if (process.env.TURNSTILE_SECRET_KEY) {
+    const v = await verifyTurnstile(turnstileToken || "", req.ip);
+    if (!v.ok) {
+      logEvent("gift_create_captcha_fail", { publicId, error: v.error });
+      return res.status(400).json({ error: v.error, field: "turnstileToken" });
+    }
+  }
+
   try {
     logEvent("gift_db_insert_start", { publicId });
 
-    const insertPromise = pool.query(
-      `
-      INSERT INTO gifts (
-        public_id,
-        sender_email,
-        recipient_email,
-        message,
-        amount,
-        is_claimed,
-        reminder_count,
-        last_reminder_sent_at,
-        returned_to_sender_at
-      )
-      VALUES ($1,$2,$3,$4,$5,false,0,NULL,NULL)
-      RETURNING public_id;
-      `,
-      [publicId, senderEmail, recipientEmail, message, amount]
-    );
+    // IMPORTANT:
+    // Insert with BOTH camelCase and snake_case keys.
+    // Drizzle will use the keys that exist in your schema and ignore unknown ones.
+    const insertValues: any = {
+      publicId,
+      public_id: publicId,
 
-    await withTimeout(insertPromise, 8000, "db_insert");
+      amount,
+
+      message: message || "",
+
+      recipientEmail,
+      recipient_email: recipientEmail,
+
+      senderEmail,
+      sender_email: senderEmail,
+
+      isClaimed: false,
+      is_claimed: false,
+
+      createdAt: new Date(),
+      created_at: new Date(),
+    };
+
+    await db.insert(gifts).values(insertValues);
 
     logEvent("gift_db_insert_ok", { publicId });
 
-    // Respond immediately (no waiting on email)
-    res.json({ ok: true, publicId, claimUrl });
-
-    // Fire-and-forget email send
-    Promise.resolve()
-      .then(async () => {
-        logEvent("email_send_start", { kind: "gift", publicId, to: recipientEmail });
-        await sendGiftEmail({ to: recipientEmail, claimUrl, message, amountCents: amount });
-        logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: true });
-      })
-      .catch((err: any) => {
-        logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: false, error: safeStr(err?.message || err) });
-      });
-
-    logEvent("gift_created", { publicId, recipientEmail, senderEmail, amount });
-    return;
-  } catch (err: any) {
-    const msg = safeStr(err?.message || err);
-    logEvent("gift_create_failed", { publicId, error: msg });
-
-    // If DB is stalling, return a clear error immediately.
-    if (/_timeout_/.test(msg) || /timeout/i.test(msg)) {
-      return res.status(504).json({ error: "Database timeout creating gift" });
+    // Sanity-check: immediately try to read it back by publicId
+    // (If this fails, it means the schema key isn't publicId/public_id and we must align to the real column.)
+    try {
+      const pubCol = (gifts as any).publicId ?? (gifts as any).public_id;
+      if (pubCol) {
+        const chk = await db.select().from(gifts).where(eq(pubCol, publicId)).limit(1);
+        logEvent("gift_db_readback", { publicId, ok: !!chk?.[0] });
+      } else {
+        logEvent("gift_db_readback", { publicId, ok: false, error: "No publicId/public_id column in schema" });
+      }
+    } catch (e: any) {
+      logEvent("gift_db_readback", { publicId, ok: false, error: e?.message || "readback error" });
     }
 
-    return res.status(500).json({ error: "Failed to create gift" });
-  }
-});
+    const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
 
-/* ---------- Get Gift by publicId ---------- */
-router.get("/gifts/:publicId", async (req: Request, res: Response) => {
-  const publicId = safeStr(req.params.publicId);
-  if (!publicId) return res.status(400).json({ error: "Missing id" });
+    logEvent("gift_created", {
+      publicId,
+      recipientEmail,
+      senderEmail,
+      amount,
+    });
 
-  const rows = await db.select().from(gifts).where(eq((gifts as any).publicId, publicId)).limit(1);
-  const gift = rows?.[0];
-  if (!gift) return res.status(404).json({ error: "Not found" });
-
-  return res.json({
-    publicId: (gift as any).publicId,
-    senderEmail: (gift as any).senderEmail,
-    recipientEmail: (gift as any).recipientEmail,
-    message: (gift as any).message,
-    amount: (gift as any).amount,
-    isClaimed: (gift as any).isClaimed,
-    createdAt: (gift as any).createdAt,
-    claimedAt: (gift as any).claimedAt,
-    reminderCount: (gift as any).reminderCount ?? 0,
-    lastReminderSentAt: (gift as any).lastReminderSentAt,
-    returnedToSenderAt: (gift as any).returnedToSenderAt,
-  });
-});
-
-/* ---------- Claim Gift ---------- */
-router.post("/gifts/:publicId/claim", async (req: Request, res: Response) => {
-  const publicId = safeStr(req.params.publicId);
-  if (!publicId) return res.status(400).json({ error: "Missing id" });
-
-  try {
-    const updated = await db
-      .update(gifts)
-      .set({ isClaimed: true, claimedAt: new Date() } as any)
-      .where(and(eq((gifts as any).publicId, publicId), eq((gifts as any).isClaimed, false)))
-      .returning();
-
-    if (!updated?.[0]) return res.status(400).json({ error: "Already claimed or not found" });
-
-    logEvent("claim_completed", { publicId });
-    return res.json({ ok: true });
-  } catch (err: any) {
-    logEvent("claim_failed", { publicId, error: safeStr(err?.message || err) });
-    return res.status(500).json({ error: "Claim failed" });
-  }
-});
-
-/* ---------- Reminder Job Endpoint ---------- */
-router.post("/reminders/run", async (req: Request, res: Response) => {
-  const parsed = RunRemindersSchema.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Bad request", issues: parsed.error.issues });
-  }
-
-  let olderThanHours = Number(parsed.data.olderThanHours);
-  let spacingHours = Number(parsed.data.spacingHours);
-  let limit = Number(parsed.data.limit);
-
-  if (!Number.isFinite(olderThanHours) || olderThanHours < 1) olderThanHours = 48;
-  if (!Number.isFinite(spacingHours) || spacingHours < 1) spacingHours = 48;
-  if (!Number.isFinite(limit) || limit < 1) limit = 50;
-  if (limit > 500) limit = 500;
-
-  const now = new Date();
-  const olderThan = hoursAgoDate(olderThanHours);
-  const reminderCutoff = hoursAgoDate(spacingHours);
-
-  logEvent("reminders_run", { olderThanHours, spacingHours, limit });
-
-  const candidates = await db
-    .select()
-    .from(gifts)
-    .where(
-      and(
-        eq((gifts as any).isClaimed, false),
-        isNull((gifts as any).returnedToSenderAt),
-        lt((gifts as any).createdAt, olderThan),
-        or(isNull((gifts as any).lastReminderSentAt), lt((gifts as any).lastReminderSentAt, reminderCutoff))
-      )
-    )
-    .limit(limit);
-
-  let remindersSent = 0;
-  let returnsSent = 0;
-  let skippedNoSender = 0;
-
-  const baseUrl = getBaseUrl(req);
-
-  for (const g of candidates) {
-    const publicId = safeStr((g as any).publicId);
-    const recipientEmail = safeStr((g as any).recipientEmail);
-    const senderEmail = safeStr((g as any).senderEmail);
-    const message = safeStr((g as any).message);
-    const reminderCount = Number((g as any).reminderCount ?? 0);
-
-    if (reminderCount >= 3) {
-      if (!senderEmail) {
-        skippedNoSender++;
-        logEvent("return_skipped_no_sender_email", { publicId });
-        continue;
-      }
-
-      const marked = await db
-        .update(gifts)
-        .set({ returnedToSenderAt: now } as any)
-        .where(
-          and(
-            eq((gifts as any).publicId, publicId),
-            eq((gifts as any).isClaimed, false),
-            isNull((gifts as any).returnedToSenderAt)
-          )
-        )
-        .returning();
-
-      if (!marked?.[0]) continue;
-
-      const claimUrl = `${baseUrl}/claim/${publicId}`;
-
+    // Fire-and-forget email
+    (async () => {
       try {
-        await sendReturnToSenderEmail({
-          to: senderEmail,
-          recipientEmail,
+        logEvent("email_send_start", { kind: "gift", publicId, to: recipientEmail });
+        const r = await sendGiftEmail({
+          to: recipientEmail,
           publicId,
-          createdAtIso: toIso((g as any).createdAt),
           claimUrl,
-          remindersAttempted: reminderCount,
+          amountCents: amount,
+          senderEmail,
+          message,
+        });
+        logEvent("email_sent", {
+          kind: "gift",
+          publicId,
+          to: recipientEmail,
+          ok: r.ok,
+          error: r.error || null,
         });
 
-        returnsSent++;
-        logEvent("email_sent", { kind: "return_to_sender", publicId, to: senderEmail, ok: true });
-      } catch (err: any) {
-        logEvent("email_sent", { kind: "return_to_sender", publicId, to: senderEmail, ok: false, error: safeStr(err?.message || err) });
+        // Optional return-to-sender best effort
+        if (!r.ok && senderEmail) {
+          logEvent("email_send_start", { kind: "return_to_sender", publicId, to: senderEmail });
+          const r2 = await sendReturnToSenderEmail({
+            to: senderEmail,
+            publicId,
+            amountCents: amount,
+            reason: r.error || "Delivery failed",
+          });
+          logEvent("email_sent", {
+            kind: "return_to_sender",
+            publicId,
+            to: senderEmail,
+            ok: r2.ok,
+            error: r2.error || null,
+          });
+        }
+      } catch (e: any) {
+        logEvent("email_send_crash", { publicId, error: e?.message || "Unknown error" });
       }
+    })();
 
-      continue;
-    }
-
-    const nextReminderNumber = reminderCount + 1;
-
-    const updated = await db
-      .update(gifts)
-      .set({ lastReminderSentAt: now, reminderCount: nextReminderNumber } as any)
-      .where(
-        and(
-          eq((gifts as any).publicId, publicId),
-          eq((gifts as any).isClaimed, false),
-          isNull((gifts as any).returnedToSenderAt),
-          eq((gifts as any).reminderCount, reminderCount),
-          or(isNull((gifts as any).lastReminderSentAt), lt((gifts as any).lastReminderSentAt, reminderCutoff))
-        )
-      )
-      .returning();
-
-    if (!updated?.[0]) continue;
-
-    const claimUrl = `${baseUrl}/claim/${publicId}`;
-
-    try {
-      await sendReminderEmail({ to: recipientEmail, claimUrl, message, reminderNumber: nextReminderNumber });
-      remindersSent++;
-      logEvent("email_sent", { kind: "reminder", publicId, to: recipientEmail, n: nextReminderNumber, ok: true });
-    } catch (err: any) {
-      try {
-        await db
-          .update(gifts)
-          .set({ reminderCount: reminderCount, lastReminderSentAt: (g as any).lastReminderSentAt || null } as any)
-          .where(eq((gifts as any).publicId, publicId));
-      } catch {}
-
-      logEvent("email_sent", { kind: "reminder", publicId, to: recipientEmail, n: nextReminderNumber, ok: false, error: safeStr(err?.message || err) });
-    }
+    return res.json({ ok: true, publicId, claimUrl });
+  } catch (e: any) {
+    logEvent("gift_create_error", { publicId, error: e?.message || "Unknown error" });
+    return res.status(500).json({ error: "Server error" });
   }
+}
 
-  return res.json({ ok: true, scanned: candidates.length, remindersSent, returnsSent, skippedNoSender, olderThanHours, spacingHours, limit });
-});
+async function getGiftHandler(req: Request, res: Response) {
+  const key = String(req.params.id || "").trim();
+  if (!key) return res.status(400).json({ message: "Missing id" });
 
-export default router;
+  try {
+    const pubCol = (gifts as any).publicId ?? (gifts as any).public_id;
+    if (!pubCol) return res.status(500).json({ message: "Server misconfigured: missing publicId column" });
+
+    const rows = await db.select().from(gifts).where(eq(pubCol, key)).limit(1);
+    const g: any = rows?.[0];
+    if (!g) return res.status(404).json({ message: "Not found" });
+
+    return res.json({
+      publicId: g.publicId ?? g.public_id ?? key,
+      amount: g.amount,
+      message: g.message ?? "",
+      senderEmail: g.senderEmail ?? g.sender_email ?? "",
+      isClaimed: !!(g.isClaimed ?? g.is_claimed),
+    });
+  } catch (e: any) {
+    console.error("GET /api/gifts/:id error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+}
+
+async function claimGiftHandler(req: Request, res: Response) {
+  const key = String(req.params.id || "").trim();
+  if (!key) return res.status(400).json({ error: "Missing id" });
+
+  const minDelaySec = Number(process.env.MIN_CLAIM_DELAY_SEC || "0");
+
+  try {
+    const pubCol = (gifts as any).publicId ?? (gifts as any).public_id;
+    if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+
+    const rows = await db.select().from(gifts).where(eq(pubCol, key)).limit(1);
+    const g: any = rows?.[0];
+    if (!g) return res.status(404).json({ error: "Not found" });
+
+    const claimed = !!(g.isClaimed ?? g.is_claimed);
+    if (claimed) return res.status(400).json({ error: "Already claimed" });
+
+    if (minDelaySec > 0) {
+      const created = g.createdAt ?? g.created_at;
+      if (created) {
+        const createdMs = new Date(created).getTime();
+        const earliest = createdMs + minDelaySec * 1000;
+        if (Date.now() < earliest) {
+          return res.status(400).json({
+            error: "Too early to claim",
+            field: "minDelay",
+            waitMs: earliest - Date.now(),
+          });
+        }
+      }
+    }
+
+    const updateValues: any = {
+      isClaimed: true,
+      is_claimed: true,
+      claimedAt: new Date(),
+      claimed_at: new Date(),
+    };
+
+    await db.update(gifts).set(updateValues).where(eq(pubCol, key));
+
+    logEvent("claim_completed", { publicId: key });
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    logEvent("claim_error", { publicId: key, error: e?.message || "Unknown error" });
+    return res.status(500).json({ error: "Server error" });
+  }
+}
