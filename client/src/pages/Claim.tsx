@@ -1,23 +1,25 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useRoute } from "wouter";
 
 type Gift = {
   publicId: string;
-  amount: number;
+  amount: number; // cents
   message?: string;
   senderEmail?: string;
   isClaimed: boolean;
 };
 
 export default function Claim() {
-  const { id } = useParams();
+  const [, params] = useRoute<{ id: string }>("/claim/:id");
+  const id = params?.id;
+
   const [gift, setGift] = useState<Gift | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!id) {
-      setError("Missing gift ID.");
+      setError("This link is invalid or expired.");
       setLoading(false);
       return;
     }
@@ -29,14 +31,15 @@ export default function Claim() {
         });
 
         if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Fetch failed (${res.status}): ${text}`);
+          // Avoid throwing noisy HTML into the UI; log it for debugging
+          const text = await res.text().catch(() => "");
+          console.error("Gift fetch failed:", res.status, text);
+          throw new Error(`Fetch failed (${res.status})`);
         }
 
-        const data = await res.json();
+        const data = (await res.json()) as Gift;
         setGift(data);
-      } catch (e: any) {
-        console.error("Claim load error:", e);
+      } catch (e) {
         setError("This link is invalid or expired.");
       } finally {
         setLoading(false);
@@ -78,10 +81,10 @@ export default function Claim() {
     <div style={{ padding: 24 }}>
       <h2>You received a ThankuMail</h2>
 
-      {gift.message && (
-        <p style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>
-          {gift.message}
-        </p>
+      {gift.message ? (
+        <p style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>{gift.message}</p>
+      ) : (
+        <p style={{ marginTop: 12, opacity: 0.8 }}>A message first.</p>
       )}
 
       <p style={{ marginTop: 12 }}>
@@ -95,9 +98,7 @@ export default function Claim() {
       )}
 
       {gift.isClaimed ? (
-        <p style={{ marginTop: 18, color: "#b00" }}>
-          This gift has already been claimed.
-        </p>
+        <p style={{ marginTop: 18, color: "#b00" }}>This gift has already been claimed.</p>
       ) : (
         <button
           style={{
@@ -117,15 +118,15 @@ export default function Claim() {
               });
 
               if (!res.ok) {
-                const text = await res.text();
-                throw new Error(`Claim failed (${res.status}): ${text}`);
+                const text = await res.text().catch(() => "");
+                console.error("Claim failed:", res.status, text);
+                throw new Error(`Claim failed (${res.status})`);
               }
 
-              const data = await res.json();
+              await res.json().catch(() => null);
               setGift({ ...gift, isClaimed: true });
               alert("Gift claimed!");
-            } catch (e: any) {
-              console.error("Claim error:", e);
+            } catch (e) {
               alert("Failed to claim gift. Please try again.");
             }
           }}
