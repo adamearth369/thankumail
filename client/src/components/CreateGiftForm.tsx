@@ -1,3 +1,4 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx (FULL REPLACEMENT)
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type CreateGiftResponse =
@@ -15,6 +16,10 @@ function moneyToCents(dollars: number) {
 
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || "").trim());
+}
+
+function isE164Phone(s: string) {
+  return /^\+[1-9]\d{7,14}$/.test((s || "").trim());
 }
 
 function absoluteLink(maybeRelative: string) {
@@ -103,6 +108,7 @@ async function postJsonWithApiFallback(pathNoApi: string, body: any) {
 export default function CreateGiftForm() {
   const [senderEmail, setSenderEmail] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
   const [message, setMessage] = useState("");
   const [amountDollars, setAmountDollars] = useState<number>(10);
 
@@ -112,7 +118,7 @@ export default function CreateGiftForm() {
     publicId: string;
     claimUrl: string;
     emailStatus: "sent" | "queued";
-    recipient: string;
+    recipientLabel: string;
     sender: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -144,12 +150,28 @@ export default function CreateGiftForm() {
 
   const canSubmit = useMemo(() => {
     const senderOk = isEmail(senderEmail);
-    const recipientOk = isEmail(recipientEmail);
+
+    const emailOk = !recipientEmail.trim() || isEmail(recipientEmail);
+    const phoneOk = !recipientPhone.trim() || isE164Phone(recipientPhone);
+
+    const hasOneRecipient = !!recipientEmail.trim() || !!recipientPhone.trim();
+
     const msgOk = !!message.trim();
     const amtOk = Number.isFinite(amountDollars) && amountCents >= 1000;
     const captchaOk = !siteKey || !!turnstileToken;
-    return senderOk && recipientOk && msgOk && amtOk && captchaOk && !submitting;
-  }, [senderEmail, recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
+
+    return senderOk && emailOk && phoneOk && hasOneRecipient && msgOk && amtOk && captchaOk && !submitting;
+  }, [
+    senderEmail,
+    recipientEmail,
+    recipientPhone,
+    message,
+    amountDollars,
+    amountCents,
+    siteKey,
+    turnstileToken,
+    submitting,
+  ]);
 
   useEffect(() => {
     if (!selectedPreset) return;
@@ -220,6 +242,7 @@ export default function CreateGiftForm() {
   function resetFormForAnother() {
     setSenderEmail("");
     setRecipientEmail("");
+    setRecipientPhone("");
     setSelectedPreset("");
     setMessage("");
     setAmountDollars(10);
@@ -238,11 +261,16 @@ export default function CreateGiftForm() {
     setCopied(false);
 
     const sender = senderEmail.trim();
-    const recipient = recipientEmail.trim();
+    const email = recipientEmail.trim();
+    const phone = recipientPhone.trim();
     const msg = message.trim();
 
     if (!isEmail(sender)) return setErr("Please enter a valid sender email.");
-    if (!isEmail(recipient)) return setErr("Please enter a valid recipient email.");
+
+    if (!email && !phone) return setErr("Enter a recipient email or phone number.");
+    if (email && !isEmail(email)) return setErr("Recipient email is not valid.");
+    if (phone && !isE164Phone(phone)) return setErr("Phone must be E.164 (example: +15551234567).");
+
     if (!msg) return setErr("Please choose a message.");
     if (amountCents < 1000) return setErr("Minimum amount is $10.");
     if (siteKey && !turnstileToken) return setTurnstileError("Please complete the CAPTCHA.");
@@ -251,7 +279,9 @@ export default function CreateGiftForm() {
     try {
       const r = await postJsonWithApiFallback("/gifts", {
         senderEmail: sender,
-        recipientEmail: recipient,
+        // send only if present
+        ...(email ? { recipientEmail: email } : {}),
+        ...(phone ? { recipientPhone: phone } : {}),
         message: msg,
         amount: amountCents,
         ...(turnstileToken ? { turnstileToken } : {}),
@@ -294,10 +324,12 @@ export default function CreateGiftForm() {
         setErr("");
         setTurnstileError("");
 
+        const recipientLabel = email ? email : phone;
+
         setResult({
           publicId,
           claimUrl: finalClaimUrl,
-          recipient,
+          recipientLabel,
           sender,
           emailStatus: (data as any)?.emailSent === false ? "queued" : "sent",
         });
@@ -305,6 +337,7 @@ export default function CreateGiftForm() {
         // Clear inputs for next send
         setSenderEmail("");
         setRecipientEmail("");
+        setRecipientPhone("");
         setSelectedPreset("");
         setMessage("");
         setAmountDollars(10);
@@ -358,11 +391,24 @@ export default function CreateGiftForm() {
             <input
               value={recipientEmail}
               onChange={(e) => setRecipientEmail(e.target.value)}
-              placeholder="Recipient email"
+              placeholder="Recipient email (optional if phone provided)"
               inputMode="email"
               autoComplete="email"
               className="w-full rounded-2xl border px-4 py-3"
             />
+          </div>
+
+          <input
+            value={recipientPhone}
+            onChange={(e) => setRecipientPhone(e.target.value)}
+            placeholder="Recipient phone (optional, E.164 e.g. +15551234567)"
+            inputMode="tel"
+            autoComplete="tel"
+            className="w-full rounded-2xl border px-4 py-3"
+          />
+
+          <div className="text-[11px] leading-relaxed text-slate-500">
+            Provide <span className="font-semibold">email or phone</span>. Phone must include country code (E.164).
           </div>
 
           <select
@@ -428,14 +474,24 @@ export default function CreateGiftForm() {
       ) : (
         <div className="mt-6 space-y-4">
           <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm">
-            <div className="font-semibold text-slate-900">Your ThanküMail has been delivered.</div>
+            <div className="font-semibold text-slate-900">Your ThanküMail has been created.</div>
+
             <div className="mt-1 text-slate-700">
-              Email {result.emailStatus === "sent" ? "sent to" : "queued for"}{" "}
-              <span className="font-semibold">{result.recipient}</span>
+              {result.recipientLabel.includes("@") ? (
+                <>
+                  Email {result.emailStatus === "sent" ? "sent to" : "queued for"}{" "}
+                  <span className="font-semibold">{result.recipientLabel}</span>
+                </>
+              ) : (
+                <>
+                  Delivery method: <span className="font-semibold">Phone (SMS coming next)</span> —{" "}
+                  <span className="font-semibold">{result.recipientLabel}</span>
+                </>
+              )}
             </div>
+
             <div className="mt-2 text-slate-700">
-              If they don’t receive it within 48 hours, reminder emails will be sent (up to 3). After that, it will be
-              returned to <span className="font-semibold">{result.sender}</span>.
+              If delivery fails, you can still copy the claim link and send it manually.
             </div>
 
             <div className="mt-3 flex gap-2">
