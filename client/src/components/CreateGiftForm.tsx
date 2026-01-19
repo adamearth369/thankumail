@@ -113,6 +113,7 @@ export default function CreateGiftForm() {
     claimUrl: string;
     emailStatus: "sent" | "queued";
     recipient: string;
+    sender: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -142,13 +143,13 @@ export default function CreateGiftForm() {
   const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
 
   const canSubmit = useMemo(() => {
+    const senderOk = isEmail(senderEmail);
     const recipientOk = isEmail(recipientEmail);
-    const senderOk = !senderEmail.trim() || isEmail(senderEmail);
     const msgOk = !!message.trim();
     const amtOk = Number.isFinite(amountDollars) && amountCents >= 1000;
     const captchaOk = !siteKey || !!turnstileToken;
-    return recipientOk && senderOk && msgOk && amtOk && captchaOk && !submitting;
-  }, [recipientEmail, senderEmail, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
+    return senderOk && recipientOk && msgOk && amtOk && captchaOk && !submitting;
+  }, [senderEmail, recipientEmail, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
 
   useEffect(() => {
     if (!selectedPreset) return;
@@ -240,7 +241,7 @@ export default function CreateGiftForm() {
     const recipient = recipientEmail.trim();
     const msg = message.trim();
 
-    if (sender && !isEmail(sender)) return setErr("Please enter a valid sender email (or leave it blank).");
+    if (!isEmail(sender)) return setErr("Please enter a valid sender email.");
     if (!isEmail(recipient)) return setErr("Please enter a valid recipient email.");
     if (!msg) return setErr("Please choose a message.");
     if (amountCents < 1000) return setErr("Minimum amount is $10.");
@@ -249,10 +250,10 @@ export default function CreateGiftForm() {
     setSubmitting(true);
     try {
       const r = await postJsonWithApiFallback("/gifts", {
+        senderEmail: sender,
         recipientEmail: recipient,
         message: msg,
         amount: amountCents,
-        ...(sender ? { senderEmail: sender } : {}),
         ...(turnstileToken ? { turnstileToken } : {}),
       });
 
@@ -297,6 +298,7 @@ export default function CreateGiftForm() {
           publicId,
           claimUrl: finalClaimUrl,
           recipient,
+          sender,
           emailStatus: (data as any)?.emailSent === false ? "queued" : "sent",
         });
 
@@ -343,23 +345,25 @@ export default function CreateGiftForm() {
 
       {!result ? (
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
-          <input
-            value={senderEmail}
-            onChange={(e) => setSenderEmail(e.target.value)}
-            placeholder="Sender email (optional — for return-to-sender)"
-            inputMode="email"
-            autoComplete="email"
-            className="w-full rounded-2xl border px-4 py-3"
-          />
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <input
+              value={senderEmail}
+              onChange={(e) => setSenderEmail(e.target.value)}
+              placeholder="Sender email"
+              inputMode="email"
+              autoComplete="email"
+              className="w-full rounded-2xl border px-4 py-3"
+            />
 
-          <input
-            value={recipientEmail}
-            onChange={(e) => setRecipientEmail(e.target.value)}
-            placeholder="Recipient email"
-            inputMode="email"
-            autoComplete="email"
-            className="w-full rounded-2xl border px-4 py-3"
-          />
+            <input
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              placeholder="Recipient email"
+              inputMode="email"
+              autoComplete="email"
+              className="w-full rounded-2xl border px-4 py-3"
+            />
+          </div>
 
           <select
             value={selectedPreset}
@@ -430,8 +434,8 @@ export default function CreateGiftForm() {
               <span className="font-semibold">{result.recipient}</span>
             </div>
             <div className="mt-2 text-slate-700">
-              If they don’t receive it within 48 hours, reminder emails will be sent (up to 3). After that, it can be
-              returned to the sender (if provided).
+              If they don’t receive it within 48 hours, reminder emails will be sent (up to 3). After that, it will be
+              returned to <span className="font-semibold">{result.sender}</span>.
             </div>
 
             <div className="mt-3 flex gap-2">
