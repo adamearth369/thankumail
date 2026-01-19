@@ -71,32 +71,6 @@ const claimLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-/* -------------------- REGISTER ROUTES -------------------- */
-export function registerRoutes(app: Express) {
-  app.post("/gifts", createLimiter, createGiftHandler);
-  app.post("/api/gifts", createLimiter, createGiftHandler);
-
-  app.get("/api/gifts/:id", getGiftHandler);
-
-  app.post("/api/gifts/:id/claim", claimLimiter, claimGiftHandler);
-
-  app.post("/api/email/test", async (req: Request, res: Response) => {
-    const to = String(req.body?.to || req.body?.email || "").trim();
-    if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
-
-    const r = await sendGiftEmail({
-      to,
-      publicId: "test",
-      claimUrl: `${getClaimSiteBaseUrl()}/claim/test`,
-      amountCents: 1000,
-      senderEmail: "sender@example.com",
-      message: "This is a test email from ThankuMail.",
-    });
-
-    return res.json({ ok: r.ok, error: r.error || null });
-  });
-}
-
 /* -------------------- HANDLERS -------------------- */
 async function createGiftHandler(req: Request, res: Response) {
   const publicId = crypto.randomBytes(16).toString("hex");
@@ -122,7 +96,6 @@ async function createGiftHandler(req: Request, res: Response) {
   try {
     logEvent("gift_db_insert_start", { publicId });
 
-    // IMPORTANT:
     // Insert with BOTH camelCase and snake_case keys.
     // Drizzle will use the keys that exist in your schema and ignore unknown ones.
     const insertValues: any = {
@@ -151,7 +124,6 @@ async function createGiftHandler(req: Request, res: Response) {
     logEvent("gift_db_insert_ok", { publicId });
 
     // Sanity-check: immediately try to read it back by publicId
-    // (If this fails, it means the schema key isn't publicId/public_id and we must align to the real column.)
     try {
       const pubCol = (gifts as any).publicId ?? (gifts as any).public_id;
       if (pubCol) {
@@ -295,4 +267,40 @@ async function claimGiftHandler(req: Request, res: Response) {
     logEvent("claim_error", { publicId: key, error: e?.message || "Unknown error" });
     return res.status(500).json({ error: "Server error" });
   }
+}
+
+/* -------------------- DEFAULT EXPORT (REQUIRED BY src/index.ts) -------------------- */
+/**
+ * src/index.ts imports default:
+ *   import apiRouter from "../server/routes";
+ * so we must export a default function.
+ */
+export default function apiRouter(app: Express) {
+  app.post("/gifts", createLimiter, createGiftHandler);
+  app.post("/api/gifts", createLimiter, createGiftHandler);
+
+  app.get("/api/gifts/:id", getGiftHandler);
+
+  app.post("/api/gifts/:id/claim", claimLimiter, claimGiftHandler);
+
+  app.post("/api/email/test", async (req: Request, res: Response) => {
+    const to = String(req.body?.to || req.body?.email || "").trim();
+    if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
+
+    const r = await sendGiftEmail({
+      to,
+      publicId: "test",
+      claimUrl: `${getClaimSiteBaseUrl()}/claim/test`,
+      amountCents: 1000,
+      senderEmail: "sender@example.com",
+      message: "This is a test email from ThankuMail.",
+    });
+
+    return res.json({ ok: r.ok, error: r.error || null });
+  });
+}
+
+/* Also keep named export for compatibility elsewhere */
+export function registerRoutes(app: Express) {
+  return apiRouter(app);
 }
