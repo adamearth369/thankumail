@@ -1,4 +1,3 @@
-// server/routes.ts
 import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import rateLimit from "express-rate-limit";
@@ -24,7 +23,7 @@ function getClaimSiteBaseUrl() {
 /* -------------------- TURNSTILE (OPTIONAL) -------------------- */
 async function verifyTurnstile(token: string, remoteip?: string) {
   const secret = process.env.TURNSTILE_SECRET_KEY || "";
-  if (!secret) return { ok: true as const }; // not enabled
+  if (!secret) return { ok: true as const };
   if (!token) return { ok: false as const, error: "Missing CAPTCHA token" };
 
   try {
@@ -52,7 +51,7 @@ const CreateGiftSchema = z.object({
   senderEmail: z.string().email(),
   recipientEmail: z.string().email(),
   message: z.string().max(2000).optional().default(""),
-  amount: z.number().int().min(1000), // cents; min $10
+  amount: z.number().int().min(1000),
   turnstileToken: z.string().optional(),
 });
 
@@ -70,6 +69,23 @@ const claimLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+/* -------------------- SCHEMA-AWARE COLUMN PICKERS -------------------- */
+function pickCol<T = any>(...candidates: string[]) {
+  for (const k of candidates) {
+    if ((gifts as any)[k]) return (gifts as any)[k] as T;
+  }
+  return null;
+}
+
+const COL_PUBLIC_ID = () => pickCol("publicId", "public_id", "publicID");
+const COL_AMOUNT = () => pickCol("amount");
+const COL_MESSAGE = () => pickCol("message");
+const COL_RECIPIENT_EMAIL = () => pickCol("recipientEmail", "recipient_email");
+const COL_SENDER_EMAIL = () => pickCol("senderEmail", "sender_email");
+const COL_IS_CLAIMED = () => pickCol("isClaimed", "is_claimed");
+const COL_CREATED_AT = () => pickCol("createdAt", "created_at");
+const COL_CLAIMED_AT = () => pickCol("claimedAt", "claimed_at");
 
 /* -------------------- HANDLERS -------------------- */
 async function createGiftHandler(req: Request, res: Response) {
@@ -96,54 +112,54 @@ async function createGiftHandler(req: Request, res: Response) {
   try {
     logEvent("gift_db_insert_start", { publicId });
 
-    // Insert with BOTH camelCase and snake_case keys.
-    // Drizzle will use the keys that exist in your schema and ignore unknown ones.
-    const insertValues: any = {
-      publicId,
-      public_id: publicId,
+    const values: any = {};
 
-      amount,
+    const cPublicId = COL_PUBLIC_ID();
+    const cAmount = COL_AMOUNT();
+    const cMessage = COL_MESSAGE();
+    const cRecipient = COL_RECIPIENT_EMAIL();
+    const cSender = COL_SENDER_EMAIL();
+    const cClaimed = COL_IS_CLAIMED();
+    const cCreatedAt = COL_CREATED_AT();
 
-      message: message || "",
+    if (!cPublicId) throw new Error("Schema missing publicId/public_id column");
 
-      recipientEmail,
-      recipient_email: recipientEmail,
+    // IMPORTANT: use schema keys (the property name on `gifts`), not raw SQL column names
+    // We get the property name by finding which candidate exists on `gifts`.
+    if ((gifts as any).publicId) values.publicId = publicId;
+    else if ((gifts as any).public_id) values.public_id = publicId;
+    else if ((gifts as any).publicID) values.publicID = publicId;
 
-      senderEmail,
-      sender_email: senderEmail,
+    if ((gifts as any).amount) values.amount = amount;
+    if ((gifts as any).message) values.message = message || "";
 
-      isClaimed: false,
-      is_claimed: false,
+    if ((gifts as any).recipientEmail) values.recipientEmail = recipientEmail;
+    else if ((gifts as any).recipient_email) values.recipient_email = recipientEmail;
 
-      createdAt: new Date(),
-      created_at: new Date(),
-    };
+    if ((gifts as any).senderEmail) values.senderEmail = senderEmail;
+    else if ((gifts as any).sender_email) values.sender_email = senderEmail;
 
-    await db.insert(gifts).values(insertValues);
+    if ((gifts as any).isClaimed) values.isClaimed = false;
+    else if ((gifts as any).is_claimed) values.is_claimed = false;
+
+    if ((gifts as any).createdAt) values.createdAt = new Date();
+    else if ((gifts as any).created_at) values.created_at = new Date();
+
+    await db.insert(gifts).values(values);
 
     logEvent("gift_db_insert_ok", { publicId });
 
-    // Sanity-check: immediately try to read it back by publicId
+    // Readback sanity check
     try {
-      const pubCol = (gifts as any).publicId ?? (gifts as any).public_id;
-      if (pubCol) {
-        const chk = await db.select().from(gifts).where(eq(pubCol, publicId)).limit(1);
-        logEvent("gift_db_readback", { publicId, ok: !!chk?.[0] });
-      } else {
-        logEvent("gift_db_readback", { publicId, ok: false, error: "No publicId/public_id column in schema" });
-      }
+      const chk = await db.select().from(gifts).where(eq(cPublicId as any, publicId)).limit(1);
+      logEvent("gift_db_readback", { publicId, ok: !!chk?.[0] });
     } catch (e: any) {
       logEvent("gift_db_readback", { publicId, ok: false, error: e?.message || "readback error" });
     }
 
     const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
 
-    logEvent("gift_created", {
-      publicId,
-      recipientEmail,
-      senderEmail,
-      amount,
-    });
+    logEvent("gift_created", { publicId, recipientEmail, senderEmail, amount });
 
     // Fire-and-forget email
     (async () => {
@@ -157,15 +173,8 @@ async function createGiftHandler(req: Request, res: Response) {
           senderEmail,
           message,
         });
-        logEvent("email_sent", {
-          kind: "gift",
-          publicId,
-          to: recipientEmail,
-          ok: r.ok,
-          error: r.error || null,
-        });
+        logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: r.ok, error: r.error || null });
 
-        // Optional return-to-sender best effort
         if (!r.ok && senderEmail) {
           logEvent("email_send_start", { kind: "return_to_sender", publicId, to: senderEmail });
           const r2 = await sendReturnToSenderEmail({
@@ -199,15 +208,15 @@ async function getGiftHandler(req: Request, res: Response) {
   if (!key) return res.status(400).json({ message: "Missing id" });
 
   try {
-    const pubCol = (gifts as any).publicId ?? (gifts as any).public_id;
-    if (!pubCol) return res.status(500).json({ message: "Server misconfigured: missing publicId column" });
+    const cPublicId = COL_PUBLIC_ID();
+    if (!cPublicId) return res.status(500).json({ message: "Server misconfigured: missing publicId column" });
 
-    const rows = await db.select().from(gifts).where(eq(pubCol, key)).limit(1);
+    const rows = await db.select().from(gifts).where(eq(cPublicId as any, key)).limit(1);
     const g: any = rows?.[0];
     if (!g) return res.status(404).json({ message: "Not found" });
 
     return res.json({
-      publicId: g.publicId ?? g.public_id ?? key,
+      publicId: g.publicId ?? g.public_id ?? g.publicID ?? key,
       amount: g.amount,
       message: g.message ?? "",
       senderEmail: g.senderEmail ?? g.sender_email ?? "",
@@ -226,10 +235,10 @@ async function claimGiftHandler(req: Request, res: Response) {
   const minDelaySec = Number(process.env.MIN_CLAIM_DELAY_SEC || "0");
 
   try {
-    const pubCol = (gifts as any).publicId ?? (gifts as any).public_id;
-    if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+    const cPublicId = COL_PUBLIC_ID();
+    if (!cPublicId) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
 
-    const rows = await db.select().from(gifts).where(eq(pubCol, key)).limit(1);
+    const rows = await db.select().from(gifts).where(eq(cPublicId as any, key)).limit(1);
     const g: any = rows?.[0];
     if (!g) return res.status(404).json({ error: "Not found" });
 
@@ -242,26 +251,21 @@ async function claimGiftHandler(req: Request, res: Response) {
         const createdMs = new Date(created).getTime();
         const earliest = createdMs + minDelaySec * 1000;
         if (Date.now() < earliest) {
-          return res.status(400).json({
-            error: "Too early to claim",
-            field: "minDelay",
-            waitMs: earliest - Date.now(),
-          });
+          return res.status(400).json({ error: "Too early to claim", field: "minDelay", waitMs: earliest - Date.now() });
         }
       }
     }
 
-    const updateValues: any = {
-      isClaimed: true,
-      is_claimed: true,
-      claimedAt: new Date(),
-      claimed_at: new Date(),
-    };
+    const update: any = {};
+    if ((gifts as any).isClaimed) update.isClaimed = true;
+    else if ((gifts as any).is_claimed) update.is_claimed = true;
 
-    await db.update(gifts).set(updateValues).where(eq(pubCol, key));
+    if ((gifts as any).claimedAt) update.claimedAt = new Date();
+    else if ((gifts as any).claimed_at) update.claimed_at = new Date();
+
+    await db.update(gifts).set(update).where(eq(cPublicId as any, key));
 
     logEvent("claim_completed", { publicId: key });
-
     return res.json({ ok: true });
   } catch (e: any) {
     logEvent("claim_error", { publicId: key, error: e?.message || "Unknown error" });
@@ -269,18 +273,11 @@ async function claimGiftHandler(req: Request, res: Response) {
   }
 }
 
-/* -------------------- DEFAULT EXPORT (REQUIRED BY src/index.ts) -------------------- */
-/**
- * src/index.ts imports default:
- *   import apiRouter from "../server/routes";
- * so we must export a default function.
- */
+/* -------------------- DEFAULT EXPORT REQUIRED BY src/index.ts -------------------- */
 export default function apiRouter(app: Express) {
   app.post("/gifts", createLimiter, createGiftHandler);
   app.post("/api/gifts", createLimiter, createGiftHandler);
-
   app.get("/api/gifts/:id", getGiftHandler);
-
   app.post("/api/gifts/:id/claim", claimLimiter, claimGiftHandler);
 
   app.post("/api/email/test", async (req: Request, res: Response) => {
@@ -300,7 +297,7 @@ export default function apiRouter(app: Express) {
   });
 }
 
-/* Also keep named export for compatibility elsewhere */
+// Keep named export too
 export function registerRoutes(app: Express) {
   return apiRouter(app);
 }
