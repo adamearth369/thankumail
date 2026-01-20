@@ -124,10 +124,9 @@ export default function CreateGiftForm() {
   const [result, setResult] = useState<{
     publicId: string;
     claimUrl: string;
-    emailStatus: "sent" | "queued";
-    recipient: string;
+    deliveryLabel: string;
+    recipientLabel: string;
     sender: string;
-    deliveredVia: "email" | "sms" | "both";
   } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -158,31 +157,14 @@ export default function CreateGiftForm() {
 
   const canSubmit = useMemo(() => {
     const senderOk = isEmail(senderEmail);
-    const hasEmail = !!recipientEmail.trim();
-    const hasPhone = !!recipientPhone.trim();
-
-    const recipientOk =
-      (hasEmail ? isEmail(recipientEmail) : true) &&
-      (hasPhone ? isE164(recipientPhone) : true) &&
-      (hasEmail || hasPhone);
-
+    const recipientEmailOk = !recipientEmail.trim() || isEmail(recipientEmail);
+    const recipientPhoneOk = !recipientPhone.trim() || isE164(recipientPhone);
+    const hasDelivery = !!recipientEmail.trim() || !!recipientPhone.trim();
     const msgOk = !!message.trim();
     const amtOk = Number.isFinite(amountDollars) && amountCents >= 1000;
-
     const captchaOk = !siteKey || (turnstileToken && turnstileToken.length > 10);
-
-    return senderOk && recipientOk && msgOk && amtOk && captchaOk && !submitting;
-  }, [
-    senderEmail,
-    recipientEmail,
-    recipientPhone,
-    message,
-    amountDollars,
-    amountCents,
-    siteKey,
-    turnstileToken,
-    submitting,
-  ]);
+    return senderOk && recipientEmailOk && recipientPhoneOk && hasDelivery && msgOk && amtOk && captchaOk && !submitting;
+  }, [senderEmail, recipientEmail, recipientPhone, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
 
   useEffect(() => {
     if (!selectedPreset) return;
@@ -210,20 +192,9 @@ export default function CreateGiftForm() {
         setTurnstileReady(true);
 
         if (turnstileContainerRef.current) {
-          try {
-            while (turnstileContainerRef.current.firstChild) {
-              turnstileContainerRef.current.removeChild(turnstileContainerRef.current.firstChild);
-            }
-          } catch {}
-
-          if (turnstileWidgetIdRef.current && window.turnstile?.remove) {
-            try {
-              window.turnstile.remove(turnstileWidgetIdRef.current);
-            } catch {}
-            turnstileWidgetIdRef.current = null;
-          }
-
-          setTurnstileToken("");
+          // Always re-render into a fresh container to avoid stale widgets
+          turnstileContainerRef.current.innerHTML = "";
+          turnstileWidgetIdRef.current = null;
 
           const widgetId = window.turnstile.render(turnstileContainerRef.current, {
             sitekey: siteKey,
@@ -260,8 +231,10 @@ export default function CreateGiftForm() {
     if (!siteKey) return;
     try {
       const id = turnstileWidgetIdRef.current;
-      if (id && window.turnstile) window.turnstile.reset(id);
-    } catch {}
+      if (id != null && window.turnstile) window.turnstile.reset(id);
+    } catch {
+      // ignore
+    }
     setTurnstileToken("");
   }
 
@@ -293,13 +266,13 @@ export default function CreateGiftForm() {
 
     if (!isEmail(sender)) return setErr("Please enter a valid sender email.");
 
-    if (!email && !phone) return setErr("Please enter a recipient email or phone number.");
+    if (!email && !phone) return setErr("Enter a recipient email or phone number.");
     if (email && !isEmail(email)) return setErr("Please enter a valid recipient email.");
     if (phone && !isE164(phone)) return setErr("Invalid phone number (use E.164 like +15551234567).");
 
     if (!msg) return setErr("Please choose a message.");
     if (amountCents < 1000) return setErr("Minimum amount is $10.");
-    if (siteKey && !(turnstileToken && turnstileToken.length > 10)) return setTurnstileError("Please complete the CAPTCHA.");
+    if (siteKey && (!turnstileToken || turnstileToken.length <= 10)) return setTurnstileError("Please complete the CAPTCHA.");
 
     setSubmitting(true);
     try {
@@ -307,13 +280,12 @@ export default function CreateGiftForm() {
         senderEmail: sender,
         message: msg,
         amount: amountCents,
+        ...(email ? { recipientEmail: email } : {}),
+        ...(phone ? { recipientPhone: phone } : {}),
+        ...(turnstileToken ? { turnstileToken } : {}),
       };
-      if (email) payload.recipientEmail = email;
-      if (phone) payload.recipientPhone = phone;
-      if (turnstileToken) payload.turnstileToken = turnstileToken;
 
       const r = await postJsonWithApiFallback("/gifts", payload);
-
       const data = (await r.json().catch(() => ({}))) as CreateGiftResponse;
 
       if (!r.ok) {
@@ -341,40 +313,37 @@ export default function CreateGiftForm() {
       const publicId = safeText((data as any)?.publicId);
       const serverClaimUrl = safeText((data as any)?.claimUrl);
 
-      if (publicId) {
-        saveLastPublicId(publicId);
-
-        const deterministic = buildClaimUrlFromPublicId(publicId);
-        const fallback = serverClaimUrl ? absoluteLink(serverClaimUrl) : "";
-        const finalClaimUrl = deterministic || fallback;
-
-        const deliveredVia: "email" | "sms" | "both" =
-          email && phone ? "both" : email ? "email" : "sms";
-
-        setErr("");
-        setTurnstileError("");
-
-        setResult({
-          publicId,
-          claimUrl: finalClaimUrl,
-          recipient: email || phone,
-          sender,
-          emailStatus: (data as any)?.emailSent === false ? "queued" : "sent",
-          deliveredVia,
-        });
-
-        setSenderEmail("");
-        setRecipientEmail("");
-        setRecipientPhone("");
-        setSelectedPreset("");
-        setMessage("");
-        setAmountDollars(10);
-
+      if (!publicId) {
+        setErr("Unexpected response from server.");
         resetTurnstile();
         return;
       }
 
-      setErr("Unexpected response from server.");
+      saveLastPublicId(publicId);
+
+      const deterministic = buildClaimUrlFromPublicId(publicId);
+      const fallback = serverClaimUrl ? absoluteLink(serverClaimUrl) : "";
+      const finalClaimUrl = deterministic || fallback;
+
+      const deliveryLabel = email && phone ? "Email + SMS" : email ? "Email" : "SMS";
+      const recipientLabel = email && phone ? `${email} / ${phone}` : email ? email : phone;
+
+      setResult({
+        publicId,
+        claimUrl: finalClaimUrl,
+        deliveryLabel,
+        recipientLabel,
+        sender,
+      });
+
+      // Clear inputs for next send
+      setSenderEmail("");
+      setRecipientEmail("");
+      setRecipientPhone("");
+      setSelectedPreset("");
+      setMessage("");
+      setAmountDollars(10);
+
       resetTurnstile();
     } catch (e: any) {
       setErr(String(e?.message || e || "Network error"));
@@ -390,7 +359,9 @@ export default function CreateGiftForm() {
       await navigator.clipboard.writeText(result.claimUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   const moneyPresets = [
@@ -429,7 +400,7 @@ export default function CreateGiftForm() {
           <input
             value={recipientPhone}
             onChange={(e) => setRecipientPhone(e.target.value)}
-            placeholder="Recipient phone (optional, E.164: +15551234567)"
+            placeholder="Recipient phone (optional, E.164 like +15551234567)"
             inputMode="tel"
             autoComplete="tel"
             className="w-full rounded-2xl border px-4 py-3"
@@ -448,7 +419,7 @@ export default function CreateGiftForm() {
             ))}
           </select>
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {moneyPresets.map((p) => (
               <button
                 key={p.value}
@@ -486,7 +457,7 @@ export default function CreateGiftForm() {
             disabled={!canSubmit}
             className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
           >
-            {submitting ? "Creating…" : siteKey && !(turnstileToken && turnstileToken.length > 10) ? "Complete CAPTCHA" : "Create gift"}
+            {submitting ? "Creating…" : siteKey && (!turnstileToken || turnstileToken.length <= 10) ? "Complete CAPTCHA" : "Create gift"}
           </button>
 
           {siteKey ? (
@@ -494,17 +465,20 @@ export default function CreateGiftForm() {
               Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
             </div>
           ) : null}
+
+          <div className="text-[11px] leading-relaxed text-slate-500">
+            Recipient email or phone is required. Phone must be E.164 (example: +15551234567).
+          </div>
         </form>
       ) : (
         <div className="mt-6 space-y-4">
           <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm">
-            <div className="font-semibold text-slate-900">Your ThanküMail has been delivered.</div>
+            <div className="font-semibold text-slate-900">Your ThanküMail has been created.</div>
             <div className="mt-1 text-slate-700">
-              Delivered via{" "}
-              <span className="font-semibold">
-                {result.deliveredVia === "both" ? "email + text" : result.deliveredVia === "email" ? "email" : "text"}
-              </span>{" "}
-              to <span className="font-semibold">{result.recipient}</span>
+              Delivery: <span className="font-semibold">{result.deliveryLabel}</span>
+            </div>
+            <div className="mt-1 text-slate-700">
+              Sent to: <span className="font-semibold">{result.recipientLabel}</span>
             </div>
 
             <div className="mt-3 flex gap-2">
