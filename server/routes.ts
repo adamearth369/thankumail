@@ -115,7 +115,10 @@ async function createGiftHandler(req: Request, res: Response) {
   if (!parsed.success) {
     const msg = parsed.error.issues?.[0]?.message || "Invalid request";
     logEvent("gift_create_bad_request", { publicId, error: msg });
-    return res.status(400).json({ error: msg });
+    return res.status(400).json({
+      error: msg,
+      issues: parsed.error.issues,
+    });
   }
 
   const { senderEmail, recipientEmail, recipientPhone, message, amount, turnstileToken } = parsed.data;
@@ -133,25 +136,44 @@ async function createGiftHandler(req: Request, res: Response) {
 
     const values: any = {};
 
+    // public_id
     if ((gifts as any).publicId) values.publicId = publicId;
     else if ((gifts as any).public_id) values.public_id = publicId;
     else if ((gifts as any).publicID) values.publicID = publicId;
     else throw new Error("Schema missing publicId/public_id column");
 
+    // amount/message
     if ((gifts as any).amount) values.amount = amount;
     if ((gifts as any).message) values.message = message || "";
 
+    // recipient_email (optional now)
     if (recipientEmail) {
       if ((gifts as any).recipientEmail) values.recipientEmail = recipientEmail;
       else if ((gifts as any).recipient_email) values.recipient_email = recipientEmail;
+    } else {
+      // If the column exists, explicitly set null (safe now that DB allows NULL)
+      if ((gifts as any).recipientEmail) values.recipientEmail = null;
+      else if ((gifts as any).recipient_email) values.recipient_email = null;
     }
 
+    // recipient_phone (NEW)
+    if (recipientPhone) {
+      if ((gifts as any).recipientPhone) values.recipientPhone = recipientPhone;
+      else if ((gifts as any).recipient_phone) values.recipient_phone = recipientPhone;
+    } else {
+      if ((gifts as any).recipientPhone) values.recipientPhone = null;
+      else if ((gifts as any).recipient_phone) values.recipient_phone = null;
+    }
+
+    // sender_email
     if ((gifts as any).senderEmail) values.senderEmail = senderEmail;
     else if ((gifts as any).sender_email) values.sender_email = senderEmail;
 
+    // claimed flags
     if ((gifts as any).isClaimed) values.isClaimed = false;
     else if ((gifts as any).is_claimed) values.is_claimed = false;
 
+    // created_at
     if ((gifts as any).createdAt) values.createdAt = new Date();
     else if ((gifts as any).created_at) values.created_at = new Date();
 
@@ -168,6 +190,7 @@ async function createGiftHandler(req: Request, res: Response) {
       amount,
     });
 
+    // Email only if recipientEmail exists
     if (recipientEmail) {
       (async () => {
         try {
@@ -204,6 +227,8 @@ async function createGiftHandler(req: Request, res: Response) {
       })();
     }
 
+    // NOTE: SMS sending will be added next (Twilio) when recipientPhone exists.
+
     return res.json({ ok: true, publicId, claimUrl });
   } catch (e: any) {
     logEvent("gift_create_error", { publicId, error: e?.message || "Unknown error" });
@@ -228,6 +253,8 @@ async function getGiftHandler(req: Request, res: Response) {
       amount: g.amount,
       message: g.message ?? "",
       senderEmail: g.senderEmail ?? g.sender_email ?? "",
+      recipientEmail: g.recipientEmail ?? g.recipient_email ?? null,
+      recipientPhone: g.recipientPhone ?? g.recipient_phone ?? null,
       isClaimed: !!(g.isClaimed ?? g.is_claimed),
     });
   } catch {
