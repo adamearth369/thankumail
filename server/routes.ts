@@ -1,4 +1,4 @@
-// server/routes.ts
+// WHERE TO PASTE: server/routes.ts (FULL REPLACEMENT)
 import { Router } from "express";
 import type { Request, Response } from "express";
 import crypto from "crypto";
@@ -8,7 +8,8 @@ import { eq } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
-import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
+import { sendGiftEmail, sendReturnToSenderEmail } from "./email";
+import { sendGiftSms } from "./sms";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -55,14 +56,14 @@ const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email(),
 
-    // Email now OPTIONAL (allow "", undefined)
+    // Email OPTIONAL (allow "", undefined)
     recipientEmail: z
       .string()
       .optional()
       .or(z.literal(""))
       .transform((v) => (typeof v === "string" ? v.trim() : "")),
 
-    // NEW: phone optional (E.164)
+    // Phone OPTIONAL (E.164)
     recipientPhone: z
       .string()
       .optional()
@@ -137,26 +138,31 @@ async function createGiftHandler(req: Request, res: Response) {
     // Only set keys that exist on the Drizzle schema object.
     const values: any = {};
 
+    // publicId
     if ((gifts as any).publicId) values.publicId = publicId;
     else if ((gifts as any).public_id) values.public_id = publicId;
     else if ((gifts as any).publicID) values.publicID = publicId;
     else throw new Error("Schema missing publicId/public_id column");
 
+    // amount/message
     if ((gifts as any).amount) values.amount = amount;
     if ((gifts as any).message) values.message = message || "";
 
-    // Store recipientEmail if provided (phone-only gifts can store empty email)
+    // recipientEmail optional
     if (recipientEmail) {
       if ((gifts as any).recipientEmail) values.recipientEmail = recipientEmail;
       else if ((gifts as any).recipient_email) values.recipient_email = recipientEmail;
     }
 
+    // senderEmail
     if ((gifts as any).senderEmail) values.senderEmail = senderEmail;
     else if ((gifts as any).sender_email) values.sender_email = senderEmail;
 
+    // claimed flags
     if ((gifts as any).isClaimed) values.isClaimed = false;
     else if ((gifts as any).is_claimed) values.is_claimed = false;
 
+    // timestamps
     if ((gifts as any).createdAt) values.createdAt = new Date();
     else if ((gifts as any).created_at) values.created_at = new Date();
 
@@ -179,7 +185,6 @@ async function createGiftHandler(req: Request, res: Response) {
 
     const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
 
-    // Log both delivery options (phone is not stored yet; SMS comes next step)
     logEvent("gift_created", {
       publicId,
       recipientEmail: recipientEmail || "",
@@ -188,7 +193,7 @@ async function createGiftHandler(req: Request, res: Response) {
       amount,
     });
 
-    // Fire-and-forget email ONLY when recipientEmail exists
+    // Fire-and-forget EMAIL (only if recipientEmail exists)
     if (recipientEmail) {
       (async () => {
         try {
@@ -221,6 +226,19 @@ async function createGiftHandler(req: Request, res: Response) {
           }
         } catch (e: any) {
           logEvent("email_send_crash", { publicId, error: e?.message || "Unknown error" });
+        }
+      })();
+    }
+
+    // Fire-and-forget SMS (only if recipientPhone exists)
+    if (recipientPhone) {
+      (async () => {
+        try {
+          logEvent("sms_send_start", { publicId, to: recipientPhone });
+          const r = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
+          logEvent("sms_sent", { publicId, to: recipientPhone, ok: r.ok, error: r.error || null });
+        } catch (e: any) {
+          logEvent("sms_send_crash", { publicId, to: recipientPhone, error: e?.message || "Unknown error" });
         }
       })();
     }
@@ -310,22 +328,5 @@ router.post("/api/gifts", createLimiter, (req, res) => void createGiftHandler(re
 // Read + claim
 router.get("/api/gifts/:id", (req, res) => void getGiftHandler(req, res));
 router.post("/api/gifts/:id/claim", claimLimiter, (req, res) => void claimGiftHandler(req, res));
-
-// Email test
-router.post("/api/email/test", async (req: Request, res: Response) => {
-  const to = String(req.body?.to || req.body?.email || "").trim();
-  if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
-
-  const r = await sendGiftEmail({
-    to,
-    publicId: "test",
-    claimUrl: `${getClaimSiteBaseUrl()}/claim/test`,
-    amountCents: 1000,
-    senderEmail: "sender@example.com",
-    message: "This is a test email from ThankuMail.",
-  });
-
-  return res.json({ ok: r.ok, error: r.error || null });
-});
 
 export default router;
