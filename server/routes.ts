@@ -1,332 +1,505 @@
-// WHERE TO PASTE: server/routes.ts (FULL REPLACEMENT)
-import { Router } from "express";
-import type { Request, Response } from "express";
-import crypto from "crypto";
-import rateLimit from "express-rate-limit";
-import { z } from "zod";
-import { eq } from "drizzle-orm";
+// client/src/components/CreateGiftForm.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import { db } from "./db";
-import { gifts } from "@shared/schema";
-import { sendGiftEmail, sendReturnToSenderEmail } from "./email";
-import { sendGiftSms } from "./sms";
+type CreateGiftResponse =
+  | {
+      publicId: string;
+      claimUrl: string;
+      emailSent?: boolean;
+    }
+  | {
+      error: string;
+      issues?: any[];
+      field?: string;
+      retryAfterSec?: number;
+      code?: string;
+      codes?: string[];
+    };
 
-/* -------------------- STRUCTURED LOGGING -------------------- */
-function logEvent(event: string, fields: Record<string, any> = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+function moneyToCents(dollars: number) {
+  const cents = Math.round(dollars * 100);
+  return Number.isFinite(cents) ? cents : 0;
 }
 
-/* -------------------- BASE URL HELPERS -------------------- */
-function getClaimSiteBaseUrl() {
-  const env = process.env.PUBLIC_SITE_URL || process.env.PUBLIC_CLAIM_BASE_URL || "";
-  if (env) return env.replace(/\/+$/, "");
-  return "https://thankumail.com";
+function isEmail(s: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || "").trim());
 }
 
-/* -------------------- TURNSTILE (OPTIONAL) -------------------- */
-async function verifyTurnstile(token: string, remoteip?: string) {
-  const secret = process.env.TURNSTILE_SECRET_KEY || "";
-  if (!secret) return { ok: true as const };
-  if (!token) return { ok: false as const, error: "Missing CAPTCHA token" };
+function isE164(s: string) {
+  return /^\+[1-9]\d{7,14}$/.test((s || "").trim());
+}
 
+function absoluteLink(maybeRelative: string) {
+  if (!maybeRelative) return maybeRelative;
+  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
+  return `${origin}${path}`;
+}
+
+function safeText(v: any) {
+  return typeof v === "string" ? v : "";
+}
+
+function buildClaimUrlFromPublicId(publicId: string) {
+  const pid = safeText(publicId).trim();
+  if (!pid) return "";
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return `${origin}/claim/${encodeURIComponent(pid)}`;
+}
+
+function saveLastPublicId(publicId: string) {
   try {
-    const form = new URLSearchParams();
-    form.set("secret", secret);
-    form.set("response", token);
-    if (remoteip) form.set("remoteip", remoteip);
-
-    const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: form.toString(),
-    });
-
-    const json: any = await res.json().catch(() => null);
-    if (json && json.success) return { ok: true as const };
-    return { ok: false as const, error: "Invalid CAPTCHA token" };
+    if (!publicId) return;
+    localStorage.setItem("tm_last_publicId", publicId);
+    localStorage.setItem("tm_last_savedAt", new Date().toISOString());
   } catch {
-    return { ok: false as const, error: "CAPTCHA verification failed" };
+    // ignore
   }
 }
 
-/* -------------------- VALIDATION -------------------- */
-const E164 = /^\+[1-9]\d{7,14}$/;
+/* -------------------- Turnstile helpers -------------------- */
+declare global {
+  interface Window {
+    turnstile?: any;
+  }
+}
 
-const CreateGiftSchema = z
-  .object({
-    senderEmail: z.string().email(),
+const TURNSTILE_SCRIPT_ID = "cf-turnstile-script";
 
-    // Email OPTIONAL (allow "", undefined)
-    recipientEmail: z
-      .string()
-      .optional()
-      .or(z.literal(""))
-      .transform((v) => (typeof v === "string" ? v.trim() : "")),
+function loadTurnstileScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined") return resolve();
+    if (window.turnstile) return resolve();
 
-    // Phone OPTIONAL (E.164)
-    recipientPhone: z
-      .string()
-      .optional()
-      .or(z.literal(""))
-      .transform((v) => (typeof v === "string" ? v.trim() : ""))
-      .refine((v) => !v || E164.test(v), {
-        message: "Invalid phone number (use E.164 like +15551234567)",
-      }),
+    const existing = document.getElementById(TURNSTILE_SCRIPT_ID) as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("Failed to load Turnstile script")));
+      return;
+    }
 
-    message: z.string().max(2000).optional().default(""),
-    amount: z.number().int().min(1000),
-    turnstileToken: z.string().optional(),
-  })
-  // Require at least ONE delivery method
-  .refine((d) => !!d.recipientEmail || !!d.recipientPhone, {
-    message: "Provide recipientEmail or recipientPhone",
-    path: ["recipientEmail"],
+    const s = document.createElement("script");
+    s.id = TURNSTILE_SCRIPT_ID;
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Failed to load Turnstile script"));
+    document.head.appendChild(s);
   });
-
-/* -------------------- RATE LIMITS -------------------- */
-const createLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const claimLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-/* -------------------- SCHEMA-AWARE COLUMN PICKERS -------------------- */
-function pickCol(...candidates: string[]) {
-  for (const k of candidates) {
-    if ((gifts as any)[k]) return (gifts as any)[k];
-  }
-  return null;
 }
-const COL_PUBLIC_ID = () => pickCol("publicId", "public_id", "publicID");
 
-/* -------------------- ROUTER (DEFAULT EXPORT) -------------------- */
-const router = Router();
+/* -------------------- API helper -------------------- */
+/**
+ * Try root first (/gifts), then fallback to /api (/api/gifts) if root 404s.
+ */
+async function postJsonWithApiFallback(pathNoApi: string, body: any) {
+  const rootUrl = pathNoApi.startsWith("/") ? pathNoApi : `/${pathNoApi}`;
+  const apiUrl = `/api${rootUrl}`;
 
-/* -------------------- HANDLERS -------------------- */
-async function createGiftHandler(req: Request, res: Response) {
-  const publicId = crypto.randomBytes(16).toString("hex");
-  logEvent("gift_create_start", { publicId });
-
-  const parsed = CreateGiftSchema.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    const msg = parsed.error.issues?.[0]?.message || "Invalid request";
-    logEvent("gift_create_bad_request", { publicId, error: msg });
-    return res.status(400).json({ error: msg });
-  }
-
-  const { senderEmail, recipientEmail, recipientPhone, message, amount, turnstileToken } = parsed.data;
-
-  if (process.env.TURNSTILE_SECRET_KEY) {
-    const v = await verifyTurnstile(turnstileToken || "", req.ip);
-    if (!v.ok) {
-      logEvent("gift_create_captcha_fail", { publicId, error: v.error });
-      return res.status(400).json({ error: v.error, field: "turnstileToken" });
-    }
-  }
-
-  try {
-    logEvent("gift_db_insert_start", { publicId });
-
-    // Only set keys that exist on the Drizzle schema object.
-    const values: any = {};
-
-    // publicId
-    if ((gifts as any).publicId) values.publicId = publicId;
-    else if ((gifts as any).public_id) values.public_id = publicId;
-    else if ((gifts as any).publicID) values.publicID = publicId;
-    else throw new Error("Schema missing publicId/public_id column");
-
-    // amount/message
-    if ((gifts as any).amount) values.amount = amount;
-    if ((gifts as any).message) values.message = message || "";
-
-    // recipientEmail optional
-    if (recipientEmail) {
-      if ((gifts as any).recipientEmail) values.recipientEmail = recipientEmail;
-      else if ((gifts as any).recipient_email) values.recipient_email = recipientEmail;
-    }
-
-    // senderEmail
-    if ((gifts as any).senderEmail) values.senderEmail = senderEmail;
-    else if ((gifts as any).sender_email) values.sender_email = senderEmail;
-
-    // claimed flags
-    if ((gifts as any).isClaimed) values.isClaimed = false;
-    else if ((gifts as any).is_claimed) values.is_claimed = false;
-
-    // timestamps
-    if ((gifts as any).createdAt) values.createdAt = new Date();
-    else if ((gifts as any).created_at) values.created_at = new Date();
-
-    await db.insert(gifts).values(values);
-
-    logEvent("gift_db_insert_ok", { publicId });
-
-    // Readback sanity check (shows if the publicId is truly stored)
-    try {
-      const pubCol = COL_PUBLIC_ID();
-      if (pubCol) {
-        const chk = await db.select().from(gifts).where(eq(pubCol as any, publicId)).limit(1);
-        logEvent("gift_db_readback", { publicId, ok: !!chk?.[0] });
-      } else {
-        logEvent("gift_db_readback", { publicId, ok: false, error: "No publicId column" });
-      }
-    } catch (e: any) {
-      logEvent("gift_db_readback", { publicId, ok: false, error: e?.message || "readback error" });
-    }
-
-    const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
-
-    logEvent("gift_created", {
-      publicId,
-      recipientEmail: recipientEmail || "",
-      recipientPhone: recipientPhone || "",
-      senderEmail,
-      amount,
+  const doPost = async (url: string) => {
+    return await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
+  };
 
-    // Fire-and-forget EMAIL (only if recipientEmail exists)
-    if (recipientEmail) {
-      (async () => {
-        try {
-          logEvent("email_send_start", { kind: "gift", publicId, to: recipientEmail });
-          const r = await sendGiftEmail({
-            to: recipientEmail,
-            publicId,
-            claimUrl,
-            amountCents: amount,
-            senderEmail,
-            message,
+  const r1 = await doPost(rootUrl);
+  if (r1.status !== 404) return r1;
+
+  return await doPost(apiUrl);
+}
+
+export default function CreateGiftForm() {
+  const [senderEmail, setSenderEmail] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
+  const [message, setMessage] = useState("");
+  const [amountDollars, setAmountDollars] = useState<number>(10);
+
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string>("");
+  const [result, setResult] = useState<{
+    publicId: string;
+    claimUrl: string;
+    deliveryLabel: string;
+    recipientLabel: string;
+    sender: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const PRESET_MESSAGES = useMemo(
+    () => [
+      "Someone wanted you to know they’re genuinely grateful for you. Thank you.",
+      "What you did made a real difference — you matter to someone. Thank you.",
+      "This message is a simple expression of appreciation from someone who noticed. Thank you.",
+      "Someone wanted to send you encouragement, because you deserve it. Thank you.",
+      "You matter to people in a meaningful way. Your presence and actions had a positive impact. Thank you.",
+      "Someone thought of you today and decided to send you a message of gratitude and kindness. Thank you.",
+    ],
+    [],
+  );
+
+  const [selectedPreset, setSelectedPreset] = useState<string>("");
+
+  // Turnstile state
+  const siteKey = (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || "";
+  const [turnstileReady, setTurnstileReady] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const [turnstileError, setTurnstileError] = useState<string>("");
+
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetIdRef = useRef<any>(null);
+
+  const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
+
+  const canSubmit = useMemo(() => {
+    const senderOk = isEmail(senderEmail);
+    const recipientEmailOk = !recipientEmail.trim() || isEmail(recipientEmail);
+    const recipientPhoneOk = !recipientPhone.trim() || isE164(recipientPhone);
+    const hasDelivery = !!recipientEmail.trim() || !!recipientPhone.trim();
+    const msgOk = !!message.trim();
+    const amtOk = Number.isFinite(amountDollars) && amountCents >= 1000;
+    const captchaOk = !siteKey || (turnstileToken && turnstileToken.length > 10);
+    return senderOk && recipientEmailOk && recipientPhoneOk && hasDelivery && msgOk && amtOk && captchaOk && !submitting;
+  }, [senderEmail, recipientEmail, recipientPhone, message, amountDollars, amountCents, siteKey, turnstileToken, submitting]);
+
+  useEffect(() => {
+    if (!selectedPreset) return;
+    setMessage(selectedPreset);
+  }, [selectedPreset]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      setTurnstileError("");
+      setTurnstileReady(false);
+
+      if (!siteKey) return;
+
+      try {
+        await loadTurnstileScript();
+        if (cancelled) return;
+
+        if (!window.turnstile) {
+          setTurnstileError("CAPTCHA failed to load. Please refresh.");
+          return;
+        }
+
+        setTurnstileReady(true);
+
+        if (turnstileContainerRef.current) {
+          // Always re-render into a fresh container to avoid stale widgets
+          turnstileContainerRef.current.innerHTML = "";
+          turnstileWidgetIdRef.current = null;
+
+          const widgetId = window.turnstile.render(turnstileContainerRef.current, {
+            sitekey: siteKey,
+            theme: "light",
+            callback: (token: string) => {
+              setTurnstileToken(token || "");
+              setTurnstileError("");
+            },
+            "expired-callback": () => {
+              setTurnstileToken("");
+              setTurnstileError("CAPTCHA expired. Please try again.");
+            },
+            "error-callback": () => {
+              setTurnstileToken("");
+              setTurnstileError("CAPTCHA error. Please refresh and try again.");
+            },
           });
-          logEvent("email_sent", { kind: "gift", publicId, to: recipientEmail, ok: r.ok, error: r.error || null });
 
-          if (!r.ok && senderEmail) {
-            logEvent("email_send_start", { kind: "return_to_sender", publicId, to: senderEmail });
-            const r2 = await sendReturnToSenderEmail({
-              to: senderEmail,
-              publicId,
-              amountCents: amount,
-              reason: r.error || "Delivery failed",
-            });
-            logEvent("email_sent", {
-              kind: "return_to_sender",
-              publicId,
-              to: senderEmail,
-              ok: r2.ok,
-              error: r2.error || null,
-            });
-          }
-        } catch (e: any) {
-          logEvent("email_send_crash", { publicId, error: e?.message || "Unknown error" });
+          turnstileWidgetIdRef.current = widgetId;
         }
-      })();
-    }
-
-    // Fire-and-forget SMS (only if recipientPhone exists)
-    if (recipientPhone) {
-      (async () => {
-        try {
-          logEvent("sms_send_start", { publicId, to: recipientPhone });
-          const r = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
-          logEvent("sms_sent", { publicId, to: recipientPhone, ok: r.ok, error: r.error || null });
-        } catch (e: any) {
-          logEvent("sms_send_crash", { publicId, to: recipientPhone, error: e?.message || "Unknown error" });
-        }
-      })();
-    }
-
-    return res.json({ ok: true, publicId, claimUrl });
-  } catch (e: any) {
-    logEvent("gift_create_error", { publicId, error: e?.message || "Unknown error" });
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
-async function getGiftHandler(req: Request, res: Response) {
-  const key = String(req.params.id || "").trim();
-  if (!key) return res.status(400).json({ message: "Missing id" });
-
-  try {
-    const pubCol = COL_PUBLIC_ID();
-    if (!pubCol) return res.status(500).json({ message: "Server misconfigured: missing publicId column" });
-
-    const rows = await db.select().from(gifts).where(eq(pubCol as any, key)).limit(1);
-    const g: any = rows?.[0];
-    if (!g) return res.status(404).json({ message: "Not found" });
-
-    return res.json({
-      publicId: g.publicId ?? g.public_id ?? g.publicID ?? key,
-      amount: g.amount,
-      message: g.message ?? "",
-      senderEmail: g.senderEmail ?? g.sender_email ?? "",
-      isClaimed: !!(g.isClaimed ?? g.is_claimed),
-    });
-  } catch (e: any) {
-    console.error("GET /api/gifts/:id error:", e);
-    return res.status(500).json({ message: "Server error" });
-  }
-}
-
-async function claimGiftHandler(req: Request, res: Response) {
-  const key = String(req.params.id || "").trim();
-  if (!key) return res.status(400).json({ error: "Missing id" });
-
-  const minDelaySec = Number(process.env.MIN_CLAIM_DELAY_SEC || "0");
-
-  try {
-    const pubCol = COL_PUBLIC_ID();
-    if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
-
-    const rows = await db.select().from(gifts).where(eq(pubCol as any, key)).limit(1);
-    const g: any = rows?.[0];
-    if (!g) return res.status(404).json({ error: "Not found" });
-
-    const claimed = !!(g.isClaimed ?? g.is_claimed);
-    if (claimed) return res.status(400).json({ error: "Already claimed" });
-
-    if (minDelaySec > 0) {
-      const created = g.createdAt ?? g.created_at;
-      if (created) {
-        const createdMs = new Date(created).getTime();
-        const earliest = createdMs + minDelaySec * 1000;
-        if (Date.now() < earliest) {
-          return res.status(400).json({ error: "Too early to claim", field: "minDelay", waitMs: earliest - Date.now() });
-        }
+      } catch (e: any) {
+        setTurnstileError(String(e?.message || e || "CAPTCHA failed to load."));
       }
     }
 
-    const update: any = {};
-    if ((gifts as any).isClaimed) update.isClaimed = true;
-    else if ((gifts as any).is_claimed) update.is_claimed = true;
+    init();
 
-    if ((gifts as any).claimedAt) update.claimedAt = new Date();
-    else if ((gifts as any).claimed_at) update.claimed_at = new Date();
+    return () => {
+      cancelled = true;
+    };
+  }, [siteKey]);
 
-    await db.update(gifts).set(update).where(eq(pubCol as any, key));
-
-    logEvent("claim_completed", { publicId: key });
-    return res.json({ ok: true });
-  } catch (e: any) {
-    logEvent("claim_error", { publicId: key, error: e?.message || "Unknown error" });
-    return res.status(500).json({ error: "Server error" });
+  function resetTurnstile() {
+    if (!siteKey) return;
+    try {
+      const id = turnstileWidgetIdRef.current;
+      if (id != null && window.turnstile) window.turnstile.reset(id);
+    } catch {
+      // ignore
+    }
+    setTurnstileToken("");
   }
+
+  function resetFormForAnother() {
+    setSenderEmail("");
+    setRecipientEmail("");
+    setRecipientPhone("");
+    setSelectedPreset("");
+    setMessage("");
+    setAmountDollars(10);
+    setErr("");
+    setTurnstileError("");
+    setCopied(false);
+    setResult(null);
+    resetTurnstile();
+  }
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    setErr("");
+    setTurnstileError("");
+    setCopied(false);
+
+    const sender = senderEmail.trim();
+    const email = recipientEmail.trim();
+    const phone = recipientPhone.trim();
+    const msg = message.trim();
+
+    if (!isEmail(sender)) return setErr("Please enter a valid sender email.");
+
+    if (!email && !phone) return setErr("Enter a recipient email or phone number.");
+    if (email && !isEmail(email)) return setErr("Please enter a valid recipient email.");
+    if (phone && !isE164(phone)) return setErr("Invalid phone number (use E.164 like +15551234567).");
+
+    if (!msg) return setErr("Please choose a message.");
+    if (amountCents < 1000) return setErr("Minimum amount is $10.");
+    if (siteKey && (!turnstileToken || turnstileToken.length <= 10)) return setTurnstileError("Please complete the CAPTCHA.");
+
+    setSubmitting(true);
+    try {
+      const payload: any = {
+        senderEmail: sender,
+        message: msg,
+        amount: amountCents,
+        ...(email ? { recipientEmail: email } : {}),
+        ...(phone ? { recipientPhone: phone } : {}),
+        ...(turnstileToken ? { turnstileToken } : {}),
+      };
+
+      const r = await postJsonWithApiFallback("/gifts", payload);
+      const data = (await r.json().catch(() => ({}))) as CreateGiftResponse;
+
+      if (!r.ok) {
+        const zodIssue = Array.isArray((data as any)?.issues) && (data as any).issues?.[0]?.message;
+        const field = (data as any)?.field;
+        const apiErr = (data as any)?.error || zodIssue || "Something went wrong.";
+
+        const captchaish =
+          field === "turnstileToken" ||
+          /captcha/i.test(apiErr) ||
+          /turnstile/i.test(apiErr) ||
+          /verification failed/i.test(apiErr);
+
+        if (captchaish) {
+          setTurnstileError(apiErr);
+          resetTurnstile();
+          return;
+        }
+
+        setErr(apiErr);
+        resetTurnstile();
+        return;
+      }
+
+      const publicId = safeText((data as any)?.publicId);
+      const serverClaimUrl = safeText((data as any)?.claimUrl);
+
+      if (!publicId) {
+        setErr("Unexpected response from server.");
+        resetTurnstile();
+        return;
+      }
+
+      saveLastPublicId(publicId);
+
+      const deterministic = buildClaimUrlFromPublicId(publicId);
+      const fallback = serverClaimUrl ? absoluteLink(serverClaimUrl) : "";
+      const finalClaimUrl = deterministic || fallback;
+
+      const deliveryLabel = email && phone ? "Email + SMS" : email ? "Email" : "SMS";
+      const recipientLabel = email && phone ? `${email} / ${phone}` : email ? email : phone;
+
+      setResult({
+        publicId,
+        claimUrl: finalClaimUrl,
+        deliveryLabel,
+        recipientLabel,
+        sender,
+      });
+
+      // Clear inputs for next send
+      setSenderEmail("");
+      setRecipientEmail("");
+      setRecipientPhone("");
+      setSelectedPreset("");
+      setMessage("");
+      setAmountDollars(10);
+
+      resetTurnstile();
+    } catch (e: any) {
+      setErr(String(e?.message || e || "Network error"));
+      resetTurnstile();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function copyLink() {
+    if (!result?.claimUrl) return;
+    try {
+      await navigator.clipboard.writeText(result.claimUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // ignore
+    }
+  }
+
+  const moneyPresets = [
+    { label: "$10", value: 10 },
+    { label: "$25", value: 25 },
+    { label: "$50", value: 50 },
+    { label: "$100", value: 100 },
+  ];
+
+  return (
+    <div className="rounded-3xl border border-violet-100 bg-white p-6 shadow-sm">
+      <h2 className="text-xl font-bold tracking-tight">Create a ThanküMail</h2>
+
+      {!result ? (
+        <form onSubmit={onSubmit} className="mt-6 space-y-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <input
+              value={senderEmail}
+              onChange={(e) => setSenderEmail(e.target.value)}
+              placeholder="Sender email"
+              inputMode="email"
+              autoComplete="email"
+              className="w-full rounded-2xl border px-4 py-3"
+            />
+
+            <input
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              placeholder="Recipient email (optional)"
+              inputMode="email"
+              autoComplete="email"
+              className="w-full rounded-2xl border px-4 py-3"
+            />
+          </div>
+
+          <input
+            value={recipientPhone}
+            onChange={(e) => setRecipientPhone(e.target.value)}
+            placeholder="Recipient phone (optional, E.164 like +15551234567)"
+            inputMode="tel"
+            autoComplete="tel"
+            className="w-full rounded-2xl border px-4 py-3"
+          />
+
+          <select
+            value={selectedPreset}
+            onChange={(e) => setSelectedPreset(e.target.value)}
+            className="w-full rounded-2xl border px-4 py-3"
+          >
+            <option value="">Choose a message…</option>
+            {PRESET_MESSAGES.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+
+          <div className="flex gap-2 flex-wrap">
+            {moneyPresets.map((p) => (
+              <button
+                key={p.value}
+                type="button"
+                onClick={() => setAmountDollars(p.value)}
+                className={`rounded-xl px-4 py-2 text-sm ${
+                  amountDollars === p.value ? "bg-violet-600 text-white" : "border bg-white"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {siteKey ? (
+            <div className="space-y-2">
+              <div className="text-xs text-slate-500">
+                {turnstileReady ? "Complete the CAPTCHA to create a gift." : "Loading CAPTCHA…"}
+              </div>
+              <div ref={turnstileContainerRef} className="min-h-[70px] rounded-2xl border bg-white px-4 py-4" />
+              {turnstileError ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {turnstileError}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {err ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{err}</div>
+          ) : null}
+
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-white disabled:bg-slate-300"
+          >
+            {submitting ? "Creating…" : siteKey && (!turnstileToken || turnstileToken.length <= 10) ? "Complete CAPTCHA" : "Create gift"}
+          </button>
+
+          {siteKey ? (
+            <div className="text-[11px] leading-relaxed text-slate-500">
+              Protected by Cloudflare Turnstile. If it doesn’t load, disable aggressive ad blockers or refresh.
+            </div>
+          ) : null}
+
+          <div className="text-[11px] leading-relaxed text-slate-500">
+            Recipient email or phone is required. Phone must be E.164 (example: +15551234567).
+          </div>
+        </form>
+      ) : (
+        <div className="mt-6 space-y-4">
+          <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm">
+            <div className="font-semibold text-slate-900">Your ThanküMail has been created.</div>
+            <div className="mt-1 text-slate-700">
+              Delivery: <span className="font-semibold">{result.deliveryLabel}</span>
+            </div>
+            <div className="mt-1 text-slate-700">
+              Sent to: <span className="font-semibold">{result.recipientLabel}</span>
+            </div>
+
+            <div className="mt-3 flex gap-2">
+              <input readOnly value={result.claimUrl} className="flex-1 rounded-xl border bg-white px-3 py-2 text-xs" />
+              <button type="button" onClick={copyLink} className="rounded-xl bg-violet-600 px-4 py-2 text-xs text-white">
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+
+            <div className="mt-3 text-[11px] text-slate-500">Reference ID: {result.publicId}</div>
+          </div>
+
+          <button
+            type="button"
+            onClick={resetFormForAnother}
+            className="w-full rounded-2xl border border-violet-200 bg-white px-4 py-3 text-sm text-slate-900"
+          >
+            Send another ThanküMail
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
-
-/* -------------------- ROUTES -------------------- */
-// Create (support both endpoints)
-router.post("/gifts", createLimiter, (req, res) => void createGiftHandler(req, res));
-router.post("/api/gifts", createLimiter, (req, res) => void createGiftHandler(req, res));
-
-// Read + claim
-router.get("/api/gifts/:id", (req, res) => void getGiftHandler(req, res));
-router.post("/api/gifts/:id/claim", claimLimiter, (req, res) => void claimGiftHandler(req, res));
-
-export default router;
