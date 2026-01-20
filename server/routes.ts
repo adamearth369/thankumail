@@ -4,11 +4,11 @@ import type { Request, Response } from "express";
 import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull, lte, or, lt, gte, not } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
-import { sendGiftEmail, sendReturnToSenderEmail } from "./email";
+import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
@@ -169,6 +169,11 @@ async function createGiftHandler(req: Request, res: Response) {
     if ((gifts as any).senderEmail) values.senderEmail = senderEmail;
     else if ((gifts as any).sender_email) values.sender_email = senderEmail;
 
+    // delivery_method (best-effort)
+    const method = recipientEmail && recipientPhone ? "both" : recipientPhone ? "sms" : "email";
+    if ((gifts as any).deliveryMethod) values.deliveryMethod = method;
+    else if ((gifts as any).delivery_method) values.delivery_method = method;
+
     // claimed flags
     if ((gifts as any).isClaimed) values.isClaimed = false;
     else if ((gifts as any).is_claimed) values.is_claimed = false;
@@ -267,6 +272,9 @@ async function getGiftHandler(req: Request, res: Response) {
       recipientEmail: g.recipientEmail ?? g.recipient_email ?? null,
       recipientPhone: g.recipientPhone ?? g.recipient_phone ?? null,
       isClaimed: !!(g.isClaimed ?? g.is_claimed),
+      reminderCount: g.reminderCount ?? g.reminder_count ?? 0,
+      lastReminderSentAt: g.lastReminderSentAt ?? g.last_reminder_sent_at ?? null,
+      returnedToSenderAt: g.returnedToSenderAt ?? g.returned_to_sender_at ?? null,
     });
   } catch {
     return res.status(500).json({ message: "Server error" });
@@ -317,6 +325,213 @@ async function claimGiftHandler(req: Request, res: Response) {
     return res.status(500).json({ error: "Server error" });
   }
 }
+
+/* -------------------- ADMIN: REMINDERS + RETURN TO SENDER -------------------- */
+/**
+ * Behavior:
+ * - Max 3 reminders, spaced >= 48 hours apart
+ * - After 3 reminders, wait >= 48 hours, then "return to sender" (notify sender) and mark returned_to_sender_at
+ *
+ * ENV:
+ * - ADMIN_TOKEN (required to call endpoint)
+ *
+ * Request body:
+ * { dryRun?: boolean, olderThanHours?: number, limit?: number }
+ */
+router.post("/api/admin/reminders/send", async (req: Request, res: Response) => {
+  const token = String(req.header("x-admin-token") || "");
+  const expected = process.env.ADMIN_TOKEN || "";
+  if (!expected || token !== expected) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+  const dryRun = !!req.body?.dryRun;
+  const olderThanHours = Number(req.body?.olderThanHours ?? 48); // default: only start after 48h
+  const limit = Math.min(200, Math.max(1, Number(req.body?.limit ?? 50)));
+
+  const now = new Date();
+  const cutoffCreated = new Date(now.getTime() - olderThanHours * 3600_000);
+  const cutoff48h = new Date(now.getTime() - 48 * 3600_000);
+
+  const pubCol = COL_PUBLIC_ID();
+  if (!pubCol) return res.status(500).json({ ok: false, error: "Server misconfigured: missing publicId column" });
+
+  // NOTE: drizzle columns (from @shared/schema) are camelCase keys mapping to snake_case db columns
+  const isClaimedCol = (gifts as any).isClaimed;
+  const createdAtCol = (gifts as any).createdAt;
+  const reminderCountCol = (gifts as any).reminderCount;
+  const lastReminderSentAtCol = (gifts as any).lastReminderSentAt;
+  const returnedToSenderAtCol = (gifts as any).returnedToSenderAt;
+
+  if (!isClaimedCol || !createdAtCol || !reminderCountCol || !lastReminderSentAtCol || !returnedToSenderAtCol) {
+    return res.status(500).json({ ok: false, error: "Server misconfigured: reminder columns missing" });
+  }
+
+  // 1) Eligible for reminders
+  const reminderRows = await db
+    .select()
+    .from(gifts)
+    .where(
+      and(
+        eq(isClaimedCol, false),
+        lte(createdAtCol, cutoffCreated),
+        isNull(returnedToSenderAtCol),
+        lt(reminderCountCol, 3),
+        or(isNull(lastReminderSentAtCol), lte(lastReminderSentAtCol, cutoff48h))
+      )
+    )
+    .limit(limit);
+
+  // 2) Eligible for return-to-sender (after 3 reminders + 48h since last reminder)
+  const returnRows = await db
+    .select()
+    .from(gifts)
+    .where(
+      and(
+        eq(isClaimedCol, false),
+        isNull(returnedToSenderAtCol),
+        gte(reminderCountCol, 3),
+        not(isNull(lastReminderSentAtCol)),
+        lte(lastReminderSentAtCol, cutoff48h)
+      )
+    )
+    .limit(limit);
+
+  let sent = 0;
+  let failed = 0;
+  const actions: any[] = [];
+
+  // REMINDERS
+  for (const g of reminderRows as any[]) {
+    const publicId = g.publicId ?? g.public_id ?? g.publicID;
+    const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
+
+    const recipientEmail = g.recipientEmail ?? g.recipient_email ?? null;
+    const recipientPhone = g.recipientPhone ?? g.recipient_phone ?? null;
+    const senderEmail = g.senderEmail ?? g.sender_email ?? "";
+    const amount = g.amount ?? 0;
+
+    // Prefer email reminder if available; otherwise SMS reminder if phone exists
+    let ok = false;
+    let error: string | null = null;
+
+    try {
+      if (recipientEmail) {
+        logEvent("email_send_start", { kind: "reminder", publicId, to: recipientEmail, dryRun });
+        if (!dryRun) {
+          const r = await sendReminderEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail });
+          ok = r.ok;
+          error = r.error || null;
+        } else {
+          ok = true;
+        }
+      } else if (recipientPhone) {
+        logEvent("sms_send_start", { kind: "reminder", publicId, to: recipientPhone, dryRun });
+        if (!dryRun) {
+          const r = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
+          ok = r.ok;
+          error = r.error || null;
+        } else {
+          ok = true;
+        }
+      } else {
+        ok = false;
+        error = "No recipient email or phone";
+      }
+    } catch (e: any) {
+      ok = false;
+      error = e?.message || "Unknown error";
+    }
+
+    if (ok) {
+      sent++;
+      actions.push({ publicId, action: "reminder", ok: true });
+
+      if (!dryRun) {
+        await db
+          .update(gifts)
+          .set({
+            reminderCount: Number(g.reminderCount ?? g.reminder_count ?? 0) + 1,
+            lastReminderSentAt: new Date(),
+          } as any)
+          .where(eq(pubCol as any, publicId));
+      }
+
+      logEvent("reminder_sent", { publicId, ok: true });
+    } else {
+      failed++;
+      actions.push({ publicId, action: "reminder", ok: false, error });
+      logEvent("reminder_failed", { publicId, ok: false, error });
+    }
+  }
+
+  // RETURN TO SENDER
+  for (const g of returnRows as any[]) {
+    const publicId = g.publicId ?? g.public_id ?? g.publicID;
+    const senderEmail = g.senderEmail ?? g.sender_email ?? "";
+    const amount = g.amount ?? 0;
+
+    if (!senderEmail) {
+      failed++;
+      actions.push({ publicId, action: "return_to_sender", ok: false, error: "Missing sender email" });
+      logEvent("return_to_sender_failed", { publicId, error: "Missing sender email" });
+      continue;
+    }
+
+    try {
+      logEvent("email_send_start", { kind: "return_to_sender", publicId, to: senderEmail, dryRun });
+
+      let ok = true;
+      let error: string | null = null;
+
+      if (!dryRun) {
+        const r = await sendReturnToSenderEmail({
+          to: senderEmail,
+          publicId,
+          amountCents: amount,
+          reason: "Not claimed after 3 reminders (48h apart).",
+        });
+        ok = r.ok;
+        error = r.error || null;
+      }
+
+      if (ok) {
+        sent++;
+        actions.push({ publicId, action: "return_to_sender", ok: true });
+
+        if (!dryRun) {
+          await db
+            .update(gifts)
+            .set({
+              returnedToSenderAt: new Date(),
+            } as any)
+            .where(eq(pubCol as any, publicId));
+        }
+
+        logEvent("return_to_sender_sent", { publicId, ok: true });
+      } else {
+        failed++;
+        actions.push({ publicId, action: "return_to_sender", ok: false, error });
+        logEvent("return_to_sender_failed", { publicId, ok: false, error });
+      }
+    } catch (e: any) {
+      failed++;
+      const error = e?.message || "Unknown error";
+      actions.push({ publicId, action: "return_to_sender", ok: false, error });
+      logEvent("return_to_sender_failed", { publicId, ok: false, error });
+    }
+  }
+
+  return res.json({
+    ok: true,
+    dryRun,
+    scanned: reminderRows.length + returnRows.length,
+    reminderEligible: reminderRows.length,
+    returnEligible: returnRows.length,
+    sent,
+    failed,
+    cutoffCreated: cutoffCreated.toISOString(),
+    actions,
+  });
+});
 
 /* -------------------- ROUTES -------------------- */
 router.post("/gifts", createLimiter, (req, res) => void createGiftHandler(req, res));

@@ -3,8 +3,8 @@ import cors from "cors";
 import path from "path";
 import { createServer } from "http";
 
-// Import the default router from server/routes.ts
 import apiRouter from "../server/routes";
+import { ensureTables } from "../server/db";
 
 const app = express();
 
@@ -15,7 +15,7 @@ app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
 
-// Register ALL API routes first (no SPA interference)
+/* -------------------- API routes FIRST -------------------- */
 app.use(apiRouter);
 
 // Hard rule: /api must never serve the SPA fallback
@@ -23,8 +23,8 @@ app.all("/api", (_req, res) => res.status(404).json({ message: "Not found" }));
 app.all("/api/*", (_req, res) => res.status(404).json({ message: "Not found" }));
 
 function mountStaticAndSpa(app: express.Express) {
-  // In the built server, __dirname points to dist/ and client outputs to dist/public
-  const publicDir = path.join(__dirname, "public");
+  // dist/public (client build output)
+  const publicDir = path.join(process.cwd(), "dist", "public");
 
   // Static assets
   app.use(express.static(publicDir));
@@ -36,12 +36,14 @@ function mountStaticAndSpa(app: express.Express) {
 }
 
 async function main() {
-  const httpServer = createServer(app);
+  await ensureTables();
 
-  // Now mount static + SPA fallback
+  // Mount static + SPA fallback AFTER API
   mountStaticAndSpa(app);
 
+  const httpServer = createServer(app);
   const PORT = process.env.PORT || 10000;
+
   httpServer.listen(PORT, () => {
     console.log(`ThankuMail server running on port ${PORT}`);
   });

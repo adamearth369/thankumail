@@ -1,3 +1,5 @@
+type SendEmailResult = { ok: true; messageId: string } | { ok: false; error: string };
+
 type SendGiftEmailArgs = {
   to: string;
   publicId: string;
@@ -22,149 +24,237 @@ type SendReturnToSenderEmailArgs = {
   reason?: string;
 };
 
-function money(cents: number) {
-  const dollars = (cents / 100).toFixed(2);
-  return `$${dollars}`;
-}
-
-function requireEnv(name: string) {
+function env(name: string, fallback = "") {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
+  return (v ?? fallback).trim();
 }
 
-function fromEmail() {
-  return process.env.MAIL_FROM || process.env.BREVO_FROM || "no-reply@thankumail.com";
+function isEmail(s: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || "").trim());
 }
 
-function fromName() {
-  return process.env.MAIL_FROM_NAME || "ThankuMail";
+function toAbsoluteLink(link: string) {
+  if (!link) return link;
+  if (/^https?:\/\//i.test(link)) return link;
+
+  const base =
+    env("PUBLIC_SITE_URL") ||
+    env("PUBLIC_CLAIM_BASE_URL") ||
+    env("BASE_URL", "").replace(/\/+$/, "");
+
+  if (!base) return link;
+
+  const path = link.startsWith("/") ? link : `/${link}`;
+  return `${base}${path}`;
+}
+
+function escapeHtml(input: string) {
+  return String(input || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function logEmail(event: string, fields: Record<string, any> = {}) {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+}
+
+function emailDomain(to: string) {
+  const parts = (to || "").split("@");
+  return parts.length === 2 ? parts[1] : "";
+}
+
+function money(cents: number) {
+  const dollars = (Number(cents || 0) / 100).toFixed(2);
+  return `$${dollars}`;
 }
 
 async function sendBrevoEmail(params: {
   to: string;
   subject: string;
+  textContent: string;
   htmlContent: string;
   headers?: Record<string, string>;
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<SendEmailResult> {
+  const started = Date.now();
+
   try {
-    const apiKey = requireEnv("BREVO_API_KEY");
+    const to = (params.to || "").trim();
+    if (!isEmail(to)) return { ok: false, error: `Invalid recipient email: "${to}"` };
 
-    const payload = {
-      sender: { email: fromEmail(), name: fromName() },
-      to: [{ email: params.to }],
-      subject: params.subject,
-      htmlContent: params.htmlContent,
-      headers: params.headers || {},
-    };
+    const apiKey = env("BREVO_API_KEY") || env("BREVO_SMTP_KEY");
+    if (!apiKey) return { ok: false, error: "Missing BREVO_API_KEY" };
 
-    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    const fromEmail = env("FROM_EMAIL", "noreply@thankumail.com");
+    const fromName = env("FROM_NAME", "ThankuMail");
+    const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
+
+    logEmail("email_api_send_start", { toDomain: emailDomain(to), endpoint });
+
+    const resp = await fetch(endpoint, {
       method: "POST",
       headers: {
+        "Content-Type": "application/json",
         "api-key": apiKey,
-        "content-type": "application/json",
-        accept: "application/json",
+        Accept: "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        sender: { email: fromEmail, name: fromName },
+        to: [{ email: to }],
+        subject: params.subject,
+        textContent: params.textContent,
+        htmlContent: params.htmlContent,
+        headers: params.headers || {},
+      }),
     });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { ok: false, error: `Brevo API error (${res.status}): ${text || res.statusText}` };
+    const bodyText = await resp.text().catch(() => "");
+    let bodyJson: any = null;
+    try {
+      bodyJson = bodyText ? JSON.parse(bodyText) : null;
+    } catch {
+      bodyJson = null;
     }
 
-    return { ok: true };
-  } catch (e: any) {
-    return { ok: false, error: e?.message || "Unknown error" };
+    if (!resp.ok) {
+      logEmail("email_api_send_failed", {
+        toDomain: emailDomain(to),
+        status: resp.status,
+        body: (bodyJson ?? bodyText)?.toString?.().slice?.(0, 500) ?? "",
+        ms: Date.now() - started,
+      });
+      return { ok: false, error: `Brevo API error (${resp.status})` };
+    }
+
+    const messageId = (bodyJson && (bodyJson.messageId || bodyJson["messageId"])) || "unknown";
+    logEmail("email_api_send_ok", { toDomain: emailDomain(to), messageId, ms: Date.now() - started });
+
+    return { ok: true, messageId: String(messageId) };
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    logEmail("email_api_crash", { message: msg, code: err?.code });
+    return { ok: false, error: msg };
   }
 }
 
 export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: boolean; error?: string }> {
+  const claimUrl = toAbsoluteLink(args.claimUrl);
   const subject = `You received a ThankuMail`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
-      <h2>You received a ThankuMail</h2>
-      <p><b>Amount:</b> ${money(args.amountCents)}</p>
-      ${args.senderEmail ? `<p><b>From:</b> ${escapeHtml(args.senderEmail)}</p>` : ""}
+
+  const textContent = [
+    `You received a ThankuMail`,
+    ``,
+    `Amount: ${money(args.amountCents)}`,
+    args.senderEmail ? `From: ${args.senderEmail}` : "",
+    args.message ? `Message: ${args.message}` : "",
+    ``,
+    `Claim: ${claimUrl}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const htmlContent = `
+    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
+      <h2 style="margin:0 0 12px">You received a ThankuMail 🎁</h2>
+      <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
+      ${args.senderEmail ? `<p style="margin:0 0 8px"><b>From:</b> ${escapeHtml(args.senderEmail)}</p>` : ""}
       ${
         args.message
-          ? `<p style="margin-top: 12px;"><b>Message:</b><br/>${escapeHtml(args.message).replace(/\n/g, "<br/>")}</p>`
+          ? `<p style="margin:0 0 8px"><b>Message:</b></p>
+             <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(args.message)}"</p>`
           : ""
       }
-      <p style="margin-top: 18px;">
-        <a href="${args.claimUrl}" style="display:inline-block;padding:10px 14px;background:#111;color:#fff;text-decoration:none;border-radius:8px;">
-          Claim your ThankuMail
+      <p style="margin:0 0 16px">
+        <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#111; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
+          Claim your ThankuMail →
         </a>
-      </p>
-      <p style="color:#555;font-size:12px;margin-top:16px;">
-        If the button doesn’t work, copy/paste this link: ${args.claimUrl}
       </p>
     </div>
   `;
 
-  return sendBrevoEmail({
+  const r = await sendBrevoEmail({
     to: args.to,
     subject,
-    htmlContent: html,
+    textContent,
+    htmlContent,
     headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "gift" },
   });
+
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ ok: boolean; error?: string }> {
+  const claimUrl = toAbsoluteLink(args.claimUrl);
   const subject = `Reminder: your ThankuMail is waiting`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
-      <h2>Your ThankuMail is still waiting</h2>
-      <p><b>Amount:</b> ${money(args.amountCents)}</p>
-      ${args.senderEmail ? `<p><b>From:</b> ${escapeHtml(args.senderEmail)}</p>` : ""}
-      <p style="margin-top: 18px;">
-        <a href="${args.claimUrl}" style="display:inline-block;padding:10px 14px;background:#111;color:#fff;text-decoration:none;border-radius:8px;">
-          Claim now
+
+  const textContent = [
+    `Your ThankuMail is still waiting.`,
+    ``,
+    `Amount: ${money(args.amountCents)}`,
+    args.senderEmail ? `From: ${args.senderEmail}` : "",
+    ``,
+    `Claim: ${claimUrl}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const htmlContent = `
+    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
+      <h2 style="margin:0 0 12px">Your ThankuMail is still waiting 💛</h2>
+      <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
+      ${args.senderEmail ? `<p style="margin:0 0 8px"><b>From:</b> ${escapeHtml(args.senderEmail)}</p>` : ""}
+      <p style="margin:0 0 16px">
+        <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#111; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
+          Claim now →
         </a>
-      </p>
-      <p style="color:#555;font-size:12px;margin-top:16px;">
-        If the button doesn’t work, copy/paste this link: ${args.claimUrl}
       </p>
     </div>
   `;
 
-  return sendBrevoEmail({
+  const r = await sendBrevoEmail({
     to: args.to,
     subject,
-    htmlContent: html,
+    textContent,
+    htmlContent,
     headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "reminder" },
   });
+
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 export async function sendReturnToSenderEmail(
   args: SendReturnToSenderEmailArgs
 ): Promise<{ ok: boolean; error?: string }> {
-  const subject = `Your ThankuMail couldn’t be delivered`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
-      <h2>Your ThankuMail couldn’t be delivered</h2>
-      <p><b>Amount:</b> ${money(args.amountCents)}</p>
-      <p><b>Public ID:</b> ${escapeHtml(args.publicId)}</p>
-      ${args.reason ? `<p><b>Reason:</b> ${escapeHtml(args.reason)}</p>` : ""}
-      <p style="color:#555;font-size:12px;margin-top:16px;">
-        If you believe this is a mistake, try sending again or contact support.
-      </p>
+  const subject = `Your ThankuMail update`;
+
+  const textContent = [
+    `Your ThankuMail could not be completed.`,
+    ``,
+    `Public ID: ${args.publicId}`,
+    `Amount: ${money(args.amountCents)}`,
+    args.reason ? `Reason: ${args.reason}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const htmlContent = `
+    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
+      <h2 style="margin:0 0 12px">Your ThankuMail update</h2>
+      <p style="margin:0 0 8px"><b>Public ID:</b> ${escapeHtml(args.publicId)}</p>
+      <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
+      ${args.reason ? `<p style="margin:0 0 8px"><b>Reason:</b> ${escapeHtml(args.reason)}</p>` : ""}
     </div>
   `;
 
-  return sendBrevoEmail({
+  const r = await sendBrevoEmail({
     to: args.to,
     subject,
-    htmlContent: html,
+    textContent,
+    htmlContent,
     headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "return_to_sender" },
   });
-}
 
-function escapeHtml(s: string) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
