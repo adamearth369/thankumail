@@ -93,8 +93,9 @@ function loadTurnstileScript(): Promise<void> {
 /* -------------------- API helper -------------------- */
 /**
  * Try root first (/gifts), then fallback to /api (/api/gifts) if root 404s.
+ * Returns { res, usedUrl } so you can see which endpoint was actually hit.
  */
-async function postJsonWithApiFallback(pathNoApi: string, body: any) {
+async function postJsonWithApiFallback(pathNoApi: string, body: any): Promise<{ res: Response; usedUrl: string }> {
   const rootUrl = pathNoApi.startsWith("/") ? pathNoApi : `/${pathNoApi}`;
   const apiUrl = `/api${rootUrl}`;
 
@@ -107,9 +108,10 @@ async function postJsonWithApiFallback(pathNoApi: string, body: any) {
   };
 
   const r1 = await doPost(rootUrl);
-  if (r1.status !== 404) return r1;
+  if (r1.status !== 404) return { res: r1, usedUrl: rootUrl };
 
-  return await doPost(apiUrl);
+  const r2 = await doPost(apiUrl);
+  return { res: r2, usedUrl: apiUrl };
 }
 
 export default function CreateGiftForm() {
@@ -129,6 +131,11 @@ export default function CreateGiftForm() {
     sender: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Debug panel (helps you find payload + token)
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [lastReq, setLastReq] = useState<{ url: string; body: any } | null>(null);
+  const [lastRes, setLastRes] = useState<{ status: number; data: any } | null>(null);
 
   const PRESET_MESSAGES = useMemo(
     () => [
@@ -171,12 +178,26 @@ export default function CreateGiftForm() {
     setMessage(selectedPreset);
   }, [selectedPreset]);
 
+  function getTurnstileResponseNow() {
+    try {
+      const id = turnstileWidgetIdRef.current;
+      if (!siteKey) return "";
+      if (!window.turnstile) return "";
+      if (id == null) return "";
+      const t = window.turnstile.getResponse?.(id);
+      return typeof t === "string" ? t : "";
+    } catch {
+      return "";
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
       setTurnstileError("");
       setTurnstileReady(false);
+      setTurnstileToken("");
 
       if (!siteKey) return;
 
@@ -214,6 +235,10 @@ export default function CreateGiftForm() {
           });
 
           turnstileWidgetIdRef.current = widgetId;
+
+          // Some browsers/extensions can delay callback; do a quick pull
+          const immediate = getTurnstileResponseNow();
+          if (immediate && immediate.length > 10) setTurnstileToken(immediate);
         }
       } catch (e: any) {
         setTurnstileError(String(e?.message || e || "CAPTCHA failed to load."));
@@ -225,6 +250,7 @@ export default function CreateGiftForm() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteKey]);
 
   function resetTurnstile() {
@@ -249,7 +275,21 @@ export default function CreateGiftForm() {
     setTurnstileError("");
     setCopied(false);
     setResult(null);
+    setLastReq(null);
+    setLastRes(null);
     resetTurnstile();
+  }
+
+  async function copyCaptchaToken() {
+    const t = turnstileToken || getTurnstileResponseNow();
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // ignore
+    }
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -258,6 +298,8 @@ export default function CreateGiftForm() {
     setErr("");
     setTurnstileError("");
     setCopied(false);
+    setLastReq(null);
+    setLastRes(null);
 
     const sender = senderEmail.trim();
     const email = recipientEmail.trim();
@@ -272,7 +314,19 @@ export default function CreateGiftForm() {
 
     if (!msg) return setErr("Please choose a message.");
     if (amountCents < 1000) return setErr("Minimum amount is $10.");
-    if (siteKey && (!turnstileToken || turnstileToken.length <= 10)) return setTurnstileError("Please complete the CAPTCHA.");
+
+    // If siteKey exists, force a final read from widget before blocking submit.
+    let tokenForSubmit = turnstileToken;
+    if (siteKey && (!tokenForSubmit || tokenForSubmit.length <= 10)) {
+      const pulled = getTurnstileResponseNow();
+      if (pulled && pulled.length > 10) {
+        tokenForSubmit = pulled;
+        setTurnstileToken(pulled);
+      }
+    }
+    if (siteKey && (!tokenForSubmit || tokenForSubmit.length <= 10)) {
+      return setTurnstileError("Please complete the CAPTCHA.");
+    }
 
     setSubmitting(true);
     try {
@@ -282,11 +336,14 @@ export default function CreateGiftForm() {
         amount: amountCents,
         ...(email ? { recipientEmail: email } : {}),
         ...(phone ? { recipientPhone: phone } : {}),
-        ...(turnstileToken ? { turnstileToken } : {}),
+        ...(tokenForSubmit ? { turnstileToken: tokenForSubmit } : {}),
       };
 
-      const r = await postJsonWithApiFallback("/gifts", payload);
+      const { res: r, usedUrl } = await postJsonWithApiFallback("/gifts", payload);
       const data = (await r.json().catch(() => ({}))) as CreateGiftResponse;
+
+      setLastReq({ url: usedUrl, body: payload });
+      setLastRes({ status: r.status, data });
 
       if (!r.ok) {
         const zodIssue = Array.isArray((data as any)?.issues) && (data as any).issues?.[0]?.message;
@@ -373,7 +430,72 @@ export default function CreateGiftForm() {
 
   return (
     <div className="rounded-3xl border border-violet-100 bg-white p-6 shadow-sm">
-      <h2 className="text-xl font-bold tracking-tight">Create a ThanküMail</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-xl font-bold tracking-tight">Create a ThanküMail</h2>
+        <button
+          type="button"
+          onClick={() => setDebugOpen((v) => !v)}
+          className="rounded-xl border bg-white px-3 py-2 text-xs"
+        >
+          {debugOpen ? "Hide debug" : "Show debug"}
+        </button>
+      </div>
+
+      {debugOpen ? (
+        <div className="mt-4 space-y-2 rounded-2xl border bg-slate-50 p-4 text-[12px] leading-relaxed">
+          <div>
+            <span className="font-semibold">Turnstile site key:</span> {siteKey ? "SET" : "NOT SET"}
+          </div>
+          <div>
+            <span className="font-semibold">Turnstile ready:</span> {turnstileReady ? "YES" : "NO"}
+          </div>
+          <div>
+            <span className="font-semibold">Token status:</span>{" "}
+            {turnstileToken ? `PRESENT (len ${turnstileToken.length})` : "EMPTY"}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={copyCaptchaToken} className="rounded-xl bg-white px-3 py-2 text-xs border">
+              Copy CAPTCHA token
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const pulled = getTurnstileResponseNow();
+                if (pulled && pulled.length > 10) setTurnstileToken(pulled);
+              }}
+              className="rounded-xl bg-white px-3 py-2 text-xs border"
+            >
+              Pull token from widget
+            </button>
+          </div>
+
+          {lastReq ? (
+            <div className="mt-2">
+              <div className="font-semibold">Last request</div>
+              <div>URL: {lastReq.url}</div>
+              <pre className="mt-2 overflow-auto rounded-xl border bg-white p-3 text-[11px]">
+                {JSON.stringify(lastReq.body, null, 2)}
+              </pre>
+            </div>
+          ) : null}
+
+          {lastRes ? (
+            <div className="mt-2">
+              <div className="font-semibold">Last response</div>
+              <div>Status: {lastRes.status}</div>
+              <pre className="mt-2 overflow-auto rounded-xl border bg-white p-3 text-[11px]">
+                {JSON.stringify(lastRes.data, null, 2)}
+              </pre>
+            </div>
+          ) : null}
+
+          {turnstileError ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {turnstileError}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {!result ? (
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
@@ -439,7 +561,25 @@ export default function CreateGiftForm() {
               <div className="text-xs text-slate-500">
                 {turnstileReady ? "Complete the CAPTCHA to create a gift." : "Loading CAPTCHA…"}
               </div>
+
               <div ref={turnstileContainerRef} className="min-h-[70px] rounded-2xl border bg-white px-4 py-4" />
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const pulled = getTurnstileResponseNow();
+                    if (pulled && pulled.length > 10) setTurnstileToken(pulled);
+                  }}
+                  className="rounded-xl border bg-white px-3 py-2 text-xs"
+                >
+                  Pull token
+                </button>
+                <button type="button" onClick={copyCaptchaToken} className="rounded-xl border bg-white px-3 py-2 text-xs">
+                  Copy token
+                </button>
+              </div>
+
               {turnstileError ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                   {turnstileError}
