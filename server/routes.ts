@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { sendGiftEmail, sendReturnToSenderEmail } from "./email";
+import { sendGiftSms } from "./sms";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -151,12 +152,11 @@ async function createGiftHandler(req: Request, res: Response) {
       if ((gifts as any).recipientEmail) values.recipientEmail = recipientEmail;
       else if ((gifts as any).recipient_email) values.recipient_email = recipientEmail;
     } else {
-      // If the column exists, explicitly set null (safe now that DB allows NULL)
       if ((gifts as any).recipientEmail) values.recipientEmail = null;
       else if ((gifts as any).recipient_email) values.recipient_email = null;
     }
 
-    // recipient_phone (NEW)
+    // recipient_phone
     if (recipientPhone) {
       if ((gifts as any).recipientPhone) values.recipientPhone = recipientPhone;
       else if ((gifts as any).recipient_phone) values.recipient_phone = recipientPhone;
@@ -190,7 +190,7 @@ async function createGiftHandler(req: Request, res: Response) {
       amount,
     });
 
-    // Email only if recipientEmail exists
+    // Fire-and-forget email ONLY when recipientEmail exists
     if (recipientEmail) {
       (async () => {
         try {
@@ -227,7 +227,18 @@ async function createGiftHandler(req: Request, res: Response) {
       })();
     }
 
-    // NOTE: SMS sending will be added next (Twilio) when recipientPhone exists.
+    // Fire-and-forget SMS ONLY when recipientPhone exists
+    if (recipientPhone) {
+      (async () => {
+        try {
+          logEvent("sms_send_start", { publicId, to: recipientPhone });
+          const r = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
+          logEvent("sms_sent", { publicId, to: recipientPhone, ok: r.ok, error: r.error || null });
+        } catch (e: any) {
+          logEvent("sms_send_crash", { publicId, to: recipientPhone, error: e?.message || "Unknown error" });
+        }
+      })();
+    }
 
     return res.json({ ok: true, publicId, claimUrl });
   } catch (e: any) {
