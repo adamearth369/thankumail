@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
-import { fileURLToPath } from "url";
-import { registerRoutes } from "./routes";
+import router from "./routes";
 
 const app = express();
 
@@ -10,15 +9,13 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-/* -------------------- debug /where -------------------- */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 /**
- * In dist, this file becomes dist/index.cjs.
  * Public assets are emitted to dist/public by script/build.ts.
+ * Keep this CJS-safe (no import.meta usage).
  */
 const publicDir = path.resolve(process.cwd(), "dist", "public");
+
+/* -------------------- debug /where (JSON) -------------------- */
 app.get("/__where", (_req, res) => {
   res.json({
     ok: true,
@@ -28,16 +25,12 @@ app.get("/__where", (_req, res) => {
   });
 });
 
-/* -------------------- health (non-spa) -------------------- */
+/* -------------------- health (JSON) -------------------- */
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* -------------------- API routes FIRST -------------------- */
-/**
- * registerRoutes must mount all API endpoints (gifts, claim, etc).
- * Ensure routes.ts mounts under /api (recommended) or directly.
- */
-registerRoutes(app);
+app.use(router);
 
 /* -------------------- static + SPA fallback (LAST) -------------------- */
 app.use(
@@ -47,7 +40,7 @@ app.use(
   })
 );
 
-// Never serve SPA for API paths
+// Never serve SPA for API paths (return JSON 404 instead)
 app.get(/^\/api\/.*/, (_req, res) => {
   res.status(404).json({ message: "Not found" });
 });
