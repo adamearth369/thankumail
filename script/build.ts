@@ -1,38 +1,53 @@
-import { build as viteBuild } from "vite";
+import { execSync } from "node:child_process";
+import path from "node:path";
+import fs from "node:fs";
 import esbuild from "esbuild";
 
-async function buildClient() {
-  await viteBuild({
-    root: "client",
-    build: {
-      outDir: "../dist/public",
-      emptyOutDir: true,
-    },
-  });
+function run(cmd: string) {
+  execSync(cmd, { stdio: "inherit" });
 }
 
-async function buildServer() {
-  await esbuild.build({
-    entryPoints: ["src/index.ts"],
-    bundle: true,
-    platform: "node",
-    format: "cjs",
-    outfile: "dist/index.cjs",
-    external: [
-      "cors",
-      "nodemailer",
-      "@getbrevo/brevo",
-      "sib-api-v3-sdk",
-    ],
-  });
+function ensureDir(p: string) {
+  fs.mkdirSync(p, { recursive: true });
 }
 
 async function main() {
-  console.log("building client...");
-  await buildClient();
+  // 1) Build client (uses your existing vite config)
+  run("npx vite build");
 
-  console.log("building server...");
-  await buildServer();
+  // 2) Bundle server explicitly from server/index.ts -> dist/index.cjs
+  const root = process.cwd();
+  const outDir = path.resolve(root, "dist");
+  ensureDir(outDir);
+
+  await esbuild.build({
+    entryPoints: [path.resolve(root, "server", "index.ts")],
+    outfile: path.resolve(outDir, "index.cjs"),
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node22",
+    sourcemap: false,
+    logLevel: "info",
+    external: [
+      // keep node_modules as externals (faster, smaller)
+      "pg",
+      "pg-native",
+      "drizzle-orm",
+      "drizzle-zod",
+      "express",
+      "express-rate-limit",
+      "express-session",
+      "connect-pg-simple",
+      "cors",
+      "nodemailer",
+      "twilio",
+      "ws",
+      "zod",
+    ],
+  });
+
+  console.log("build complete");
 }
 
 main().catch((err) => {
