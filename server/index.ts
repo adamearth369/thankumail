@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { fileURLToPath } from "url";
 
 const app = express();
 
@@ -12,15 +11,13 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-/* -------------------- debug /__where -------------------- */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 /**
- * In dist, this file becomes dist/index.cjs.
  * Public assets are emitted to dist/public by script/build.ts.
+ * This must work in BOTH dev and production builds.
  */
 const publicDir = path.resolve(process.cwd(), "dist", "public");
+
+/* -------------------- debug /__where -------------------- */
 app.get("/__where", (_req, res) => {
   res.json({
     ok: true,
@@ -37,7 +34,7 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 /* -------------------- API routes FIRST -------------------- */
 async function main() {
   const mod = await import("./routes");
-  const router = mod.default;
+  const router = mod.default; // routes.ts exports default router
   app.use(router);
 
   /* -------------------- static + SPA fallback (LAST) -------------------- */
