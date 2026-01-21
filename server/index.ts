@@ -1,21 +1,26 @@
 import express from "express";
 import path from "path";
-import router from "./routes";
+import { fileURLToPath } from "url";
 
 const app = express();
+
+/* ✅ REQUIRED on Render (fixes express-rate-limit crash with X-Forwarded-For) */
+app.set("trust proxy", 1);
 
 /* -------------------- basics -------------------- */
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
+/* -------------------- debug /__where -------------------- */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 /**
+ * In dist, this file becomes dist/index.cjs.
  * Public assets are emitted to dist/public by script/build.ts.
- * Keep this CJS-safe (no import.meta usage).
  */
 const publicDir = path.resolve(process.cwd(), "dist", "public");
-
-/* -------------------- debug /where (JSON) -------------------- */
 app.get("/__where", (_req, res) => {
   res.json({
     ok: true,
@@ -25,33 +30,42 @@ app.get("/__where", (_req, res) => {
   });
 });
 
-/* -------------------- health (JSON) -------------------- */
+/* -------------------- health (non-spa) -------------------- */
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* -------------------- API routes FIRST -------------------- */
-app.use(router);
+async function main() {
+  const mod = await import("./routes");
+  const router = mod.default;
+  app.use(router);
 
-/* -------------------- static + SPA fallback (LAST) -------------------- */
-app.use(
-  express.static(publicDir, {
-    index: false,
-    maxAge: "1h",
-  })
-);
+  /* -------------------- static + SPA fallback (LAST) -------------------- */
+  app.use(
+    express.static(publicDir, {
+      index: false,
+      maxAge: "1h",
+    })
+  );
 
-// Never serve SPA for API paths (return JSON 404 instead)
-app.get(/^\/api\/.*/, (_req, res) => {
-  res.status(404).json({ message: "Not found" });
-});
+  // Never serve SPA for API paths
+  app.get(/^\/api\/.*/, (_req, res) => {
+    res.status(404).json({ message: "Not found" });
+  });
 
-// SPA fallback for everything else
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(publicDir, "index.html"));
-});
+  // SPA fallback for everything else
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(publicDir, "index.html"));
+  });
 
-/* -------------------- listen -------------------- */
-const port = Number(process.env.PORT || 10000);
-app.listen(port, "0.0.0.0", () => {
-  console.log(`listening on ${port}`);
+  /* -------------------- listen -------------------- */
+  const port = Number(process.env.PORT || 10000);
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`listening on ${port}`);
+  });
+}
+
+main().catch((e) => {
+  console.error("Fatal boot error:", e);
+  process.exit(1);
 });
