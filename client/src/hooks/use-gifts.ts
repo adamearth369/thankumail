@@ -6,7 +6,6 @@ import { useToast } from "@/hooks/use-toast";
 // API BASE (TEMP SIMPLE FIX FOR PREVIEW)
 // ============================================
 function apiBase() {
-  // Later we can switch to: import.meta.env.VITE_API_BASE_URL
   return "https://thankumail-2.onrender.com";
 }
 function withBase(url: string) {
@@ -53,8 +52,6 @@ export function useCreateGift() {
 
       if (!res.ok) {
         if (res.status === 400) {
-          // your backend returns {error, field...} sometimes; your shared schema expects {message}
-          // so we fallback safely if parsing fails.
           const raw = await res.json().catch(() => null);
           try {
             const parsed = api.gifts.create.responses[400].parse(raw);
@@ -67,12 +64,10 @@ export function useCreateGift() {
         throw new Error(rawText || "Failed to create gift");
       }
 
-      // Some implementations return 200, others 201; parse whichever matches
       const json = await res.json();
       try {
         return api.gifts.create.responses[201].parse(json);
       } catch {
-        // fallback if backend responds 200
         // @ts-ignore
         return api.gifts.create.responses[200]?.parse?.(json) ?? json;
       }
