@@ -55,22 +55,13 @@ const E164 = /^\+[1-9]\d{7,14}$/;
 const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email(),
-
-    recipientEmail: z
-      .string()
-      .optional()
-      .or(z.literal(""))
-      .transform((v) => (typeof v === "string" ? v.trim() : "")),
-
+    recipientEmail: z.string().optional().or(z.literal("")).transform((v) => (typeof v === "string" ? v.trim() : "")),
     recipientPhone: z
       .string()
       .optional()
       .or(z.literal(""))
       .transform((v) => (typeof v === "string" ? v.trim() : ""))
-      .refine((v) => !v || E164.test(v), {
-        message: "Invalid phone number (use E.164 like +15551234567)",
-      }),
-
+      .refine((v) => !v || E164.test(v), { message: "Invalid phone number (use E.164 like +15551234567)" }),
     message: z.string().max(2000).optional().default(""),
     amount: z.number().int().min(1000),
     turnstileToken: z.string().optional(),
@@ -83,32 +74,16 @@ const CreateGiftSchema = z
 const ClaimSchema = z.object({ turnstileToken: z.string().optional() });
 
 /* -------------------- RATE LIMITS -------------------- */
-const createLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const createLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false });
+const claimLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
 
-const claimLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-/* -------------------- COLUMN PICKERS -------------------- */
-function pickCol(...candidates: string[]) {
-  for (const k of candidates) {
-    if ((gifts as any)[k]) return (gifts as any)[k];
-  }
-  return null;
+/* -------------------- SCHEMA HELPERS -------------------- */
+function hasCol(name: string) {
+  return !!(gifts as any)[name];
 }
-
-const COL_PUBLIC_ID = () => pickCol("publicId", "public_id", "publicID");
-const COL_CREATED_AT = () => pickCol("createdAt", "created_at");
-const COL_IS_CLAIMED = () => pickCol("isClaimed", "is_claimed");
-const COL_CLAIMED_AT = () => pickCol("claimedAt", "claimed_at");
+function col(name: string) {
+  return (gifts as any)[name];
+}
 
 /* -------------------- ROUTER -------------------- */
 const router = Router();
@@ -132,39 +107,50 @@ router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => 
     const captcha = await verifyTurnstile(turnstileToken || "", remoteip);
     if (!captcha.ok) return res.status(400).json({ error: captcha.error, field: "turnstileToken" });
 
-    const publicIdCol = COL_PUBLIC_ID();
-    if (!publicIdCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
-
     const publicId = crypto.randomBytes(16).toString("hex");
     const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
 
-    // Build insert row keyed by actual drizzle columns (snake_case vs camelCase safe)
-    const insertRow: any = {
-      [publicIdCol]: publicId,
+    // Build values object ONLY with keys that exist in your Drizzle schema.
+    // ✅ CRITICAL: set BOTH public_id and publicId if present, to guarantee the NOT NULL column is filled.
+    const row: any = {};
 
-      // These should match your schema fields; if some are snake_case in DB,
-      // Drizzle still exposes them as properties on `gifts` (ex: gifts.senderEmail or gifts.sender_email).
-      // We'll try both patterns safely:
-      ...( (gifts as any).senderEmail ? { [(gifts as any).senderEmail]: senderEmail } : {} ),
-      ...( (gifts as any).sender_email ? { [(gifts as any).sender_email]: senderEmail } : {} ),
+    if (hasCol("public_id")) row["public_id"] = publicId;
+    if (hasCol("publicId")) row["publicId"] = publicId;
+    if (hasCol("publicID")) row["publicID"] = publicId;
 
-      ...( (gifts as any).recipientEmail ? { [(gifts as any).recipientEmail]: recipientEmail || null } : {} ),
-      ...( (gifts as any).recipient_email ? { [(gifts as any).recipient_email]: recipientEmail || null } : {} ),
+    // if none exist, fail loudly
+    if (!("public_id" in row) && !("publicId" in row) && !("publicID" in row)) {
+      return res.status(500).json({ error: "Server misconfigured: gifts table missing public id column mapping" });
+    }
 
-      ...( (gifts as any).recipientPhone ? { [(gifts as any).recipientPhone]: recipientPhone || null } : {} ),
-      ...( (gifts as any).recipient_phone ? { [(gifts as any).recipient_phone]: recipientPhone || null } : {} ),
+    if (hasCol("sender_email")) row["sender_email"] = senderEmail;
+    if (hasCol("senderEmail")) row["senderEmail"] = senderEmail;
 
-      ...( (gifts as any).message ? { [(gifts as any).message]: message || "" } : {} ),
-      ...( (gifts as any).amount ? { [(gifts as any).amount]: amount } : {} ),
-    };
+    if (hasCol("recipient_email")) row["recipient_email"] = recipientEmail || null;
+    if (hasCol("recipientEmail")) row["recipientEmail"] = recipientEmail || null;
 
-    const isClaimedCol = COL_IS_CLAIMED();
-    if (isClaimedCol) insertRow[isClaimedCol] = false;
+    if (hasCol("recipient_phone")) row["recipient_phone"] = recipientPhone || null;
+    if (hasCol("recipientPhone")) row["recipientPhone"] = recipientPhone || null;
 
-    const createdAtCol = COL_CREATED_AT();
-    if (createdAtCol) insertRow[createdAtCol] = new Date();
+    if (hasCol("message")) row["message"] = message || "";
 
-    await db.insert(gifts).values(insertRow);
+    if (hasCol("amount")) row["amount"] = amount;
+
+    if (hasCol("is_claimed")) row["is_claimed"] = false;
+    if (hasCol("isClaimed")) row["isClaimed"] = false;
+
+    if (hasCol("created_at")) row["created_at"] = new Date();
+    if (hasCol("createdAt")) row["createdAt"] = new Date();
+
+    // DEBUG: log what keys we are inserting
+    logEvent("gift_insert_debug", {
+      publicId,
+      rowKeys: Object.keys(row),
+      schemaHasPublic_id: hasCol("public_id"),
+      schemaHasPublicId: hasCol("publicId"),
+    });
+
+    await db.insert(gifts).values(row);
 
     logEvent("gift_created", {
       publicId,
@@ -209,24 +195,24 @@ router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => 
   }
 });
 
-/* -------------------- GET (claim page) -------------------- */
+/* -------------------- GET -------------------- */
 router.get("/api/gifts/:publicId", async (req: Request, res: Response) => {
   const publicId = String(req.params.publicId || "").trim();
   if (!publicId) return res.status(400).json({ error: "Missing id" });
 
-  const publicIdCol = COL_PUBLIC_ID();
-  if (!publicIdCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+  // Prefer whichever public id column exists
+  const pubCol = hasCol("public_id") ? col("public_id") : hasCol("publicId") ? col("publicId") : hasCol("publicID") ? col("publicID") : null;
+  if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing public id column mapping" });
 
-  const rows = await db.select().from(gifts).where(eq(publicIdCol as any, publicId)).limit(1);
+  const rows = await db.select().from(gifts).where(eq(pubCol as any, publicId)).limit(1);
   const g: any = rows?.[0];
   if (!g) return res.status(404).json({ error: "Not found" });
 
-  // Return a minimal safe view
   return res.json({
     ok: true,
     publicId,
-    message: g.message ?? g.message_text ?? g.message_text ?? g["message"] ?? "",
-    amount: g.amount ?? g["amount"] ?? 0,
+    message: g.message ?? "",
+    amount: g.amount ?? 0,
     isClaimed: g.isClaimed ?? g.is_claimed ?? false,
     createdAt: g.createdAt ?? g.created_at ?? null,
   });
@@ -237,40 +223,35 @@ router.post("/api/gifts/:publicId/claim", claimLimiter, async (req: Request, res
   const publicId = String(req.params.publicId || "").trim();
   if (!publicId) return res.status(400).json({ error: "Missing id" });
 
-  const publicIdCol = COL_PUBLIC_ID();
-  if (!publicIdCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
-
   const parsed = ClaimSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
 
-  const rows = await db.select().from(gifts).where(eq(publicIdCol as any, publicId)).limit(1);
+  const pubCol = hasCol("public_id") ? col("public_id") : hasCol("publicId") ? col("publicId") : hasCol("publicID") ? col("publicID") : null;
+  if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing public id column mapping" });
+
+  const rows = await db.select().from(gifts).where(eq(pubCol as any, publicId)).limit(1);
   const g: any = rows?.[0];
   if (!g) return res.status(404).json({ error: "Not found" });
 
-  const isClaimed = !!(g.isClaimed ?? g.is_claimed);
-  if (isClaimed) return res.status(400).json({ error: "Already claimed", code: "ALREADY_CLAIMED" });
+  if (g.isClaimed ?? g.is_claimed) return res.status(400).json({ error: "Already claimed", code: "ALREADY_CLAIMED" });
 
   const minDelaySec = Number(process.env.MIN_CLAIM_DELAY_SEC || 0);
   const createdAt = g.createdAt ?? g.created_at;
   if (minDelaySec > 0 && createdAt) {
     const ageSec = Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000);
     if (ageSec < minDelaySec) {
-      return res.status(400).json({
-        error: "Please wait a moment before claiming.",
-        code: "TOO_SOON",
-        retryAfterSec: minDelaySec - ageSec,
-      });
+      return res.status(400).json({ error: "Please wait a moment before claiming.", code: "TOO_SOON", retryAfterSec: minDelaySec - ageSec });
     }
   }
 
-  const isClaimedCol = COL_IS_CLAIMED();
-  const claimedAtCol = COL_CLAIMED_AT();
-
   const updateRow: any = {};
-  if (isClaimedCol) updateRow[isClaimedCol] = true;
-  if (claimedAtCol) updateRow[claimedAtCol] = new Date();
+  if (hasCol("is_claimed")) updateRow["is_claimed"] = true;
+  if (hasCol("isClaimed")) updateRow["isClaimed"] = true;
 
-  await db.update(gifts).set(updateRow).where(eq(publicIdCol as any, publicId));
+  if (hasCol("claimed_at")) updateRow["claimed_at"] = new Date();
+  if (hasCol("claimedAt")) updateRow["claimedAt"] = new Date();
+
+  await db.update(gifts).set(updateRow).where(eq(pubCol as any, publicId));
 
   logEvent("gift_claimed", { publicId });
   return res.json({ ok: true });
@@ -290,14 +271,14 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
   const cutoffCreated = new Date(now.getTime() - olderThanHours * 3600_000);
   const cutoff48h = new Date(now.getTime() - 48 * 3600_000);
 
-  const pubCol = COL_PUBLIC_ID();
-  if (!pubCol) return res.status(500).json({ ok: false, error: "Server misconfigured: missing publicId column" });
+  const pubCol = hasCol("public_id") ? col("public_id") : hasCol("publicId") ? col("publicId") : hasCol("publicID") ? col("publicID") : null;
+  if (!pubCol) return res.status(500).json({ ok: false, error: "Server misconfigured: missing public id column mapping" });
 
-  const isClaimedCol = (gifts as any).isClaimed;
-  const createdAtCol = (gifts as any).createdAt;
-  const reminderCountCol = (gifts as any).reminderCount;
-  const lastReminderSentAtCol = (gifts as any).lastReminderSentAt;
-  const returnedToSenderAtCol = (gifts as any).returnedToSenderAt;
+  const isClaimedCol = (gifts as any).isClaimed || (gifts as any).is_claimed;
+  const createdAtCol = (gifts as any).createdAt || (gifts as any).created_at;
+  const reminderCountCol = (gifts as any).reminderCount || (gifts as any).reminder_count;
+  const lastReminderSentAtCol = (gifts as any).lastReminderSentAt || (gifts as any).last_reminder_sent_at;
+  const returnedToSenderAtCol = (gifts as any).returnedToSenderAt || (gifts as any).returned_to_sender_at;
 
   if (!isClaimedCol || !createdAtCol || !reminderCountCol || !lastReminderSentAtCol || !returnedToSenderAtCol) {
     return res.status(500).json({ ok: false, error: "Server misconfigured: reminder columns missing" });
@@ -320,15 +301,7 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
   const returnRows = await db
     .select()
     .from(gifts)
-    .where(
-      and(
-        eq(isClaimedCol, false),
-        isNull(returnedToSenderAtCol),
-        gte(reminderCountCol, 2),
-        not(isNull(lastReminderSentAtCol)),
-        lte(lastReminderSentAtCol, cutoff48h)
-      )
-    )
+    .where(and(eq(isClaimedCol, false), isNull(returnedToSenderAtCol), gte(reminderCountCol, 2), not(isNull(lastReminderSentAtCol)), lte(lastReminderSentAtCol, cutoff48h)))
     .limit(limit);
 
   let sent = 0;
@@ -348,11 +321,9 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     let error: string | null = null;
 
     try {
-      if (recipientEmail) {
-        ok = dryRun ? true : (await sendReminderEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail })).ok;
-      } else if (recipientPhone) {
-        ok = dryRun ? true : (await sendGiftSms({ to: recipientPhone, claimUrl, publicId })).ok;
-      } else {
+      if (recipientEmail) ok = dryRun ? true : (await sendReminderEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail })).ok;
+      else if (recipientPhone) ok = dryRun ? true : (await sendGiftSms({ to: recipientPhone, claimUrl, publicId })).ok;
+      else {
         ok = false;
         error = "No recipient email or phone";
       }
@@ -364,14 +335,10 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     if (ok) {
       sent++;
       actions.push({ publicId, action: "reminder", ok: true });
-
       if (!dryRun) {
         await db
           .update(gifts)
-          .set({
-            reminderCount: Number(g.reminderCount ?? g.reminder_count ?? 0) + 1,
-            lastReminderSentAt: new Date(),
-          } as any)
+          .set({ reminderCount: Number(g.reminderCount ?? g.reminder_count ?? 0) + 1, lastReminderSentAt: new Date() } as any)
           .where(eq(pubCol as any, publicId));
       }
     } else {
@@ -394,25 +361,12 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     try {
       const r = dryRun
         ? { ok: true, error: null as any }
-        : await sendReturnToSenderEmail({
-            to: senderEmail,
-            publicId,
-            amountCents: amount,
-            reason: "Not claimed after 2 reminders (48h apart).",
-          });
+        : await sendReturnToSenderEmail({ to: senderEmail, publicId, amountCents: amount, reason: "Not claimed after 2 reminders (48h apart)." });
 
       if (r.ok) {
         sent++;
         actions.push({ publicId, action: "return_to_sender", ok: true });
-
-        if (!dryRun) {
-          await db
-            .update(gifts)
-            .set({
-              returnedToSenderAt: new Date(),
-            } as any)
-            .where(eq(pubCol as any, publicId));
-        }
+        if (!dryRun) await db.update(gifts).set({ returnedToSenderAt: new Date() } as any).where(eq(pubCol as any, publicId));
       } else {
         failed++;
         actions.push({ publicId, action: "return_to_sender", ok: false, error: r.error || "Failed" });
@@ -423,17 +377,7 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     }
   }
 
-  return res.json({
-    ok: true,
-    dryRun,
-    scanned: reminderRows.length + returnRows.length,
-    reminderEligible: reminderRows.length,
-    returnEligible: returnRows.length,
-    sent,
-    failed,
-    cutoffCreated: cutoffCreated.toISOString(),
-    actions,
-  });
+  return res.json({ ok: true, dryRun, scanned: reminderRows.length + returnRows.length, reminderEligible: reminderRows.length, returnEligible: returnRows.length, sent, failed, cutoffCreated: cutoffCreated.toISOString(), actions });
 });
 
 export default router;
