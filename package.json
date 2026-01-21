@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "NODE_ENV=development npx tsx server/index.ts",
     "build": "npx tsx script/build.ts",
-    "start": "NODE_ENV=production node dist/index.cjs",
+    "start": "NODE_ENV=production PG_FORCE_NATIVE=0 node dist/index.cjs",
     "check": "npx tsc",
     "db:push": "npx drizzle-kit push"
   },
