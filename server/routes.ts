@@ -80,10 +80,7 @@ const CreateGiftSchema = z
     path: ["recipientEmail"],
   });
 
-const ClaimSchema = z.object({
-  // optional, depending on your future claim UX
-  turnstileToken: z.string().optional(),
-});
+const ClaimSchema = z.object({ turnstileToken: z.string().optional() });
 
 /* -------------------- RATE LIMITS -------------------- */
 const createLimiter = rateLimit({
@@ -100,7 +97,7 @@ const claimLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-/* -------------------- SCHEMA-AWARE COLUMN PICKERS -------------------- */
+/* -------------------- COLUMN PICKERS -------------------- */
 function pickCol(...candidates: string[]) {
   for (const k of candidates) {
     if ((gifts as any)[k]) return (gifts as any)[k];
@@ -109,19 +106,14 @@ function pickCol(...candidates: string[]) {
 }
 
 const COL_PUBLIC_ID = () => pickCol("publicId", "public_id", "publicID");
-const COL_SENDER_EMAIL = () => pickCol("senderEmail", "sender_email");
-const COL_RECIPIENT_EMAIL = () => pickCol("recipientEmail", "recipient_email");
-const COL_RECIPIENT_PHONE = () => pickCol("recipientPhone", "recipient_phone");
-const COL_MESSAGE = () => pickCol("message");
-const COL_AMOUNT = () => pickCol("amount");
-const COL_IS_CLAIMED = () => pickCol("isClaimed", "is_claimed");
 const COL_CREATED_AT = () => pickCol("createdAt", "created_at");
+const COL_IS_CLAIMED = () => pickCol("isClaimed", "is_claimed");
 const COL_CLAIMED_AT = () => pickCol("claimedAt", "claimed_at");
 
 /* -------------------- ROUTER -------------------- */
 const router = Router();
 
-/* -------------------- CORE: CREATE GIFT -------------------- */
+/* -------------------- CREATE -------------------- */
 router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => {
   try {
     const parsed = CreateGiftSchema.safeParse(req.body);
@@ -136,39 +128,43 @@ router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => 
 
     const { senderEmail, recipientEmail, recipientPhone, message, amount, turnstileToken } = parsed.data;
 
-    // Optional Turnstile enforcement (only enforced if TURNSTILE_SECRET_KEY is set)
     const remoteip = req.headers["cf-connecting-ip"]?.toString() || req.ip;
     const captcha = await verifyTurnstile(turnstileToken || "", remoteip);
     if (!captcha.ok) return res.status(400).json({ error: captcha.error, field: "turnstileToken" });
 
-    const pubCol = COL_PUBLIC_ID();
-    if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+    const publicIdCol = COL_PUBLIC_ID();
+    if (!publicIdCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
 
     const publicId = crypto.randomBytes(16).toString("hex");
     const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
 
-    // Build insert payload using whichever columns exist
-    const insertRow: Record<string, any> = {};
-    const senderCol = COL_SENDER_EMAIL();
-    const recEmailCol = COL_RECIPIENT_EMAIL();
-    const recPhoneCol = COL_RECIPIENT_PHONE();
-    const msgCol = COL_MESSAGE();
-    const amtCol = COL_AMOUNT();
+    // Build insert row keyed by actual drizzle columns (snake_case vs camelCase safe)
+    const insertRow: any = {
+      [publicIdCol]: publicId,
+
+      // These should match your schema fields; if some are snake_case in DB,
+      // Drizzle still exposes them as properties on `gifts` (ex: gifts.senderEmail or gifts.sender_email).
+      // We'll try both patterns safely:
+      ...( (gifts as any).senderEmail ? { [(gifts as any).senderEmail]: senderEmail } : {} ),
+      ...( (gifts as any).sender_email ? { [(gifts as any).sender_email]: senderEmail } : {} ),
+
+      ...( (gifts as any).recipientEmail ? { [(gifts as any).recipientEmail]: recipientEmail || null } : {} ),
+      ...( (gifts as any).recipient_email ? { [(gifts as any).recipient_email]: recipientEmail || null } : {} ),
+
+      ...( (gifts as any).recipientPhone ? { [(gifts as any).recipientPhone]: recipientPhone || null } : {} ),
+      ...( (gifts as any).recipient_phone ? { [(gifts as any).recipient_phone]: recipientPhone || null } : {} ),
+
+      ...( (gifts as any).message ? { [(gifts as any).message]: message || "" } : {} ),
+      ...( (gifts as any).amount ? { [(gifts as any).amount]: amount } : {} ),
+    };
+
     const isClaimedCol = COL_IS_CLAIMED();
+    if (isClaimedCol) insertRow[isClaimedCol] = false;
+
     const createdAtCol = COL_CREATED_AT();
+    if (createdAtCol) insertRow[createdAtCol] = new Date();
 
-    if (senderCol) insertRow[(senderCol as any).name ?? "senderEmail"] = senderEmail;
-    if (recEmailCol) insertRow[(recEmailCol as any).name ?? "recipientEmail"] = recipientEmail || null;
-    if (recPhoneCol) insertRow[(recPhoneCol as any).name ?? "recipientPhone"] = recipientPhone || null;
-    if (msgCol) insertRow[(msgCol as any).name ?? "message"] = message || "";
-    if (amtCol) insertRow[(amtCol as any).name ?? "amount"] = amount;
-    if (isClaimedCol) insertRow[(isClaimedCol as any).name ?? "isClaimed"] = false;
-    if (createdAtCol) insertRow[(createdAtCol as any).name ?? "createdAt"] = new Date();
-
-    // Always set publicId using discovered column key
-    insertRow[(pubCol as any).name ?? "publicId"] = publicId;
-
-    await db.insert(gifts).values(insertRow as any);
+    await db.insert(gifts).values(insertRow);
 
     logEvent("gift_created", {
       publicId,
@@ -178,105 +174,86 @@ router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => 
       amount,
     });
 
-    // Send delivery (email or sms)
-    let delivery: { ok: boolean; error?: string } = { ok: true };
+    // Delivery must NOT crash the request
+    let deliveryOk = true;
+    let deliveryError: string | undefined;
 
-    if (recipientEmail) {
-      delivery = await sendGiftEmail({
-        to: recipientEmail,
-        publicId,
-        claimUrl,
-        amountCents: amount,
-        senderEmail,
-        message,
-      });
-      logEvent("gift_email_sent", { publicId, ok: delivery.ok, error: delivery.error || null });
-    } else if (recipientPhone) {
-      delivery = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
-      logEvent("gift_sms_sent", { publicId, ok: delivery.ok, error: delivery.error || null });
+    try {
+      if (recipientEmail) {
+        const r = await sendGiftEmail({
+          to: recipientEmail,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail,
+          message,
+        });
+        deliveryOk = !!r.ok;
+        deliveryError = r.ok ? undefined : r.error || "Email delivery failed";
+        logEvent("gift_email_sent", { publicId, ok: deliveryOk, error: deliveryError || null });
+      } else if (recipientPhone) {
+        const r = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
+        deliveryOk = !!r.ok;
+        deliveryError = r.ok ? undefined : r.error || "SMS delivery failed";
+        logEvent("gift_sms_sent", { publicId, ok: deliveryOk, error: deliveryError || null });
+      }
+    } catch (e: any) {
+      deliveryOk = false;
+      deliveryError = e?.message || "Delivery threw an exception";
+      logEvent("gift_delivery_exception", { publicId, error: deliveryError });
     }
 
-    // Return success even if delivery fails (so sender can copy link)
-    return res.json({
-      ok: true,
-      publicId,
-      claimUrl,
-      deliveryOk: delivery.ok,
-      deliveryError: delivery.ok ? undefined : delivery.error || "Delivery failed",
-    });
+    return res.json({ ok: true, publicId, claimUrl, deliveryOk, deliveryError });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || "Server error" });
   }
 });
 
-/* -------------------- CORE: GET GIFT (for claim page) -------------------- */
+/* -------------------- GET (claim page) -------------------- */
 router.get("/api/gifts/:publicId", async (req: Request, res: Response) => {
   const publicId = String(req.params.publicId || "").trim();
   if (!publicId) return res.status(400).json({ error: "Missing id" });
 
-  const pubCol = COL_PUBLIC_ID();
-  if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+  const publicIdCol = COL_PUBLIC_ID();
+  if (!publicIdCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
 
-  const rows = await db
-    .select()
-    .from(gifts)
-    .where(eq(pubCol as any, publicId))
-    .limit(1);
-
+  const rows = await db.select().from(gifts).where(eq(publicIdCol as any, publicId)).limit(1);
   const g: any = rows?.[0];
   if (!g) return res.status(404).json({ error: "Not found" });
 
-  const msgCol = COL_MESSAGE();
-  const amtCol = COL_AMOUNT();
-  const isClaimedCol = COL_IS_CLAIMED();
-  const createdAtCol = COL_CREATED_AT();
-
+  // Return a minimal safe view
   return res.json({
     ok: true,
     publicId,
-    message: msgCol ? g[(msgCol as any).name ?? "message"] : g.message,
-    amount: amtCol ? g[(amtCol as any).name ?? "amount"] : g.amount,
-    isClaimed: isClaimedCol ? g[(isClaimedCol as any).name ?? "isClaimed"] : g.isClaimed,
-    createdAt: createdAtCol ? g[(createdAtCol as any).name ?? "createdAt"] : g.createdAt,
+    message: g.message ?? g.message_text ?? g.message_text ?? g["message"] ?? "",
+    amount: g.amount ?? g["amount"] ?? 0,
+    isClaimed: g.isClaimed ?? g.is_claimed ?? false,
+    createdAt: g.createdAt ?? g.created_at ?? null,
   });
 });
 
-/* -------------------- CORE: CLAIM GIFT -------------------- */
+/* -------------------- CLAIM -------------------- */
 router.post("/api/gifts/:publicId/claim", claimLimiter, async (req: Request, res: Response) => {
   const publicId = String(req.params.publicId || "").trim();
   if (!publicId) return res.status(400).json({ error: "Missing id" });
 
-  const pubCol = COL_PUBLIC_ID();
-  if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+  const publicIdCol = COL_PUBLIC_ID();
+  if (!publicIdCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
 
-  // Optional schema check (kept for future Turnstile-on-claim)
   const parsed = ClaimSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
 
-  const rows = await db
-    .select()
-    .from(gifts)
-    .where(eq(pubCol as any, publicId))
-    .limit(1);
-
+  const rows = await db.select().from(gifts).where(eq(publicIdCol as any, publicId)).limit(1);
   const g: any = rows?.[0];
   if (!g) return res.status(404).json({ error: "Not found" });
 
-  const isClaimedCol = COL_IS_CLAIMED();
-  const createdAtCol = COL_CREATED_AT();
-  const claimedAtCol = COL_CLAIMED_AT();
-
-  const isClaimed =
-    isClaimedCol ? !!g[(isClaimedCol as any).name ?? "isClaimed"] : !!g.isClaimed;
-
+  const isClaimed = !!(g.isClaimed ?? g.is_claimed);
   if (isClaimed) return res.status(400).json({ error: "Already claimed", code: "ALREADY_CLAIMED" });
 
-  // Optional minimum delay
   const minDelaySec = Number(process.env.MIN_CLAIM_DELAY_SEC || 0);
-  if (minDelaySec > 0 && createdAtCol) {
-    const createdAt = new Date(g[(createdAtCol as any).name ?? "createdAt"]);
-    const now = Date.now();
-    const ageSec = Math.floor((now - createdAt.getTime()) / 1000);
+  const createdAt = g.createdAt ?? g.created_at;
+  if (minDelaySec > 0 && createdAt) {
+    const ageSec = Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000);
     if (ageSec < minDelaySec) {
       return res.status(400).json({
         error: "Please wait a moment before claiming.",
@@ -286,23 +263,20 @@ router.post("/api/gifts/:publicId/claim", claimLimiter, async (req: Request, res
     }
   }
 
-  const updateRow: Record<string, any> = {};
-  if (isClaimedCol) updateRow[(isClaimedCol as any).name ?? "isClaimed"] = true;
-  if (claimedAtCol) updateRow[(claimedAtCol as any).name ?? "claimedAt"] = new Date();
+  const isClaimedCol = COL_IS_CLAIMED();
+  const claimedAtCol = COL_CLAIMED_AT();
 
-  await db.update(gifts).set(updateRow as any).where(eq(pubCol as any, publicId));
+  const updateRow: any = {};
+  if (isClaimedCol) updateRow[isClaimedCol] = true;
+  if (claimedAtCol) updateRow[claimedAtCol] = new Date();
+
+  await db.update(gifts).set(updateRow).where(eq(publicIdCol as any, publicId));
 
   logEvent("gift_claimed", { publicId });
-
   return res.json({ ok: true });
 });
 
 /* -------------------- ADMIN: REMINDERS + RETURN TO SENDER -------------------- */
-/**
- * Behavior:
- * - Max 2 reminders, spaced >= 48 hours apart
- * - After 2 reminders, wait >= 48 hours, then "return to sender"
- */
 router.post("/api/admin/reminders/send", async (req: Request, res: Response) => {
   const token = String(req.header("x-admin-token") || "");
   const expected = process.env.ADMIN_TOKEN || "";
@@ -329,7 +303,6 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     return res.status(500).json({ ok: false, error: "Server misconfigured: reminder columns missing" });
   }
 
-  // 1) Eligible for reminders (MAX 2)
   const reminderRows = await db
     .select()
     .from(gifts)
@@ -344,7 +317,6 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     )
     .limit(limit);
 
-  // 2) Eligible for return-to-sender (after 2 reminders + 48h)
   const returnRows = await db
     .select()
     .from(gifts)
@@ -363,7 +335,6 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
   let failed = 0;
   const actions: any[] = [];
 
-  // REMINDERS
   for (const g of reminderRows as any[]) {
     const publicId = g.publicId ?? g.public_id ?? g.publicID;
     const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
@@ -378,17 +349,9 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
 
     try {
       if (recipientEmail) {
-        if (!dryRun) {
-          const r = await sendReminderEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail });
-          ok = r.ok;
-          error = r.error || null;
-        } else ok = true;
+        ok = dryRun ? true : (await sendReminderEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail })).ok;
       } else if (recipientPhone) {
-        if (!dryRun) {
-          const r = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
-          ok = r.ok;
-          error = r.error || null;
-        } else ok = true;
+        ok = dryRun ? true : (await sendGiftSms({ to: recipientPhone, claimUrl, publicId })).ok;
       } else {
         ok = false;
         error = "No recipient email or phone";
@@ -417,7 +380,6 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     }
   }
 
-  // RETURN TO SENDER
   for (const g of returnRows as any[]) {
     const publicId = g.publicId ?? g.public_id ?? g.publicID;
     const senderEmail = g.senderEmail ?? g.sender_email ?? "";
@@ -430,21 +392,16 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     }
 
     try {
-      let ok = true;
-      let error: string | null = null;
+      const r = dryRun
+        ? { ok: true, error: null as any }
+        : await sendReturnToSenderEmail({
+            to: senderEmail,
+            publicId,
+            amountCents: amount,
+            reason: "Not claimed after 2 reminders (48h apart).",
+          });
 
-      if (!dryRun) {
-        const r = await sendReturnToSenderEmail({
-          to: senderEmail,
-          publicId,
-          amountCents: amount,
-          reason: "Not claimed after 2 reminders (48h apart).",
-        });
-        ok = r.ok;
-        error = r.error || null;
-      }
-
-      if (ok) {
+      if (r.ok) {
         sent++;
         actions.push({ publicId, action: "return_to_sender", ok: true });
 
@@ -458,12 +415,11 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
         }
       } else {
         failed++;
-        actions.push({ publicId, action: "return_to_sender", ok: false, error });
+        actions.push({ publicId, action: "return_to_sender", ok: false, error: r.error || "Failed" });
       }
     } catch (e: any) {
       failed++;
-      const error = e?.message || "Unknown error";
-      actions.push({ publicId, action: "return_to_sender", ok: false, error });
+      actions.push({ publicId, action: "return_to_sender", ok: false, error: e?.message || "Unknown error" });
     }
   }
 
