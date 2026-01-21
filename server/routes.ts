@@ -80,6 +80,11 @@ const CreateGiftSchema = z
     path: ["recipientEmail"],
   });
 
+const ClaimSchema = z.object({
+  // optional, depending on your future claim UX
+  turnstileToken: z.string().optional(),
+});
+
 /* -------------------- RATE LIMITS -------------------- */
 const createLimiter = rateLimit({
   windowMs: 60_000,
@@ -102,13 +107,195 @@ function pickCol(...candidates: string[]) {
   }
   return null;
 }
+
 const COL_PUBLIC_ID = () => pickCol("publicId", "public_id", "publicID");
+const COL_SENDER_EMAIL = () => pickCol("senderEmail", "sender_email");
+const COL_RECIPIENT_EMAIL = () => pickCol("recipientEmail", "recipient_email");
+const COL_RECIPIENT_PHONE = () => pickCol("recipientPhone", "recipient_phone");
+const COL_MESSAGE = () => pickCol("message");
+const COL_AMOUNT = () => pickCol("amount");
+const COL_IS_CLAIMED = () => pickCol("isClaimed", "is_claimed");
+const COL_CREATED_AT = () => pickCol("createdAt", "created_at");
+const COL_CLAIMED_AT = () => pickCol("claimedAt", "claimed_at");
 
 /* -------------------- ROUTER -------------------- */
 const router = Router();
 
-/* -------------------- HANDLERS -------------------- */
-// (createGiftHandler, getGiftHandler, claimGiftHandler unchanged)
+/* -------------------- CORE: CREATE GIFT -------------------- */
+router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => {
+  try {
+    const parsed = CreateGiftSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const first = parsed.error.issues?.[0];
+      return res.status(400).json({
+        error: first?.message || "Invalid request",
+        field: first?.path?.[0],
+        issues: parsed.error.issues,
+      });
+    }
+
+    const { senderEmail, recipientEmail, recipientPhone, message, amount, turnstileToken } = parsed.data;
+
+    // Optional Turnstile enforcement (only enforced if TURNSTILE_SECRET_KEY is set)
+    const remoteip = req.headers["cf-connecting-ip"]?.toString() || req.ip;
+    const captcha = await verifyTurnstile(turnstileToken || "", remoteip);
+    if (!captcha.ok) return res.status(400).json({ error: captcha.error, field: "turnstileToken" });
+
+    const pubCol = COL_PUBLIC_ID();
+    if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+
+    const publicId = crypto.randomBytes(16).toString("hex");
+    const claimUrl = `${getClaimSiteBaseUrl()}/claim/${publicId}`;
+
+    // Build insert payload using whichever columns exist
+    const insertRow: Record<string, any> = {};
+    const senderCol = COL_SENDER_EMAIL();
+    const recEmailCol = COL_RECIPIENT_EMAIL();
+    const recPhoneCol = COL_RECIPIENT_PHONE();
+    const msgCol = COL_MESSAGE();
+    const amtCol = COL_AMOUNT();
+    const isClaimedCol = COL_IS_CLAIMED();
+    const createdAtCol = COL_CREATED_AT();
+
+    if (senderCol) insertRow[(senderCol as any).name ?? "senderEmail"] = senderEmail;
+    if (recEmailCol) insertRow[(recEmailCol as any).name ?? "recipientEmail"] = recipientEmail || null;
+    if (recPhoneCol) insertRow[(recPhoneCol as any).name ?? "recipientPhone"] = recipientPhone || null;
+    if (msgCol) insertRow[(msgCol as any).name ?? "message"] = message || "";
+    if (amtCol) insertRow[(amtCol as any).name ?? "amount"] = amount;
+    if (isClaimedCol) insertRow[(isClaimedCol as any).name ?? "isClaimed"] = false;
+    if (createdAtCol) insertRow[(createdAtCol as any).name ?? "createdAt"] = new Date();
+
+    // Always set publicId using discovered column key
+    insertRow[(pubCol as any).name ?? "publicId"] = publicId;
+
+    await db.insert(gifts).values(insertRow as any);
+
+    logEvent("gift_created", {
+      publicId,
+      senderEmail,
+      hasRecipientEmail: !!recipientEmail,
+      hasRecipientPhone: !!recipientPhone,
+      amount,
+    });
+
+    // Send delivery (email or sms)
+    let delivery: { ok: boolean; error?: string } = { ok: true };
+
+    if (recipientEmail) {
+      delivery = await sendGiftEmail({
+        to: recipientEmail,
+        publicId,
+        claimUrl,
+        amountCents: amount,
+        senderEmail,
+        message,
+      });
+      logEvent("gift_email_sent", { publicId, ok: delivery.ok, error: delivery.error || null });
+    } else if (recipientPhone) {
+      delivery = await sendGiftSms({ to: recipientPhone, claimUrl, publicId });
+      logEvent("gift_sms_sent", { publicId, ok: delivery.ok, error: delivery.error || null });
+    }
+
+    // Return success even if delivery fails (so sender can copy link)
+    return res.json({
+      ok: true,
+      publicId,
+      claimUrl,
+      deliveryOk: delivery.ok,
+      deliveryError: delivery.ok ? undefined : delivery.error || "Delivery failed",
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || "Server error" });
+  }
+});
+
+/* -------------------- CORE: GET GIFT (for claim page) -------------------- */
+router.get("/api/gifts/:publicId", async (req: Request, res: Response) => {
+  const publicId = String(req.params.publicId || "").trim();
+  if (!publicId) return res.status(400).json({ error: "Missing id" });
+
+  const pubCol = COL_PUBLIC_ID();
+  if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+
+  const rows = await db
+    .select()
+    .from(gifts)
+    .where(eq(pubCol as any, publicId))
+    .limit(1);
+
+  const g: any = rows?.[0];
+  if (!g) return res.status(404).json({ error: "Not found" });
+
+  const msgCol = COL_MESSAGE();
+  const amtCol = COL_AMOUNT();
+  const isClaimedCol = COL_IS_CLAIMED();
+  const createdAtCol = COL_CREATED_AT();
+
+  return res.json({
+    ok: true,
+    publicId,
+    message: msgCol ? g[(msgCol as any).name ?? "message"] : g.message,
+    amount: amtCol ? g[(amtCol as any).name ?? "amount"] : g.amount,
+    isClaimed: isClaimedCol ? g[(isClaimedCol as any).name ?? "isClaimed"] : g.isClaimed,
+    createdAt: createdAtCol ? g[(createdAtCol as any).name ?? "createdAt"] : g.createdAt,
+  });
+});
+
+/* -------------------- CORE: CLAIM GIFT -------------------- */
+router.post("/api/gifts/:publicId/claim", claimLimiter, async (req: Request, res: Response) => {
+  const publicId = String(req.params.publicId || "").trim();
+  if (!publicId) return res.status(400).json({ error: "Missing id" });
+
+  const pubCol = COL_PUBLIC_ID();
+  if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing publicId column" });
+
+  // Optional schema check (kept for future Turnstile-on-claim)
+  const parsed = ClaimSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+
+  const rows = await db
+    .select()
+    .from(gifts)
+    .where(eq(pubCol as any, publicId))
+    .limit(1);
+
+  const g: any = rows?.[0];
+  if (!g) return res.status(404).json({ error: "Not found" });
+
+  const isClaimedCol = COL_IS_CLAIMED();
+  const createdAtCol = COL_CREATED_AT();
+  const claimedAtCol = COL_CLAIMED_AT();
+
+  const isClaimed =
+    isClaimedCol ? !!g[(isClaimedCol as any).name ?? "isClaimed"] : !!g.isClaimed;
+
+  if (isClaimed) return res.status(400).json({ error: "Already claimed", code: "ALREADY_CLAIMED" });
+
+  // Optional minimum delay
+  const minDelaySec = Number(process.env.MIN_CLAIM_DELAY_SEC || 0);
+  if (minDelaySec > 0 && createdAtCol) {
+    const createdAt = new Date(g[(createdAtCol as any).name ?? "createdAt"]);
+    const now = Date.now();
+    const ageSec = Math.floor((now - createdAt.getTime()) / 1000);
+    if (ageSec < minDelaySec) {
+      return res.status(400).json({
+        error: "Please wait a moment before claiming.",
+        code: "TOO_SOON",
+        retryAfterSec: minDelaySec - ageSec,
+      });
+    }
+  }
+
+  const updateRow: Record<string, any> = {};
+  if (isClaimedCol) updateRow[(isClaimedCol as any).name ?? "isClaimed"] = true;
+  if (claimedAtCol) updateRow[(claimedAtCol as any).name ?? "claimedAt"] = new Date();
+
+  await db.update(gifts).set(updateRow as any).where(eq(pubCol as any, publicId));
+
+  logEvent("gift_claimed", { publicId });
+
+  return res.json({ ok: true });
+});
 
 /* -------------------- ADMIN: REMINDERS + RETURN TO SENDER -------------------- */
 /**
