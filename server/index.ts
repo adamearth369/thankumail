@@ -1,166 +1,64 @@
-type SendGiftEmailArgs = {
-  to: string;
-  claimLink: string; // can be relative "/claim/abc" or absolute
-  message: string;
-  amountCents: number;
-};
+import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
+import { registerRoutes } from "./routes";
 
-type SendGiftEmailResult =
-  | { ok: true; messageId: string }
-  | { ok: false; error: string };
+const app = express();
 
-function env(name: string, fallback = "") {
-  const v = process.env[name];
-  return (v ?? fallback).trim();
-}
+/* -------------------- basics -------------------- */
+app.disable("x-powered-by");
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
-}
+/* -------------------- debug /where -------------------- */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-function toAbsoluteClaimLink(claimLink: string) {
-  if (!claimLink) return claimLink;
-  if (/^https?:\/\//i.test(claimLink)) return claimLink;
+/**
+ * In dist, this file becomes dist/index.cjs.
+ * Public assets are emitted to dist/public by script/build.ts.
+ */
+const publicDir = path.resolve(process.cwd(), "dist", "public");
+app.get("/__where", (_req, res) => {
+  res.json({
+    ok: true,
+    nodeEnv: process.env.NODE_ENV,
+    cwd: process.cwd(),
+    publicDir,
+  });
+});
 
-  const base = env("BASE_URL", "").replace(/\/+$/, "");
-  if (!base) return claimLink;
+/* -------------------- health (non-spa) -------------------- */
+app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-  const path = claimLink.startsWith("/") ? claimLink : `/${claimLink}`;
-  return `${base}${path}`;
-}
+/* -------------------- API routes FIRST -------------------- */
+/**
+ * registerRoutes must mount all API endpoints (gifts, claim, etc).
+ * Ensure routes.ts mounts under /api (recommended) or directly.
+ */
+registerRoutes(app);
 
-function escapeHtml(input: string) {
-  return input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
+/* -------------------- static + SPA fallback (LAST) -------------------- */
+app.use(
+  express.static(publicDir, {
+    index: false,
+    maxAge: "1h",
+  })
+);
 
-function logEmail(event: string, fields: Record<string, any> = {}) {
-  console.log(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      event,
-      ...fields,
-    }),
-  );
-}
+// Never serve SPA for API paths
+app.get(/^\/api\/.*/, (_req, res) => {
+  res.status(404).json({ message: "Not found" });
+});
 
-function emailDomain(to: string) {
-  const parts = (to || "").split("@");
-  return parts.length === 2 ? parts[1] : "";
-}
+// SPA fallback for everything else
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(publicDir, "index.html"));
+});
 
-export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<SendGiftEmailResult> {
-  const started = Date.now();
-
-  try {
-    const to = (args.to || "").trim();
-    if (!isEmail(to)) {
-      return { ok: false, error: `Invalid recipient email: "${to}"` };
-    }
-
-    // For Brevo API sending, use BREVO_API_KEY (recommended).
-    // If user only set BREVO_SMTP_KEY, we fall back to it, but API key is preferred.
-    const apiKey = env("BREVO_API_KEY") || env("BREVO_SMTP_KEY");
-    if (!apiKey) {
-      return { ok: false, error: "Missing BREVO_API_KEY" };
-    }
-
-    const fromEmail = env("FROM_EMAIL", "noreply@thankumail.com");
-    const fromName = env("FROM_NAME", "ThankuMail");
-
-    const dollars = (args.amountCents / 100).toFixed(2);
-    const claimUrl = toAbsoluteClaimLink(args.claimLink);
-
-    const subject = `You received a ThanküMail gift ($${dollars})`;
-
-    const textContent = [
-      `You received a ThanküMail gift!`,
-      ``,
-      `Amount: $${dollars}`,
-      `Message: ${args.message}`,
-      ``,
-      `Claim here: ${claimUrl}`,
-    ].join("\n");
-
-    const htmlContent = `
-      <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
-        <h2 style="margin:0 0 12px">You received a ThanküMail gift 🎁</h2>
-        <p style="margin:0 0 8px"><b>Amount:</b> $${dollars}</p>
-        <p style="margin:0 0 8px"><b>Message:</b></p>
-        <p style="margin:0 0 16px; font-style:italic; color:#555">"${escapeHtml(args.message)}"</p>
-        <p style="margin:0 0 16px">
-          <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#7c3aed; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
-            Claim your gift →
-          </a>
-        </p>
-        <p style="margin:0; color:#777; font-size:13px">If you did not expect this, you can ignore this email.</p>
-      </div>
-    `;
-
-    const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
-
-    // IMPORTANT: never log api keys or full recipient email
-    logEmail("email_api_send_start", {
-      toDomain: emailDomain(to),
-      fromEmail,
-      endpoint,
-    });
-
-    // IMPORTANT: Brevo API uses header "api-key"
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": apiKey,
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        sender: { email: fromEmail, name: fromName },
-        to: [{ email: to }],
-        subject,
-        textContent,
-        htmlContent,
-      }),
-    });
-
-    const bodyText = await resp.text();
-    let bodyJson: any = null;
-    try {
-      bodyJson = bodyText ? JSON.parse(bodyText) : null;
-    } catch {
-      bodyJson = null;
-    }
-
-    if (!resp.ok) {
-      logEmail("email_api_send_failed", {
-        toDomain: emailDomain(to),
-        status: resp.status,
-        body: bodyJson ?? bodyText?.slice(0, 500),
-        ms: Date.now() - started,
-      });
-      return { ok: false, error: `Brevo API error (${resp.status})` };
-    }
-
-    const messageId = (bodyJson && (bodyJson.messageId || bodyJson["messageId"])) || "unknown";
-
-    logEmail("email_api_send_ok", {
-      toDomain: emailDomain(to),
-      messageId,
-      ms: Date.now() - started,
-    });
-
-    return { ok: true, messageId: String(messageId) };
-  } catch (err: any) {
-    const msg = String(err?.message || err);
-    logEmail("email_api_crash", {
-      message: msg,
-      code: err?.code,
-      ms: Date.now() - started,
-    });
-    return { ok: false, error: msg };
-  }
-}
+/* -------------------- listen -------------------- */
+const port = Number(process.env.PORT || 10000);
+app.listen(port, "0.0.0.0", () => {
+  console.log(`listening on ${port}`);
+});
