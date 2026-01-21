@@ -1,139 +1,154 @@
-import { useEffect, useState } from "react";
-import { useRoute } from "wouter";
+import React, { useEffect, useState } from "react";
+import { useLocation, useRoute } from "wouter";
+import { Button } from "@/components/ui/button";
 
-type Gift = {
-  publicId: string;
-  amount: number; // cents
-  message?: string;
-  senderEmail?: string;
-  isClaimed: boolean;
-};
+function apiBase() {
+  // TEMP SIMPLE FIX: hard-wire backend host for preview.
+  // Later we can switch to: import.meta.env.VITE_API_BASE_URL
+  return "https://thankumail-2.onrender.com";
+}
+
+type GiftGetResponse =
+  | { ok: true; publicId: string; message: string; amount: number; isClaimed: boolean; createdAt?: string | null }
+  | { error: string; code?: string; retryAfterSec?: number };
+
+type ClaimResponse =
+  | { ok: true }
+  | { error: string; code?: string; retryAfterSec?: number };
 
 export default function Claim() {
-  const [, params] = useRoute<{ id: string }>("/claim/:id");
-  const id = params?.id;
+  const [, setLocation] = useLocation();
+  const [, params] = useRoute("/claim/:id");
+  const id = (params as any)?.id || "";
 
-  const [gift, setGift] = useState<Gift | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [claiming, setClaiming] = useState(false);
+  const [gift, setGift] = useState<null | { message: string; amount: number; isClaimed: boolean }>(null);
+  const [error, setError] = useState<string>("");
 
   useEffect(() => {
-    if (!id) {
-      setError("This link is invalid or expired.");
-      setLoading(false);
-      return;
-    }
+    let alive = true;
 
-    async function loadGift() {
+    (async () => {
       try {
-        const res = await fetch(`/api/gifts/${id}`, {
-          headers: { Accept: "application/json" },
+        setLoading(true);
+        setError("");
+
+        const res = await fetch(`${apiBase()}/api/gifts/${encodeURIComponent(id)}`, {
+          method: "GET",
+          headers: { "accept": "application/json" },
         });
 
-        if (!res.ok) {
-          // Avoid throwing noisy HTML into the UI; log it for debugging
-          const text = await res.text().catch(() => "");
-          console.error("Gift fetch failed:", res.status, text);
-          throw new Error(`Fetch failed (${res.status})`);
+        const data = (await res.json().catch(() => null)) as GiftGetResponse | null;
+
+        if (!alive) return;
+
+        if (!res.ok || !data) {
+          setGift(null);
+          setError((data as any)?.error || `Unable to load gift (${res.status})`);
+          return;
         }
 
-        const data = (await res.json()) as Gift;
-        setGift(data);
-      } catch (e) {
-        setError("This link is invalid or expired.");
+        if ("error" in data) {
+          setGift(null);
+          setError(data.error || "Unable to load gift");
+          return;
+        }
+
+        setGift({ message: data.message || "", amount: data.amount || 0, isClaimed: !!data.isClaimed });
+      } catch (e: any) {
+        if (!alive) return;
+        setGift(null);
+        setError(e?.message || "Unable to load gift");
       } finally {
+        if (!alive) return;
         setLoading(false);
       }
-    }
+    })();
 
-    loadGift();
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
+  async function claim() {
+    try {
+      setClaiming(true);
+      setError("");
+
+      const res = await fetch(`${apiBase()}/api/gifts/${encodeURIComponent(id)}/claim`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "accept": "application/json" },
+        body: JSON.stringify({ turnstileToken: "test" }),
+      });
+
+      const data = (await res.json().catch(() => null)) as ClaimResponse | null;
+
+      if (!res.ok || !data) {
+        setError((data as any)?.error || `Claim failed (${res.status})`);
+        return;
+      }
+
+      if ("error" in data) {
+        setError(data.error || "Claim failed");
+        return;
+      }
+
+      // success → go to a simple confirmation route (if you have it),
+      // otherwise just reload gift state.
+      setLocation(`/claim/${id}?claimed=1`);
+      window.location.reload();
+    } catch (e: any) {
+      setError(e?.message || "Claim failed");
+    } finally {
+      setClaiming(false);
+    }
+  }
+
   if (loading) {
-    return <div style={{ padding: 24 }}>Loading your gift…</div>;
+    return (
+      <div className="mx-auto max-w-xl p-6">
+        <div className="text-lg font-semibold">Loading…</div>
+      </div>
+    );
   }
 
   if (error) {
     return (
-      <div style={{ padding: 24 }}>
-        <h2>We couldn’t open this gift.</h2>
-        <p>{error}</p>
-        <p>
-          <a href="/">Go home</a>
-        </p>
+      <div className="mx-auto max-w-xl p-6">
+        <div className="text-lg font-semibold">Something went wrong</div>
+        <div className="mt-2 text-sm opacity-80">{error}</div>
       </div>
     );
   }
 
   if (!gift) {
     return (
-      <div style={{ padding: 24 }}>
-        <h2>We couldn’t open this gift.</h2>
-        <p>This link is invalid or expired.</p>
-        <p>
-          <a href="/">Go home</a>
-        </p>
+      <div className="mx-auto max-w-xl p-6">
+        <div className="text-lg font-semibold">Gift not found</div>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: 24 }}>
-      <h2>You received a ThankuMail</h2>
+    <div className="mx-auto max-w-xl p-6 space-y-4">
+      <div className="text-2xl font-bold">You’ve got a ThankuMail</div>
 
-      {gift.message ? (
-        <p style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>{gift.message}</p>
-      ) : (
-        <p style={{ marginTop: 12, opacity: 0.8 }}>A message first.</p>
-      )}
+      <div className="rounded-2xl border p-4 space-y-3">
+        <div className="text-sm opacity-70">Message</div>
+        <div className="whitespace-pre-wrap">{gift.message || "—"}</div>
 
-      <p style={{ marginTop: 12 }}>
-        <b>Amount:</b> ${(gift.amount / 100).toFixed(2)}
-      </p>
+        <div className="pt-2 text-sm opacity-70">Amount</div>
+        <div className="text-lg font-semibold">${(gift.amount / 100).toFixed(2)}</div>
 
-      {gift.senderEmail && (
-        <p>
-          <b>From:</b> {gift.senderEmail}
-        </p>
-      )}
-
-      {gift.isClaimed ? (
-        <p style={{ marginTop: 18, color: "#b00" }}>This gift has already been claimed.</p>
-      ) : (
-        <button
-          style={{
-            marginTop: 18,
-            padding: "10px 14px",
-            borderRadius: 8,
-            border: "none",
-            background: "#111",
-            color: "#fff",
-            cursor: "pointer",
-          }}
-          onClick={async () => {
-            try {
-              const res = await fetch(`/api/gifts/${id}/claim`, {
-                method: "POST",
-                headers: { Accept: "application/json" },
-              });
-
-              if (!res.ok) {
-                const text = await res.text().catch(() => "");
-                console.error("Claim failed:", res.status, text);
-                throw new Error(`Claim failed (${res.status})`);
-              }
-
-              await res.json().catch(() => null);
-              setGift({ ...gift, isClaimed: true });
-              alert("Gift claimed!");
-            } catch (e) {
-              alert("Failed to claim gift. Please try again.");
-            }
-          }}
-        >
-          Claim your gift
-        </button>
-      )}
+        {gift.isClaimed ? (
+          <div className="pt-3 text-sm font-semibold">Already claimed ✅</div>
+        ) : (
+          <Button onClick={claim} disabled={claiming} className="w-full mt-3">
+            {claiming ? "Claiming…" : "Claim"}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
