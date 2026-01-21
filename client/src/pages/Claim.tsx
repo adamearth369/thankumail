@@ -1,3 +1,4 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
 import React, { useEffect, useState } from "react";
 import { useLocation, useRoute } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -12,9 +13,7 @@ type GiftGetResponse =
   | { ok: true; publicId: string; message: string; amount: number; isClaimed: boolean; createdAt?: string | null }
   | { error: string; code?: string; retryAfterSec?: number };
 
-type ClaimResponse =
-  | { ok: true }
-  | { error: string; code?: string; retryAfterSec?: number };
+type ClaimResponse = { ok: true } | { error: string; code?: string; retryAfterSec?: number };
 
 export default function Claim() {
   const [, setLocation] = useLocation();
@@ -36,7 +35,7 @@ export default function Claim() {
 
         const res = await fetch(`${apiBase()}/api/gifts/${encodeURIComponent(id)}`, {
           method: "GET",
-          headers: { "accept": "application/json" },
+          headers: { accept: "application/json" },
         });
 
         const data = (await res.json().catch(() => null)) as GiftGetResponse | null;
@@ -78,7 +77,7 @@ export default function Claim() {
 
       const res = await fetch(`${apiBase()}/api/gifts/${encodeURIComponent(id)}/claim`, {
         method: "POST",
-        headers: { "content-type": "application/json", "accept": "application/json" },
+        headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({ turnstileToken: "test" }),
       });
 
@@ -94,8 +93,6 @@ export default function Claim() {
         return;
       }
 
-      // success → go to a simple confirmation route (if you have it),
-      // otherwise just reload gift state.
       setLocation(`/claim/${id}?claimed=1`);
       window.location.reload();
     } catch (e: any) {
