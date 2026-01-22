@@ -1,103 +1,101 @@
-import React, { useMemo, useState } from "react";
+// client/src/pages/Home.tsx
+import React, { useEffect, useMemo, useState } from "react";
 import CreateGiftForm from "../components/CreateGiftForm";
 
-function absoluteLink(pathOrUrl: string) {
-  if (!pathOrUrl) return pathOrUrl;
-  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const path = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
-  return `${origin}${path}`;
+function getLastLinkKey() {
+  return "thankumail:lastClaimUrl";
 }
 
-function safeText(v: any) {
-  return typeof v === "string" ? v : "";
+function safeGetLastClaimUrl() {
+  try {
+    return localStorage.getItem(getLastLinkKey()) || "";
+  } catch {
+    return "";
+  }
+}
+
+function safeSetLastClaimUrl(url: string) {
+  try {
+    localStorage.setItem(getLastLinkKey(), url);
+  } catch {
+    // ignore
+  }
+}
+
+function isValidHttpUrl(s: string) {
+  try {
+    const u = new URL(s);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 export default function Home() {
-  const [copied, setCopied] = useState(false);
+  const [lastUrl, setLastUrl] = useState("");
 
-  const lastPublicId = useMemo(() => {
-    try {
-      return safeText(localStorage.getItem("tm_last_publicId") || "");
-    } catch {
-      return "";
-    }
+  useEffect(() => {
+    setLastUrl(safeGetLastClaimUrl());
   }, []);
 
-  const claimUrl = useMemo(() => {
-    if (!lastPublicId) return "";
-    return absoluteLink(`/claim/${encodeURIComponent(lastPublicId)}`);
-  }, [lastPublicId]);
+  const hasLast = useMemo(() => isValidHttpUrl(lastUrl), [lastUrl]);
 
-  async function copyLink() {
-    if (!claimUrl) return;
-    try {
-      await navigator.clipboard.writeText(claimUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      // ignore
-    }
+  function copyLast() {
+    if (!hasLast) return;
+    navigator.clipboard?.writeText(lastUrl).catch(() => {});
   }
 
+  function openLast() {
+    if (!hasLast) return;
+    window.location.href = lastUrl;
+  }
+
+  // Optional: keep last link in sync if CreateGiftForm stores it (common pattern)
+  // If your CreateGiftForm already calls localStorage.setItem("thankumail:lastClaimUrl", claimUrl)
+  // then the next refresh shows it. If you want it to live-update immediately, we can wire a callback later.
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white via-white to-violet-50 text-slate-900">
-      <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-2xl bg-violet-600 shadow-sm" />
-          <div className="leading-tight">
-            <div className="text-sm font-semibold tracking-tight">ThanküMail</div>
-            <div className="text-xs text-slate-500">Send a gift with a real message.</div>
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px 16px" }}>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 36, fontWeight: 900, letterSpacing: -0.5 }}>ThanküMail</div>
+        <div style={{ marginTop: 6, fontSize: 16, opacity: 0.9 }}>Send a gift with a real message.</div>
+
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 28, fontWeight: 900 }}>A small gift. A message they’ll remember.</div>
+          <div style={{ marginTop: 8, fontSize: 16, opacity: 0.9 }}>
+            Your words arrive first. The gift follows when they’re ready.
           </div>
         </div>
-      </header>
+      </div>
 
-      <main className="mx-auto grid max-w-6xl grid-cols-1 gap-10 px-6 pb-20 pt-6 lg:grid-cols-2">
-        <section>
-          <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
-            A small gift.
-            <span className="block text-violet-700">A message they’ll remember.</span>
-          </h1>
-          <p className="mt-4 max-w-xl text-base leading-relaxed text-slate-600">
-            Your words arrive first. The gift follows when they’re ready.
-          </p>
+      <div style={{ marginTop: 18, padding: 14, border: "1px solid #e6e6e6", borderRadius: 14 }}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>Last ThanküMail link</div>
 
-          {claimUrl ? (
-            <div className="mt-6 rounded-3xl border border-violet-100 bg-white p-5 text-sm text-slate-700 shadow-sm">
-              <div className="font-semibold text-slate-900">Last ThanküMail link</div>
-              <div className="mt-2 break-all rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-xs text-slate-800">
-                {claimUrl}
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={copyLink}
-                  className="rounded-2xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-700"
-                >
-                  {copied ? "Copied" : "Copy link"}
-                </button>
-
-                <a
-                  href={claimUrl}
-                  className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-violet-200"
-                >
-                  Open claim page →
-                </a>
-              </div>
-
-              <div className="mt-2 text-xs text-slate-500">
-                Tip: This saves your latest link in your browser so you can grab it again easily.
-              </div>
+        {!hasLast ? (
+          <div style={{ opacity: 0.8 }}>None yet.</div>
+        ) : (
+          <>
+            <div style={{ wordBreak: "break-all" }}>{lastUrl}</div>
+            <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button type="button" onClick={copyLast}>
+                Copy link
+              </button>
+              <button type="button" onClick={openLast}>
+                Open claim page →
+              </button>
             </div>
-          ) : null}
-        </section>
+          </>
+        )}
 
-        <section>
-          {/* Presets + CAPTCHA live inside CreateGiftForm */}
-          <CreateGiftForm />
-        </section>
-      </main>
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>
+          Tip: This saves your latest link in your browser so you can grab it again easily.
+        </div>
+      </div>
+
+      <div style={{ marginTop: 26 }}>
+        <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 10 }}>Create a ThanküMail</div>
+        <CreateGiftForm />
+      </div>
     </div>
   );
 }
