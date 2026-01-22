@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
-import { registerRoutes } from "./routes";
+import router from "./routes";
 
 const app = express();
 
@@ -21,7 +21,6 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
   })
 );
-// handle preflight
 app.options("*", cors());
 
 /* -------------------- paths -------------------- */
@@ -42,7 +41,11 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* -------------------- API routes FIRST -------------------- */
-registerRoutes(app);
+/**
+ * routes.ts already prefixes paths with /api/...
+ * So we mount it at root.
+ */
+app.use(router);
 
 /* -------------------- static + SPA fallback (LAST) -------------------- */
 app.use(
