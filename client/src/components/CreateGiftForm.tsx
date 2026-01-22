@@ -1,3 +1,4 @@
+// client/src/components/CreateGiftForm.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type CreateGiftOk = {
@@ -6,14 +7,63 @@ type CreateGiftOk = {
   claimUrl: string;
   deliveryOk?: boolean;
 };
+
 type CreateGiftErr = {
   error: string;
-  field?: string;
   code?: string;
-  retryAfterSec?: number;
+  field?: string;
   issues?: any[];
+  retryAfterSec?: number;
+  codes?: string[];
 };
+
 type CreateGiftResponse = CreateGiftOk | CreateGiftErr;
+
+function isEmail(s: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
+}
+
+function isE164Phone(s: string) {
+  // +15551234567 (min 8 digits after +, max 15)
+  return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
+}
+
+function getApiBase() {
+  const v = (import.meta as any).env?.VITE_API_BASE_URL || "";
+  return String(v || "").replace(/\/+$/, "");
+}
+
+function getTurnstileSiteKey() {
+  return (
+    (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY ||
+    (import.meta as any).env?.VITE_PUBLIC_TURNSTILE_SITE_KEY ||
+    (import.meta as any).env?.VITE_PUBLIC_TURNSTILE_SITEKEY ||
+    ""
+  );
+}
+
+function readLocalLastLink() {
+  try {
+    return localStorage.getItem("thankumail:lastClaimUrl") || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeLocalLastLink(url: string) {
+  try {
+    localStorage.setItem("thankumail:lastClaimUrl", url);
+  } catch {}
+}
+
+async function readJson(res: Response) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text || `HTTP ${res.status}` };
+  }
+}
 
 declare global {
   interface Window {
@@ -21,298 +71,362 @@ declare global {
   }
 }
 
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
-}
-function isE164(s: string) {
-  return /^\+[1-9]\d{1,14}$/.test(s.trim());
-}
-function moneyToCentsFromLabel(label: string) {
-  const n = Number(String(label).replace(/[^0-9.]/g, ""));
-  const cents = Math.round(n * 100);
-  return Number.isFinite(cents) ? cents : 0;
-}
-function absoluteLink(maybeRelative: string) {
-  if (!maybeRelative) return maybeRelative;
-  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
-  return `${origin}${path}`;
-}
-
-const TURNSTILE_SITE_KEY =
-  (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY ||
-  (import.meta as any).env?.VITE_PUBLIC_TURNSTILE_SITE_KEY ||
-  "";
-
-const AMOUNTS = ["$10", "$25", "$50", "$100"] as const;
-
-const PRESETS = [
+const PRESET_MESSAGES = [
   "Someone wanted you to know they’re genuinely grateful for you. Thank you.",
-  "I appreciate you more than you know. This is a small thank you for a real impact.",
-  "You made my day easier. I wanted to send something back with a sincere message.",
   "No big speech — just gratitude. Thank you for showing up the way you did.",
-] as const;
+  "You made my day easier. I wanted to send something back with a sincere message.",
+  "You matter to people in a meaningful way. Your presence and actions had a positive impact. Thank you.",
+  "I appreciate you more than you know. This is a small thank you for a real impact.",
+];
+
+const AMOUNTS = [
+  { label: "$10", cents: 1000 },
+  { label: "$25", cents: 2500 },
+  { label: "$50", cents: 5000 },
+  { label: "$100", cents: 10000 },
+];
 
 export default function CreateGiftForm() {
+  const apiBase = useMemo(() => getApiBase(), []);
+  const turnstileSiteKey = useMemo(() => getTurnstileSiteKey(), []);
+
   const [senderEmail, setSenderEmail] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
-  const [message, setMessage] = useState<string>(PRESETS[0]);
-  const [amountLabel, setAmountLabel] = useState<(typeof AMOUNTS)[number]>("$10");
+  const [message, setMessage] = useState(PRESET_MESSAGES[0]);
+  const [amount, setAmount] = useState<number>(AMOUNTS[0].cents);
 
+  const [creating, setCreating] = useState(false);
+  const [statusLine, setStatusLine] = useState("");
+  const [error, setError] = useState("");
+  const [lastClaimUrl, setLastClaimUrl] = useState(readLocalLastLink());
+
+  // Turnstile
+  const turnstileDivRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetIdRef = useRef<any>(null);
   const [turnstileToken, setTurnstileToken] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [success, setSuccess] = useState("");
-  const [lastClaimUrl, setLastClaimUrl] = useState("");
 
-  const widgetRef = useRef<HTMLDivElement | null>(null);
-  const widgetIdRef = useRef<any>(null);
-  const successTimerRef = useRef<any>(null);
+  const createUrl = useMemo(() => {
+    const path = `/api/gifts`;
+    return apiBase ? `${apiBase}${path}` : path;
+  }, [apiBase]);
 
-  const amount = useMemo(() => moneyToCentsFromLabel(amountLabel), [amountLabel]);
-
-  function setSuccessSticky(msg: string) {
-    setSuccess(msg);
-    if (successTimerRef.current) clearTimeout(successTimerRef.current);
-    successTimerRef.current = setTimeout(() => setSuccess(""), 5000);
-  }
-
-  // load last link
   useEffect(() => {
-    try {
-      const v = localStorage.getItem("thankumail:lastClaimUrl") || "";
-      if (v) setLastClaimUrl(v);
-    } catch {}
-    return () => {
-      if (successTimerRef.current) clearTimeout(successTimerRef.current);
-    };
+    // keep last link in sync if user opens in another tab
+    const t = setInterval(() => {
+      const v = readLocalLastLink();
+      if (v && v !== lastClaimUrl) setLastClaimUrl(v);
+    }, 1000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load Turnstile script + render widget
   useEffect(() => {
-    setTurnstileToken("");
+    if (!turnstileSiteKey) return;
 
-    if (!TURNSTILE_SITE_KEY) return;
+    // load Turnstile script once
+    const id = "cf-turnstile-script";
+    if (!document.getElementById(id)) {
+      const s = document.createElement("script");
+      s.id = id;
+      s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      s.async = true;
+      s.defer = true;
+      document.head.appendChild(s);
+    }
 
-    const existing = document.querySelector('script[data-turnstile="1"]') as HTMLScriptElement | null;
+    let cancelled = false;
 
-    const renderWidget = () => {
-      if (!window.turnstile || !widgetRef.current) return;
+    const tryRender = () => {
+      if (cancelled) return;
+      if (!window.turnstile) return;
 
-      try {
-        if (widgetIdRef.current != null) {
-          window.turnstile.remove(widgetIdRef.current);
-          widgetIdRef.current = null;
-        }
-      } catch {}
+      if (!turnstileDivRef.current) return;
 
-      widgetIdRef.current = window.turnstile.render(widgetRef.current, {
-        sitekey: TURNSTILE_SITE_KEY,
-        callback: (token: string) => setTurnstileToken(token || ""),
-        "expired-callback": () => setTurnstileToken(""),
-        "error-callback": () => setTurnstileToken(""),
+      // avoid duplicate renders
+      if (turnstileWidgetIdRef.current != null) return;
+
+      turnstileWidgetIdRef.current = window.turnstile.render(turnstileDivRef.current, {
+        sitekey: turnstileSiteKey,
+        theme: "light",
+        callback: (token: string) => {
+          setTurnstileToken(String(token || ""));
+          setError("");
+        },
+        "error-callback": () => {
+          setTurnstileToken("");
+        },
+        "expired-callback": () => {
+          setTurnstileToken("");
+        },
       });
     };
 
-    if (existing) {
-      const t = setInterval(() => {
-        if (window.turnstile) {
-          clearInterval(t);
-          renderWidget();
+    const iv = setInterval(() => {
+      tryRender();
+      if (window.turnstile && turnstileWidgetIdRef.current != null) clearInterval(iv);
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+      try {
+        if (window.turnstile && turnstileWidgetIdRef.current != null) {
+          window.turnstile.remove(turnstileWidgetIdRef.current);
         }
-      }, 100);
-      return () => clearInterval(t);
-    }
+      } catch {}
+      turnstileWidgetIdRef.current = null;
+      setTurnstileToken("");
+    };
+  }, [turnstileSiteKey]);
 
-    const s = document.createElement("script");
-    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
-    s.async = true;
-    s.defer = true;
-    s.setAttribute("data-turnstile", "1");
-    s.onload = () => renderWidget();
-    document.head.appendChild(s);
-
-    const t = setInterval(() => {
-      if (window.turnstile) {
-        clearInterval(t);
-        renderWidget();
+  function resetTurnstile() {
+    try {
+      if (window.turnstile && turnstileWidgetIdRef.current != null) {
+        window.turnstile.reset(turnstileWidgetIdRef.current);
       }
-    }, 100);
+    } catch {}
+    setTurnstileToken("");
+  }
 
-    return () => clearInterval(t);
-  }, []);
-
-  async function submit() {
-    setErr("");
-    setSuccess("");
+  async function onCreate() {
+    setError("");
+    setStatusLine("");
 
     const se = senderEmail.trim();
     const re = recipientEmail.trim();
     const rp = recipientPhone.trim();
 
-    if (se && !isEmail(se)) return setErr("Sender email looks invalid.");
-    if (!re && !rp) return setErr("Recipient email or phone is required.");
-    if (re && !isEmail(re)) return setErr("Recipient email looks invalid.");
-    if (rp && !isE164(rp)) return setErr("Phone must be E.164 (example: +15551234567).");
-    if (!message.trim()) return setErr("Message is required.");
-    if (!amount || amount < 1000) return setErr("Minimum amount is $10.");
-    if (!turnstileToken) return setErr("Please complete the CAPTCHA.");
+    if (se && !isEmail(se)) {
+      setError("Sender email looks invalid.");
+      return;
+    }
 
-    setBusy(true);
+    const hasEmail = !!re;
+    const hasPhone = !!rp;
 
-    // IMPORTANT: show immediate feedback so user always sees it
-    setSuccessSticky("Creating…");
+    if (!hasEmail && !hasPhone) {
+      setError("Recipient email or phone is required. Phone must be E.164 (example: +15551234567).");
+      return;
+    }
+    if (hasEmail && !isEmail(re)) {
+      setError("Recipient email looks invalid.");
+      return;
+    }
+    if (hasPhone && !isE164Phone(rp)) {
+      setError("Recipient phone must be E.164 (example: +15551234567).");
+      return;
+    }
+
+    if (!turnstileSiteKey) {
+      setError("Missing VITE_TURNSTILE_SITE_KEY in frontend env.");
+      return;
+    }
+    if (!turnstileToken) {
+      setError("Please complete the CAPTCHA.");
+      return;
+    }
+
+    setCreating(true);
+    setStatusLine("Creating…");
 
     try {
-      const res = await fetch("/api/gifts", {
+      const payload: any = {
+        senderEmail: se || undefined,
+        recipientEmail: re || undefined,
+        recipientPhone: rp || undefined,
+        message: String(message || "").trim(),
+        amount: Number(amount || 0),
+        turnstileToken,
+      };
+
+      const res = await fetch(createUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          senderEmail: se || undefined,
-          recipientEmail: re || undefined,
-          recipientPhone: rp || undefined,
-          message,
-          amount,
-          turnstileToken,
-        }),
+        body: JSON.stringify(payload),
       });
 
-      const text = await res.text();
-      const data: CreateGiftResponse = (() => {
-        try {
-          return JSON.parse(text);
-        } catch {
-          return { error: text || `HTTP ${res.status}` };
-        }
-      })();
+      const data = (await readJson(res)) as CreateGiftResponse;
 
-      if (!res.ok || "error" in data) {
-        setSuccess(""); // clear "Creating…"
-        setErr((data as any)?.error || `Request failed (HTTP ${res.status})`);
-        setTurnstileToken("");
-        try {
-          if (window.turnstile && widgetIdRef.current != null) window.turnstile.reset(widgetIdRef.current);
-        } catch {}
+      if (!res.ok || (data && typeof data === "object" && "error" in data)) {
+        const msg =
+          (data as any)?.error ||
+          (data as any)?.message ||
+          `Create failed (HTTP ${res.status})`;
+
+        setError(String(msg));
+        setStatusLine("");
+        resetTurnstile();
         return;
       }
 
-      const claimUrlAbs = absoluteLink((data as CreateGiftOk).claimUrl);
+      const ok = data as CreateGiftOk;
+      const claim = ok.claimUrl || (ok.publicId ? `${window.location.origin}/claim/${ok.publicId}` : "");
 
-      setLastClaimUrl(claimUrlAbs);
-      try {
-        localStorage.setItem("thankumail:lastClaimUrl", claimUrlAbs);
-      } catch {}
+      if (claim) {
+        writeLocalLastLink(claim);
+        setLastClaimUrl(claim);
+      }
 
-      // show success and keep it visible even after we reset fields
-      setSuccessSticky("Sent. Your message is on its way.");
+      setStatusLine("Sent. Your message is on its way.");
+      // Polished copy for Option B:
+      // (keeps it short + emotionally aligned)
+      // shown directly under the status line
+      setCreating(false);
 
-      // reset form (keep sender email)
+      // clear fields lightly (keep sender as convenience)
       setRecipientEmail("");
       setRecipientPhone("");
-      setMessage(PRESETS[0]);
-      setAmountLabel("$10");
+      setMessage(PRESET_MESSAGES[0]);
+      setAmount(AMOUNTS[0].cents);
 
-      // reset captcha after success
-      setTurnstileToken("");
-      try {
-        if (window.turnstile && widgetIdRef.current != null) window.turnstile.reset(widgetIdRef.current);
-      } catch {}
+      resetTurnstile();
+    } catch (e: any) {
+      setError(e?.message || "Network error.");
+      setStatusLine("");
+      resetTurnstile();
     } finally {
-      setBusy(false);
+      setCreating(false);
     }
   }
 
-  async function copyLink() {
-    if (!lastClaimUrl) return;
-    try {
-      await navigator.clipboard.writeText(lastClaimUrl);
-      setSuccessSticky("Link copied.");
-    } catch {}
-  }
-
   return (
-    <div style={{ maxWidth: 760, padding: "18px 14px" }}>
-      <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800 }}>ThankuMail</h1>
-      <div style={{ marginTop: 6, fontSize: 18 }}>Send a gift with a real message.</div>
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 28, fontWeight: 900, marginBottom: 6 }}>ThanküMail</div>
+      <div style={{ fontSize: 16, opacity: 0.9 }}>Send a gift with a real message.</div>
 
-      <div style={{ marginTop: 14, fontSize: 22, fontWeight: 800 }}>
-        A small gift. A message they’ll remember.
-      </div>
+      <div style={{ marginTop: 16, fontSize: 26, fontWeight: 900 }}>A small gift. A message they’ll remember.</div>
       <div style={{ marginTop: 6, fontSize: 16, opacity: 0.9 }}>
         Your words arrive first. The gift follows when they’re ready.
       </div>
 
-      <div style={{ marginTop: 18, paddingTop: 10 }}>
-        <div style={{ fontWeight: 800, marginBottom: 6 }}>Last ThankuMail link</div>
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontWeight: 800, marginBottom: 6 }}>Last ThanküMail link</div>
         {lastClaimUrl ? (
           <>
-            <div style={{ wordBreak: "break-all" }}>{lastClaimUrl}</div>
-            <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
-              <button type="button" onClick={copyLink}>Copy link</button>
-              <a href={lastClaimUrl} target="_blank" rel="noreferrer">Open claim page →</a>
+            <div style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{lastClaimUrl}</div>
+            <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(lastClaimUrl);
+                  } catch {}
+                }}
+              >
+                Copy link
+              </button>
+              <a href={lastClaimUrl} style={{ textDecoration: "none" }}>
+                Open claim page →
+              </a>
+            </div>
+            <div style={{ marginTop: 8, opacity: 0.85 }}>
+              Tip: This saves your latest link in your browser so you can grab it again easily.
             </div>
           </>
         ) : (
-          <div style={{ opacity: 0.75 }}>None yet.</div>
+          <div style={{ opacity: 0.8 }}>None yet.</div>
         )}
       </div>
 
-      <h2 style={{ marginTop: 22, marginBottom: 10 }}>Create a ThankuMail</h2>
+      <div style={{ marginTop: 26, fontSize: 18, fontWeight: 900 }}>Create a ThanküMail</div>
 
-      <div style={{ display: "grid", gap: 10 }}>
-        <label style={{ display: "grid", gap: 6 }}>
-          <div>Sender email (optional)</div>
-          <input value={senderEmail} onChange={(e) => setSenderEmail(e.target.value)} placeholder="you@example.com" />
-        </label>
+      <div style={{ marginTop: 14 }}>
+        <div style={{ marginTop: 10, fontWeight: 700 }}>Sender email (optional)</div>
+        <input
+          value={senderEmail}
+          onChange={(e) => setSenderEmail(e.target.value)}
+          placeholder="you@example.com"
+          style={{ width: "100%", padding: "10px 12px", marginTop: 6 }}
+        />
 
-        <label style={{ display: "grid", gap: 6 }}>
-          <div>Recipient email (optional)</div>
-          <input value={recipientEmail} onChange={(e) => setRecipientEmail(e.target.value)} placeholder="friend@example.com" />
-        </label>
+        <div style={{ marginTop: 14, fontWeight: 700 }}>Recipient email (optional)</div>
+        <input
+          value={recipientEmail}
+          onChange={(e) => setRecipientEmail(e.target.value)}
+          placeholder="friend@example.com"
+          style={{ width: "100%", padding: "10px 12px", marginTop: 6 }}
+        />
 
-        <label style={{ display: "grid", gap: 6 }}>
-          <div>Recipient phone (optional, E.164)</div>
-          <input value={recipientPhone} onChange={(e) => setRecipientPhone(e.target.value)} placeholder="+15551234567" />
-        </label>
+        <div style={{ marginTop: 14, fontWeight: 700 }}>Recipient phone (optional, E.164)</div>
+        <input
+          value={recipientPhone}
+          onChange={(e) => setRecipientPhone(e.target.value)}
+          placeholder="+15551234567"
+          style={{ width: "100%", padding: "10px 12px", marginTop: 6 }}
+        />
 
-        <label style={{ display: "grid", gap: 6 }}>
-          <div>Message</div>
-          <select value={message} onChange={(e) => setMessage(e.target.value)}>
-            {PRESETS.map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </label>
+        <div style={{ marginTop: 14, fontWeight: 700 }}>Message</div>
+        <select
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          style={{ width: "100%", padding: "10px 12px", marginTop: 6 }}
+        >
+          {PRESET_MESSAGES.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div>Amount</div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {AMOUNTS.map((a) => (
-              <button key={a} type="button" onClick={() => setAmountLabel(a)} aria-pressed={amountLabel === a}>
-                {a}
+        <div style={{ marginTop: 16, fontWeight: 700 }}>Amount</div>
+        <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {AMOUNTS.map((a) => {
+            const selected = amount === a.cents;
+            return (
+              <button
+                key={a.cents}
+                type="button"
+                onClick={() => setAmount(a.cents)}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  border: selected ? "2px solid #111" : "1px solid #ccc",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                {a.label}
               </button>
-            ))}
+            );
+          })}
+        </div>
+
+        <div style={{ marginTop: 18, fontSize: 12, letterSpacing: 0.6, opacity: 0.85 }}>CAPTCHA</div>
+
+        {!turnstileSiteKey ? (
+          <div style={{ marginTop: 8, color: "crimson", fontWeight: 800 }}>
+            Missing VITE_TURNSTILE_SITE_KEY in frontend env.
           </div>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            <div ref={turnstileDivRef} />
+          </div>
+        )}
+
+        {error ? (
+          <div style={{ marginTop: 12, color: "crimson", fontWeight: 900 }}>{error}</div>
+        ) : null}
+
+        <div style={{ marginTop: 18 }}>
+          <button
+            type="button"
+            onClick={onCreate}
+            disabled={creating}
+            style={{ padding: "12px 14px", fontWeight: 900, minWidth: 160 }}
+          >
+            {creating ? "Creating…" : "Create gift"}
+          </button>
         </div>
 
-        <div style={{ marginTop: 6 }}>
-          <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.85 }}>CAPTCHA</div>
-          <div ref={widgetRef} />
-          {!TURNSTILE_SITE_KEY ? (
-            <div style={{ marginTop: 6, fontSize: 12, color: "crimson" }}>
-              Missing VITE_TURNSTILE_SITE_KEY in frontend env.
+        {statusLine ? (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 900, color: "green" }}>{statusLine}</div>
+            <div style={{ marginTop: 6, opacity: 0.9 }}>
+              Your words arrive first. The gift follows when they’re ready.
             </div>
-          ) : null}
-        </div>
-
-        {err ? <div style={{ color: "crimson", fontWeight: 700 }}>{err}</div> : null}
-        {success ? <div style={{ color: "green", fontWeight: 800 }}>{success}</div> : null}
-
-        <button type="button" onClick={submit} disabled={busy} style={{ padding: "10px 12px" }}>
-          {busy ? "Creating…" : "Create gift"}
-        </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
