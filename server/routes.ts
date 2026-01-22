@@ -1,6 +1,6 @@
 // server/routes.ts
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
@@ -55,7 +55,11 @@ const E164 = /^\+[1-9]\d{7,14}$/;
 const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email(),
-    recipientEmail: z.string().optional().or(z.literal("")).transform((v) => (typeof v === "string" ? v.trim() : "")),
+    recipientEmail: z
+      .string()
+      .optional()
+      .or(z.literal(""))
+      .transform((v) => (typeof v === "string" ? v.trim() : "")),
     recipientPhone: z
       .string()
       .optional()
@@ -201,7 +205,13 @@ router.get("/api/gifts/:publicId", async (req: Request, res: Response) => {
   if (!publicId) return res.status(400).json({ error: "Missing id" });
 
   // Prefer whichever public id column exists
-  const pubCol = hasCol("public_id") ? col("public_id") : hasCol("publicId") ? col("publicId") : hasCol("publicID") ? col("publicID") : null;
+  const pubCol = hasCol("public_id")
+    ? col("public_id")
+    : hasCol("publicId")
+      ? col("publicId")
+      : hasCol("publicID")
+        ? col("publicID")
+        : null;
   if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing public id column mapping" });
 
   const rows = await db.select().from(gifts).where(eq(pubCol as any, publicId)).limit(1);
@@ -226,7 +236,13 @@ router.post("/api/gifts/:publicId/claim", claimLimiter, async (req: Request, res
   const parsed = ClaimSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
 
-  const pubCol = hasCol("public_id") ? col("public_id") : hasCol("publicId") ? col("publicId") : hasCol("publicID") ? col("publicID") : null;
+  const pubCol = hasCol("public_id")
+    ? col("public_id")
+    : hasCol("publicId")
+      ? col("publicId")
+      : hasCol("publicID")
+        ? col("publicID")
+        : null;
   if (!pubCol) return res.status(500).json({ error: "Server misconfigured: missing public id column mapping" });
 
   const rows = await db.select().from(gifts).where(eq(pubCol as any, publicId)).limit(1);
@@ -240,7 +256,11 @@ router.post("/api/gifts/:publicId/claim", claimLimiter, async (req: Request, res
   if (minDelaySec > 0 && createdAt) {
     const ageSec = Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000);
     if (ageSec < minDelaySec) {
-      return res.status(400).json({ error: "Please wait a moment before claiming.", code: "TOO_SOON", retryAfterSec: minDelaySec - ageSec });
+      return res.status(400).json({
+        error: "Please wait a moment before claiming.",
+        code: "TOO_SOON",
+        retryAfterSec: minDelaySec - ageSec,
+      });
     }
   }
 
@@ -271,7 +291,13 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
   const cutoffCreated = new Date(now.getTime() - olderThanHours * 3600_000);
   const cutoff48h = new Date(now.getTime() - 48 * 3600_000);
 
-  const pubCol = hasCol("public_id") ? col("public_id") : hasCol("publicId") ? col("publicId") : hasCol("publicID") ? col("publicID") : null;
+  const pubCol = hasCol("public_id")
+    ? col("public_id")
+    : hasCol("publicId")
+      ? col("publicId")
+      : hasCol("publicID")
+        ? col("publicID")
+        : null;
   if (!pubCol) return res.status(500).json({ ok: false, error: "Server misconfigured: missing public id column mapping" });
 
   const isClaimedCol = (gifts as any).isClaimed || (gifts as any).is_claimed;
@@ -301,7 +327,15 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
   const returnRows = await db
     .select()
     .from(gifts)
-    .where(and(eq(isClaimedCol, false), isNull(returnedToSenderAtCol), gte(reminderCountCol, 2), not(isNull(lastReminderSentAtCol)), lte(lastReminderSentAtCol, cutoff48h)))
+    .where(
+      and(
+        eq(isClaimedCol, false),
+        isNull(returnedToSenderAtCol),
+        gte(reminderCountCol, 2),
+        not(isNull(lastReminderSentAtCol)),
+        lte(lastReminderSentAtCol, cutoff48h)
+      )
+    )
     .limit(limit);
 
   let sent = 0;
@@ -321,9 +355,13 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     let error: string | null = null;
 
     try {
-      if (recipientEmail) ok = dryRun ? true : (await sendReminderEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail })).ok;
-      else if (recipientPhone) ok = dryRun ? true : (await sendGiftSms({ to: recipientPhone, claimUrl, publicId })).ok;
-      else {
+      if (recipientEmail) {
+        ok = dryRun
+          ? true
+          : (await sendReminderEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail })).ok;
+      } else if (recipientPhone) {
+        ok = dryRun ? true : (await sendGiftSms({ to: recipientPhone, claimUrl, publicId })).ok;
+      } else {
         ok = false;
         error = "No recipient email or phone";
       }
@@ -361,7 +399,12 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     try {
       const r = dryRun
         ? { ok: true, error: null as any }
-        : await sendReturnToSenderEmail({ to: senderEmail, publicId, amountCents: amount, reason: "Not claimed after 2 reminders (48h apart)." });
+        : await sendReturnToSenderEmail({
+            to: senderEmail,
+            publicId,
+            amountCents: amount,
+            reason: "Not claimed after 2 reminders (48h apart).",
+          });
 
       if (r.ok) {
         sent++;
@@ -377,7 +420,23 @@ router.post("/api/admin/reminders/send", async (req: Request, res: Response) => 
     }
   }
 
-  return res.json({ ok: true, dryRun, scanned: reminderRows.length + returnRows.length, reminderEligible: reminderRows.length, returnEligible: returnRows.length, sent, failed, cutoffCreated: cutoffCreated.toISOString(), actions });
+  return res.json({
+    ok: true,
+    dryRun,
+    scanned: reminderRows.length + returnRows.length,
+    reminderEligible: reminderRows.length,
+    returnEligible: returnRows.length,
+    sent,
+    failed,
+    cutoffCreated: cutoffCreated.toISOString(),
+    actions,
+  });
 });
+
+/* -------------------- EXPORT: REGISTER ROUTES -------------------- */
+export function registerRoutes(app: Express) {
+  // routes already include /api prefixes
+  app.use(router);
+}
 
 export default router;
