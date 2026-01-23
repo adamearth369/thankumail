@@ -11,7 +11,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION MARKER -------------------- */
-const ROUTES_VERSION = "routes_v2026-01-22_002";
+const ROUTES_VERSION = "routes_v2026-01-22_003";
 
 /* -------------------- LOG -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -34,31 +34,29 @@ function envTruthy(v: any) {
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
-async function verifyTurnstileOrBypass(turnstileToken: string | undefined) {
+async function verifyTurnstileOrBypass(turnstileToken: string) {
   const secret = (process.env.TURNSTILE_SECRET_KEY || "").trim();
   const bypassEnabled = envTruthy(process.env.TURNSTILE_BYPASS);
   const bypassToken = (process.env.TURNSTILE_BYPASS_TOKEN || "BYPASS").trim();
 
   // If Turnstile is not configured, do not enforce.
-  if (!secret) {
-    return { ok: true as const, mode: "not_configured" as const };
-  }
+  if (!secret) return { ok: true as const, mode: "not_configured" as const };
 
   // Bypass path (explicitly enabled)
-  if (bypassEnabled && (turnstileToken || "").trim() === bypassToken) {
+  if (bypassEnabled && turnstileToken === bypassToken) {
     return { ok: true as const, mode: "bypass" as const };
   }
 
   // Must have a real token if secret configured
-  if (!turnstileToken || !String(turnstileToken).trim()) {
-    return { ok: false as const, error: "Missing CAPTCHA token", field: "turnstileToken" };
+  if (!turnstileToken) {
+    return { ok: false as const, error: "Missing CAPTCHA token", field: "turnstileToken" as const };
   }
 
   // Verify with Cloudflare Turnstile
   try {
     const body = new URLSearchParams();
     body.set("secret", secret);
-    body.set("response", String(turnstileToken));
+    body.set("response", turnstileToken);
 
     const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
       method: "POST",
@@ -68,32 +66,36 @@ async function verifyTurnstileOrBypass(turnstileToken: string | undefined) {
 
     const data: any = await resp.json().catch(() => ({}));
 
-    if (data?.success) {
-      return { ok: true as const, mode: "verified" as const };
-    }
+    if (data?.success) return { ok: true as const, mode: "verified" as const };
 
-    return { ok: false as const, error: "Invalid CAPTCHA token", field: "turnstileToken", codes: data?.["error-codes"] || [] };
-  } catch (e: any) {
-    return { ok: false as const, error: "CAPTCHA verification failed", field: "turnstileToken" };
+    return {
+      ok: false as const,
+      error: "Invalid CAPTCHA token",
+      field: "turnstileToken" as const,
+      codes: data?.["error-codes"] || [],
+    };
+  } catch {
+    return { ok: false as const, error: "CAPTCHA verification failed", field: "turnstileToken" as const };
   }
 }
 
 /* -------------------- VALIDATION -------------------- */
 const E164 = /^\+[1-9]\d{7,14}$/;
 
+// Coerce anything missing/non-string to "" then trim safely
+const AsTrimmedString = z.preprocess(
+  (v) => (typeof v === "string" ? v : ""),
+  z.string().transform((s) => s.trim())
+);
+
 const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email(),
-    recipientEmail: z.string().optional().or(z.literal("")).transform((v) => v.trim()),
-    recipientPhone: z
-      .string()
-      .optional()
-      .or(z.literal(""))
-      .transform((v) => v.trim())
-      .refine((v) => !v || E164.test(v), { message: "Invalid phone number" }),
-    message: z.string().max(2000).optional().default(""),
+    recipientEmail: AsTrimmedString, // "" if missing
+    recipientPhone: AsTrimmedString.refine((v) => !v || E164.test(v), { message: "Invalid phone number" }),
+    message: z.preprocess((v) => (typeof v === "string" ? v : ""), z.string()).max(2000).default(""),
     amount: z.number().optional(), // ignored
-    turnstileToken: z.string().optional(),
+    turnstileToken: AsTrimmedString, // "" if missing
   })
   .refine((d) => !!d.recipientEmail || !!d.recipientPhone, {
     message: "Provide recipientEmail or recipientPhone",
@@ -123,16 +125,24 @@ router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => 
     if (!parsed.success) {
       const first = parsed.error.issues?.[0];
       const field = Array.isArray(first?.path) && first?.path?.length ? String(first.path[0]) : undefined;
-      return res.status(400).json({ error: first?.message || "Invalid request", field, issues: parsed.error.issues, version: ROUTES_VERSION });
+      return res.status(400).json({
+        error: first?.message || "Invalid request",
+        field,
+        issues: parsed.error.issues,
+        version: ROUTES_VERSION,
+      });
     }
 
     const { senderEmail, recipientEmail, recipientPhone, message, turnstileToken } = parsed.data;
 
-    // CAPTCHA verify/bypass
     const cap = await verifyTurnstileOrBypass(turnstileToken);
     if (!cap.ok) {
-      logEvent("captcha_failed", { mode: "enforced", reason: cap.error, publicId: null });
-      return res.status(400).json({ error: cap.error, field: cap.field, codes: (cap as any).codes || [], version: ROUTES_VERSION });
+      return res.status(400).json({
+        error: (cap as any).error,
+        field: (cap as any).field,
+        codes: (cap as any).codes || [],
+        version: ROUTES_VERSION,
+      });
     }
 
     const amount = MIN_AMOUNT_CENTS;
@@ -151,7 +161,7 @@ router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => 
       createdAt: new Date(),
     });
 
-    logEvent("gift_created", { publicId, amount, captchaMode: cap.mode });
+    logEvent("gift_created", { publicId, amount, captchaMode: (cap as any).mode });
 
     let deliveryOk = true;
     let deliveryError: string | undefined;
