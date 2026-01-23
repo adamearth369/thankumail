@@ -11,7 +11,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION MARKER -------------------- */
-const ROUTES_VERSION = "routes_v2026-01-23_007";
+const ROUTES_VERSION = "routes_v2026-01-23_008";
 
 /* -------------------- LOG -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -34,25 +34,35 @@ function envTruthy(v: any) {
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
+function isProd() {
+  // Render sets RENDER=1. We also treat NODE_ENV=production as prod.
+  return envTruthy(process.env.RENDER) || String(process.env.NODE_ENV || "").toLowerCase() === "production";
+}
+
 async function verifyTurnstileOrBypass(turnstileTokenRaw: unknown) {
   const secret = (process.env.TURNSTILE_SECRET_KEY || "").trim();
-  const bypassEnabled = envTruthy(process.env.TURNSTILE_BYPASS);
-  const bypassToken = (process.env.TURNSTILE_BYPASS_TOKEN || "BYPASS").trim();
 
+  // If Turnstile isn't configured, do not enforce.
   if (!secret) return { ok: true as const, mode: "not_configured" as const };
 
   const token = typeof turnstileTokenRaw === "string" ? turnstileTokenRaw.trim() : "";
 
+  // BYPASS is allowed ONLY in non-prod environments.
+  const bypassEnabled = !isProd() && envTruthy(process.env.TURNSTILE_BYPASS);
+  const bypassToken = (process.env.TURNSTILE_BYPASS_TOKEN || "BYPASS").trim();
   if (bypassEnabled && token === bypassToken) return { ok: true as const, mode: "bypass" as const };
 
-  if (!token)
+  // Must have a real token if secret configured
+  if (!token) {
     return {
       ok: false as const,
       error: "Missing CAPTCHA token",
       field: "turnstileToken" as const,
       codes: [] as string[],
     };
+  }
 
+  // Verify with Cloudflare Turnstile
   try {
     const body = new URLSearchParams();
     body.set("secret", secret);
@@ -101,7 +111,6 @@ function jsonRateLimitHandler(req: any, res: Response) {
   });
 }
 
-// per-IP daily limit (default 50/day)
 const dailyIpLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: toInt(process.env.DAILY_IP_LIMIT, 50),
@@ -110,7 +119,6 @@ const dailyIpLimiter = rateLimit({
   handler: jsonRateLimitHandler,
 });
 
-// per-senderEmail daily limit (default 20/day)
 const dailySenderLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: toInt(process.env.DAILY_SENDER_LIMIT, 20),
@@ -176,8 +184,20 @@ const CreateGiftSchema = z
 
 const ClaimSchema = z.object({});
 
-const createLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false, handler: jsonRateLimitHandler });
-const claimLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, handler: jsonRateLimitHandler });
+const createLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: jsonRateLimitHandler,
+});
+const claimLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: jsonRateLimitHandler,
+});
 
 const router = Router();
 
