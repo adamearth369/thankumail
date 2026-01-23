@@ -18,6 +18,7 @@ type CreateGiftOk = {
   emailSent?: boolean;
   smsQueued?: boolean;
   version?: string;
+  deliveryError?: string;
 };
 
 type CreateGiftResponse = CreateGiftOk | ApiError;
@@ -131,13 +132,11 @@ export default function CreateGiftForm() {
       await loadTurnstileScript();
       if (!turnstileContainerRef.current) return;
 
-      // If already rendered and not forcing, do nothing
       if (!force && turnstileWidgetIdRef.current != null && window.turnstile?.getResponse) {
         setTurnstileReady(true);
         return;
       }
 
-      // Clear any prior markup
       turnstileContainerRef.current.innerHTML = "";
 
       const wid = window.turnstile.render(turnstileContainerRef.current, {
@@ -162,7 +161,7 @@ export default function CreateGiftForm() {
 
       turnstileWidgetIdRef.current = wid;
       setTurnstileReady(true);
-    } catch (e: any) {
+    } catch {
       setTurnstileReady(false);
       setTurnstileRenderError("Unable to load CAPTCHA. Please refresh and try again.");
       setApiError("Unable to load CAPTCHA. Please refresh and try again.");
@@ -178,17 +177,12 @@ export default function CreateGiftForm() {
   // ---- validation ----
   const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
 
-  const recipientOk = useMemo(() => {
-    const eOk = recipientEmail.trim() ? isEmail(recipientEmail) : false;
-    const pOk = recipientPhone.trim() ? isE164(recipientPhone) : false;
-    return eOk || pOk;
-  }, [recipientEmail, recipientPhone]);
+  const senderOk = useMemo(() => isEmail(senderEmail.trim()), [senderEmail]);
 
-  const senderOk = useMemo(() => {
-    const s = senderEmail.trim();
-    if (!s) return true;
-    return isEmail(s);
-  }, [senderEmail]);
+  const recipientEmailOk = useMemo(() => (recipientEmail.trim() ? isEmail(recipientEmail) : false), [recipientEmail]);
+  const recipientPhoneOk = useMemo(() => (recipientPhone.trim() ? isE164(recipientPhone) : false), [recipientPhone]);
+
+  const recipientOk = useMemo(() => recipientEmailOk || recipientPhoneOk, [recipientEmailOk, recipientPhoneOk]);
 
   const messageOk = useMemo(() => message.trim().length >= 2, [message]);
 
@@ -197,6 +191,13 @@ export default function CreateGiftForm() {
     const captchaOk = !canUseTurnstile || (!!turnstileToken && turnstileToken.length > 10);
     return senderOk && recipientOk && messageOk && minOk && captchaOk && !submitting;
   }, [senderOk, recipientOk, messageOk, amountCents, canUseTurnstile, turnstileToken, submitting]);
+
+  function recipientHint() {
+    if (recipientEmail.trim() && !recipientEmailOk) return "Email looks invalid.";
+    if (recipientPhone.trim() && !recipientPhoneOk) return "Phone must be E.164 like +14165551234.";
+    if (!recipientEmail.trim() && !recipientPhone.trim()) return "Add an email or a phone number (at least one).";
+    return "";
+  }
 
   // ---- submit ----
   async function onSubmit(e: React.FormEvent) {
@@ -208,12 +209,12 @@ export default function CreateGiftForm() {
     setCreated(null);
 
     if (!senderOk) {
-      setApiError("Please enter a valid sender email (or leave it blank).");
+      setApiError("Sender email is required and must be valid.");
       setApiField("senderEmail");
       return;
     }
     if (!recipientOk) {
-      setApiError("Please provide a valid recipient email and/or phone number in E.164 format (e.g., +14165551234).");
+      setApiError("Please provide a valid recipient email or phone (+14165551234).");
       setApiField("recipient");
       return;
     }
@@ -245,7 +246,7 @@ export default function CreateGiftForm() {
 
     try {
       const payload: any = {
-        senderEmail: senderEmail.trim() || undefined, // backend currently requires senderEmail
+        senderEmail: senderEmail.trim(),
         recipientEmail: recipientEmail.trim() || undefined,
         recipientPhone: recipientPhone.trim() || undefined,
         message: message.trim(),
@@ -268,7 +269,6 @@ export default function CreateGiftForm() {
         setApiError(msg);
         setApiField((data as any)?.field || "");
 
-        // Turnstile tokens are single-use; always reset + force re-render to prevent stale widget state
         resetTurnstile();
         await renderTurnstile(true);
         return;
@@ -277,7 +277,6 @@ export default function CreateGiftForm() {
       const ok = data as CreateGiftOk;
       setCreated(ok);
 
-      setSenderEmail("");
       setRecipientEmail("");
       setRecipientPhone("");
       setAmountDollars(10);
@@ -302,7 +301,7 @@ export default function CreateGiftForm() {
       <form onSubmit={onSubmit} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-gray-900">Send a ThankuMail</h2>
-          <p className="mt-1 text-sm text-gray-600">Write a message, choose an amount, and send it by email or phone.</p>
+          <p className="mt-1 text-sm text-gray-600">Send by email, phone, or both.</p>
         </div>
 
         {apiError ? (
@@ -326,7 +325,7 @@ export default function CreateGiftForm() {
 
         <div className="grid gap-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">Sender email (required)</label>
+            <label className="mb-1 block text-sm font-medium text-gray-800">Sender email</label>
             <input
               className={`w-full rounded-xl border px-3 py-2 text-sm outline-none ${
                 apiField === "senderEmail" ? "border-red-300" : "border-gray-200"
@@ -337,6 +336,7 @@ export default function CreateGiftForm() {
               inputMode="email"
               autoComplete="email"
             />
+            <div className="mt-1 text-xs text-gray-500">Required.</div>
           </div>
 
           <div>
@@ -365,7 +365,7 @@ export default function CreateGiftForm() {
               inputMode="tel"
               autoComplete="tel"
             />
-            <div className="mt-1 text-xs text-gray-500">Use E.164 format (starts with +). Provide email or phone (at least one).</div>
+            <div className="mt-1 text-xs text-gray-500">{recipientHint()}</div>
           </div>
 
           <div>
