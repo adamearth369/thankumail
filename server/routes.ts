@@ -11,7 +11,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION MARKER -------------------- */
-const ROUTES_VERSION = "routes_v2026-01-22_006";
+const ROUTES_VERSION = "routes_v2026-01-23_007";
 
 /* -------------------- LOG -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -39,18 +39,20 @@ async function verifyTurnstileOrBypass(turnstileTokenRaw: unknown) {
   const bypassEnabled = envTruthy(process.env.TURNSTILE_BYPASS);
   const bypassToken = (process.env.TURNSTILE_BYPASS_TOKEN || "BYPASS").trim();
 
-  // If Turnstile is not configured, do not enforce.
   if (!secret) return { ok: true as const, mode: "not_configured" as const };
 
   const token = typeof turnstileTokenRaw === "string" ? turnstileTokenRaw.trim() : "";
 
-  // Bypass path (explicitly enabled)
   if (bypassEnabled && token === bypassToken) return { ok: true as const, mode: "bypass" as const };
 
-  // Must have a real token if secret configured
-  if (!token) return { ok: false as const, error: "Missing CAPTCHA token", field: "turnstileToken" as const, codes: [] as string[] };
+  if (!token)
+    return {
+      ok: false as const,
+      error: "Missing CAPTCHA token",
+      field: "turnstileToken" as const,
+      codes: [] as string[],
+    };
 
-  // Verify with Cloudflare Turnstile
   try {
     const body = new URLSearchParams();
     body.set("secret", secret);
@@ -75,6 +77,52 @@ async function verifyTurnstileOrBypass(turnstileTokenRaw: unknown) {
     return { ok: false as const, error: "CAPTCHA verification failed", field: "turnstileToken" as const, codes: [] as string[] };
   }
 }
+
+/* -------------------- DAILY LIMITS -------------------- */
+function toInt(v: any, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function retryAfterSecFrom(req: any) {
+  const rt = req?.rateLimit?.resetTime ? new Date(req.rateLimit.resetTime).getTime() : 0;
+  if (!rt) return undefined;
+  const sec = Math.ceil((rt - Date.now()) / 1000);
+  return sec > 0 ? sec : 1;
+}
+
+function jsonRateLimitHandler(req: any, res: Response) {
+  const retryAfterSec = retryAfterSecFrom(req);
+  return res.status(429).json({
+    error: "Too many requests. Please try again later.",
+    code: "RATE_LIMIT",
+    retryAfterSec,
+    version: ROUTES_VERSION,
+  });
+}
+
+// per-IP daily limit (default 50/day)
+const dailyIpLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: toInt(process.env.DAILY_IP_LIMIT, 50),
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: jsonRateLimitHandler,
+});
+
+// per-senderEmail daily limit (default 20/day)
+const dailySenderLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: toInt(process.env.DAILY_SENDER_LIMIT, 20),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any) => {
+    const raw = typeof req?.body?.senderEmail === "string" ? req.body.senderEmail : "";
+    const k = raw.trim().toLowerCase();
+    return k || req.ip;
+  },
+  handler: jsonRateLimitHandler,
+});
 
 /* -------------------- VALIDATION -------------------- */
 const E164 = /^\+[1-9]\d{7,14}$/;
@@ -128,8 +176,8 @@ const CreateGiftSchema = z
 
 const ClaimSchema = z.object({});
 
-const createLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false });
-const claimLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
+const createLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false, handler: jsonRateLimitHandler });
+const claimLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, handler: jsonRateLimitHandler });
 
 const router = Router();
 
@@ -143,7 +191,7 @@ router.get("/api/health", (_req: Request, res: Response) => {
 });
 
 /* -------------------- CREATE -------------------- */
-router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => {
+router.post("/api/gifts", dailyIpLimiter, dailySenderLimiter, createLimiter, async (req: Request, res: Response) => {
   try {
     const parsed = CreateGiftSchema.safeParse(req.body);
     if (!parsed.success) {
