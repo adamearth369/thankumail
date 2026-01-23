@@ -1,51 +1,71 @@
 import express from "express";
-import cors from "cors";
 import path from "path";
-import router from "./routes";
+import { registerRoutes } from "./routes";
 
 const app = express();
 
-/* -------------------- proxy + basics -------------------- */
-app.set("trust proxy", 1); // Render sets X-Forwarded-* headers
-app.disable("x-powered-by");
+/* -------------------- VERSION MARKER -------------------- */
+const API_VERSION = "api_index_v2026-01-22_001";
 
+/* -------------------- proxy + basics -------------------- */
+app.set("trust proxy", 1); // required for Render + express-rate-limit
+app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-/* -------------------- CORS (for UI -> API cross-domain) -------------------- */
-app.use(
-  cors({
-    origin: true, // reflect request origin
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
-  })
-);
-app.options("*", cors());
+/* -------------------- CORS (UI -> API preview) -------------------- */
+const ALLOWED = new Set(["https://thankumail-ui.onrender.com", "https://thankumail.com"]);
 
-/* -------------------- paths -------------------- */
+app.use((req, res, next) => {
+  const origin = String(req.headers.origin || "");
+  if (origin && ALLOWED.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-token");
+  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+  next();
+});
+
+/* -------------------- debug /__where -------------------- */
 const publicDir = path.resolve(process.cwd(), "dist", "public");
-
-/* -------------------- debug /where -------------------- */
 app.get("/__where", (_req, res) => {
   res.json({
     ok: true,
+    version: API_VERSION,
     nodeEnv: process.env.NODE_ENV,
     cwd: process.cwd(),
     publicDir,
   });
 });
 
+/* -------------------- version -------------------- */
+app.get("/api/version", (_req, res) => {
+  res.json({ ok: true, version: API_VERSION });
+});
+
 /* -------------------- health -------------------- */
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-/* -------------------- API routes FIRST -------------------- */
+/* -------------------- SERVER-AUTH PRICING GUARD -------------------- */
 /**
- * routes.ts already prefixes paths with /api/...
- * So we mount it at root.
+ * Forces amount to server minimum BEFORE hitting whatever routes are currently live.
+ * This makes client tampering ineffective even if /routes is older.
  */
-app.use(router);
+const MIN_AMOUNT_CENTS = 1000;
+app.use((req, _res, next) => {
+  if (req.method === "POST" && req.path === "/api/gifts") {
+    if (req.body && typeof req.body === "object") {
+      req.body.amount = MIN_AMOUNT_CENTS;
+    }
+  }
+  next();
+});
+
+/* -------------------- API routes FIRST -------------------- */
+registerRoutes(app);
 
 /* -------------------- static + SPA fallback (LAST) -------------------- */
 app.use(
@@ -68,5 +88,5 @@ app.get("*", (_req, res) => {
 /* -------------------- listen -------------------- */
 const port = Number(process.env.PORT || 10000);
 app.listen(port, "0.0.0.0", () => {
-  console.log(`listening on ${port}`);
+  console.log(`listening on ${port} (${API_VERSION})`);
 });
