@@ -5,7 +5,7 @@ import { registerRoutes } from "./routes";
 const app = express();
 
 /* -------------------- VERSION MARKER -------------------- */
-const API_VERSION = "api_index_v2026-01-22_001";
+const API_VERSION = "api_index_v2026-01-23_002";
 
 /* -------------------- proxy + basics -------------------- */
 app.set("trust proxy", 1); // required for Render + express-rate-limit
@@ -40,19 +40,12 @@ app.get("/__where", (_req, res) => {
   });
 });
 
-/* -------------------- version -------------------- */
-app.get("/api/version", (_req, res) => {
-  res.json({ ok: true, version: API_VERSION });
-});
-
-/* -------------------- health -------------------- */
-app.get("/health", (_req, res) => res.json({ ok: true }));
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
+/* -------------------- health (non-api) -------------------- */
+app.get("/health", (_req, res) => res.json({ ok: true, version: API_VERSION }));
 
 /* -------------------- SERVER-AUTH PRICING GUARD -------------------- */
 /**
- * Forces amount to server minimum BEFORE hitting whatever routes are currently live.
- * This makes client tampering ineffective even if /routes is older.
+ * Forces amount to server minimum BEFORE hitting /api/gifts.
  */
 const MIN_AMOUNT_CENTS = 1000;
 app.use((req, _res, next) => {
@@ -65,6 +58,11 @@ app.use((req, _res, next) => {
 });
 
 /* -------------------- API routes FIRST -------------------- */
+/**
+ * IMPORTANT:
+ * Do NOT define /api/version or /api/health here.
+ * routes.ts owns /api/version and /api/health so they reflect ROUTES_VERSION.
+ */
 registerRoutes(app);
 
 /* -------------------- static + SPA fallback (LAST) -------------------- */
