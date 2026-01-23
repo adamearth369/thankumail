@@ -11,7 +11,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION MARKER -------------------- */
-const ROUTES_VERSION = "routes_v2026-01-22_003";
+const ROUTES_VERSION = "routes_v2026-01-22_004";
 
 /* -------------------- LOG -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -34,7 +34,7 @@ function envTruthy(v: any) {
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
-async function verifyTurnstileOrBypass(turnstileToken: string) {
+async function verifyTurnstileOrBypass(turnstileTokenRaw: unknown) {
   const secret = (process.env.TURNSTILE_SECRET_KEY || "").trim();
   const bypassEnabled = envTruthy(process.env.TURNSTILE_BYPASS);
   const bypassToken = (process.env.TURNSTILE_BYPASS_TOKEN || "BYPASS").trim();
@@ -42,21 +42,19 @@ async function verifyTurnstileOrBypass(turnstileToken: string) {
   // If Turnstile is not configured, do not enforce.
   if (!secret) return { ok: true as const, mode: "not_configured" as const };
 
+  const token = typeof turnstileTokenRaw === "string" ? turnstileTokenRaw.trim() : "";
+
   // Bypass path (explicitly enabled)
-  if (bypassEnabled && turnstileToken === bypassToken) {
-    return { ok: true as const, mode: "bypass" as const };
-  }
+  if (bypassEnabled && token === bypassToken) return { ok: true as const, mode: "bypass" as const };
 
   // Must have a real token if secret configured
-  if (!turnstileToken) {
-    return { ok: false as const, error: "Missing CAPTCHA token", field: "turnstileToken" as const };
-  }
+  if (!token) return { ok: false as const, error: "Missing CAPTCHA token", field: "turnstileToken" as const };
 
   // Verify with Cloudflare Turnstile
   try {
     const body = new URLSearchParams();
     body.set("secret", secret);
-    body.set("response", turnstileToken);
+    body.set("response", token);
 
     const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
       method: "POST",
@@ -65,7 +63,6 @@ async function verifyTurnstileOrBypass(turnstileToken: string) {
     });
 
     const data: any = await resp.json().catch(() => ({}));
-
     if (data?.success) return { ok: true as const, mode: "verified" as const };
 
     return {
@@ -82,24 +79,53 @@ async function verifyTurnstileOrBypass(turnstileToken: string) {
 /* -------------------- VALIDATION -------------------- */
 const E164 = /^\+[1-9]\d{7,14}$/;
 
-// Coerce anything missing/non-string to "" then trim safely
-const AsTrimmedString = z.preprocess(
-  (v) => (typeof v === "string" ? v : ""),
-  z.string().transform((s) => s.trim())
-);
-
 const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email(),
-    recipientEmail: AsTrimmedString, // "" if missing
-    recipientPhone: AsTrimmedString.refine((v) => !v || E164.test(v), { message: "Invalid phone number" }),
-    message: z.preprocess((v) => (typeof v === "string" ? v : ""), z.string()).max(2000).default(""),
+    recipientEmail: z.string().optional(),
+    recipientPhone: z.string().optional(),
+    message: z.string().optional(),
     amount: z.number().optional(), // ignored
-    turnstileToken: AsTrimmedString, // "" if missing
+    turnstileToken: z.string().optional(),
   })
-  .refine((d) => !!d.recipientEmail || !!d.recipientPhone, {
-    message: "Provide recipientEmail or recipientPhone",
-    path: ["recipientEmail"],
+  .superRefine((d, ctx) => {
+    // Normalize safely (no trim on undefined)
+    const recipientEmail = typeof d.recipientEmail === "string" ? d.recipientEmail.trim() : "";
+    const recipientPhone = typeof d.recipientPhone === "string" ? d.recipientPhone.trim() : "";
+    const message = typeof d.message === "string" ? d.message : "";
+
+    // Put normalized values back (for downstream)
+    (d as any).recipientEmail = recipientEmail;
+    (d as any).recipientPhone = recipientPhone;
+    (d as any).message = message;
+
+    if (!recipientEmail && !recipientPhone) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide recipientEmail or recipientPhone",
+        path: ["recipientEmail"],
+      });
+      return;
+    }
+
+    if (recipientPhone && !E164.test(recipientPhone)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid phone number",
+        path: ["recipientPhone"],
+      });
+    }
+
+    if (message.length > 2000) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        type: "string",
+        maximum: 2000,
+        inclusive: true,
+        message: "Message too long",
+        path: ["message"],
+      });
+    }
   });
 
 const ClaimSchema = z.object({});
@@ -133,7 +159,11 @@ router.post("/api/gifts", createLimiter, async (req: Request, res: Response) => 
       });
     }
 
-    const { senderEmail, recipientEmail, recipientPhone, message, turnstileToken } = parsed.data;
+    const { senderEmail } = parsed.data;
+    const recipientEmail = (parsed.data as any).recipientEmail as string;
+    const recipientPhone = (parsed.data as any).recipientPhone as string;
+    const message = (parsed.data as any).message as string;
+    const turnstileToken = parsed.data.turnstileToken;
 
     const cap = await verifyTurnstileOrBypass(turnstileToken);
     if (!cap.ok) {
