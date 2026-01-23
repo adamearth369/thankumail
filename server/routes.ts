@@ -11,7 +11,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION MARKER -------------------- */
-const ROUTES_VERSION = "routes_v2026-01-22_005";
+const ROUTES_VERSION = "routes_v2026-01-22_006";
 
 /* -------------------- LOG -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -140,20 +140,6 @@ router.get("/api/version", (_req: Request, res: Response) => {
 
 router.get("/api/health", (_req: Request, res: Response) => {
   return res.json({ ok: true, version: ROUTES_VERSION });
-});
-
-/* -------------------- DEBUG TURNSTILE (TEMP) -------------------- */
-router.get("/api/_turnstile", (_req: Request, res: Response) => {
-  const secret = (process.env.TURNSTILE_SECRET_KEY || "").trim();
-  const bypass = String(process.env.TURNSTILE_BYPASS || "");
-  return res.json({
-    ok: true,
-    version: ROUTES_VERSION,
-    hasSecret: !!secret,
-    secretLen: secret.length,
-    secretPrefix: secret ? secret.slice(0, 3) : "",
-    bypass,
-  });
 });
 
 /* -------------------- CREATE -------------------- */
