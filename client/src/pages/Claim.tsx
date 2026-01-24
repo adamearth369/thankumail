@@ -28,6 +28,7 @@ export default function Claim() {
   const [error, setError] = useState("");
   const [ok, setOk] = useState(false);
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
+  const [captchaReady, setCaptchaReady] = useState(false);
 
   const turnstileTokenRef = useRef<string>("");
 
@@ -50,7 +51,10 @@ export default function Claim() {
   }, [publicId]);
 
   useEffect(() => {
-    if (!siteKey) return;
+    if (!siteKey) {
+      setCaptchaReady(true);
+      return;
+    }
 
     const script = document.createElement("script");
     script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
@@ -71,19 +75,26 @@ export default function Claim() {
       sitekey: siteKey,
       callback: (token: string) => {
         turnstileTokenRef.current = token;
+        setCaptchaReady(true);
         setError("");
       },
       "expired-callback": () => {
         turnstileTokenRef.current = "";
+        setCaptchaReady(false);
       },
       "error-callback": () => {
         turnstileTokenRef.current = "";
+        setCaptchaReady(false);
       },
     });
   }, [siteKey]);
 
   async function handleClaim() {
     if (!publicId) return;
+    if (!captchaReady) {
+      setError("Please verify you’re not a bot.");
+      return;
+    }
 
     const token = turnstileTokenRef.current || "";
 
@@ -155,7 +166,7 @@ export default function Claim() {
 
         <button
           onClick={handleClaim}
-          disabled={claiming}
+          disabled={claiming || !captchaReady}
           style={{
             width: "100%",
             padding: "10px 14px",
@@ -164,11 +175,11 @@ export default function Claim() {
             background: "#111",
             color: "#fff",
             fontWeight: 700,
-            cursor: "pointer",
-            opacity: claiming ? 0.6 : 1,
+            cursor: claiming || !captchaReady ? "not-allowed" : "pointer",
+            opacity: claiming || !captchaReady ? 0.5 : 1,
           }}
         >
-          {claiming ? "Claiming…" : "Claim gift"}
+          {claiming ? "Claiming…" : !captchaReady ? "Verify to claim" : "Claim gift"}
         </button>
       </div>
     </div>
