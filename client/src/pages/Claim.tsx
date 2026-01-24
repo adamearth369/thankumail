@@ -14,8 +14,8 @@ function getPublicIdFromPath() {
 function friendlyError(msg: string) {
   if (!msg) return "";
   if (/captcha/i.test(msg)) return "Please verify you’re not a bot.";
-  if (/MIN_DELAY/i.test(msg) || /wait/i.test(msg)) return "Please wait a moment before claiming.";
-  if (/already claimed/i.test(msg)) return "This gift has already been claimed.";
+  if (/MIN_DELAY/i.test(msg) || /wait/i.test(msg)) return "Just a moment — we’re securing this gift.";
+  if (/already claimed/i.test(msg)) return "This ThankuMail has already been claimed.";
   return msg;
 }
 
@@ -93,7 +93,6 @@ export default function Claim() {
   }, [siteKey]);
 
   useEffect(() => {
-    // countdown ticker
     if (retryTimerRef.current) {
       window.clearInterval(retryTimerRef.current);
       retryTimerRef.current = null;
@@ -105,7 +104,6 @@ export default function Claim() {
       setRetryAfterSec((prev) => {
         if (prev === null) return null;
         if (prev <= 1) {
-          // auto-clear + allow user to click again without spam
           if (retryTimerRef.current) {
             window.clearInterval(retryTimerRef.current);
             retryTimerRef.current = null;
@@ -127,14 +125,14 @@ export default function Claim() {
   async function handleClaim() {
     if (!publicId) return;
 
-    // if we are still counting down, block clicks
+    // If we are still counting down, block clicks without throwing errors.
     if (retryAfterSec !== null && retryAfterSec > 0) {
-      setError("Please wait a moment before claiming.");
+      setError("Just a moment — we’re securing this gift.");
       return;
     }
 
     if (!captchaReady) {
-      setError("Please verify you’re not a bot.");
+      setError("Please complete the quick verification below.");
       return;
     }
 
@@ -168,13 +166,16 @@ export default function Claim() {
   }
 
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
-  if (error && !gift) return <div style={{ padding: 32, color: "red" }}>{error}</div>;
+  if (error && !gift) return <div style={{ padding: 32, color: "#b00020" }}>{error}</div>;
 
   if (ok) {
     return (
-      <div style={{ padding: 32 }}>
-        <h2>🎉 Gift claimed</h2>
-        <p>Your ThankuMail has been successfully claimed.</p>
+      <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
+        <h2>🎉 You’ve received a ThankuMail</h2>
+        <p>
+          This moment was meant just for you. Someone took the time to send you a gift and a message.
+        </p>
+        <p style={{ color: "#666" }}>We hope it brought a little light to your day.</p>
       </div>
     );
   }
@@ -183,32 +184,37 @@ export default function Claim() {
   const buttonDisabled = claiming || waitingOnDelay || !captchaReady;
 
   let buttonText = "Claim gift";
-  if (claiming) buttonText = "Claiming…";
+  if (claiming) buttonText = "Finalizing…";
   else if (!captchaReady) buttonText = "Verify to claim";
-  else if (waitingOnDelay) buttonText = `Wait ${retryAfterSec}s`;
+  else if (waitingOnDelay) buttonText = `Securing… ${retryAfterSec}s`;
 
   return (
     <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
       <h1>You’ve got a ThankuMail</h1>
       <p>Someone left you a note and a gift. Take a breath — it’s meant for you.</p>
 
+      {/* Gentle pre-framing (prevents abandonment) */}
+      <div style={{ color: "#666", marginBottom: 12 }}>
+        For security, there’s a brief verification and short pause before claiming.
+      </div>
+
       {error && <div style={{ color: "#b00020", marginBottom: 12 }}>{error}</div>}
 
       {retryAfterSec !== null && retryAfterSec > 0 && (
         <div style={{ color: "#666", marginBottom: 12 }}>
-          You can claim in about {retryAfterSec} seconds.
+          Finalizing your gift… about {retryAfterSec} seconds.
         </div>
       )}
 
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
         <div style={{ marginBottom: 12 }}>
           <strong>Message</strong>
-          <div>{gift.message || "—"}</div>
+          <div>{gift?.message || "—"}</div>
         </div>
 
         <div style={{ marginBottom: 12 }}>
           <strong>Amount</strong>
-          <div>${(Number(gift.amount) / 100).toFixed(2)}</div>
+          <div>${(Number(gift?.amount || 0) / 100).toFixed(2)}</div>
         </div>
 
         {siteKey && <div id="turnstile-container" style={{ marginBottom: 12 }} />}
