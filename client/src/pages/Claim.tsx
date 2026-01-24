@@ -11,6 +11,14 @@ function getPublicIdFromPath() {
   return parts[parts.length - 1] || "";
 }
 
+function friendlyError(msg: string) {
+  if (!msg) return "";
+  if (/captcha/i.test(msg)) return "Please verify you’re not a bot.";
+  if (/MIN_DELAY/i.test(msg) || /wait/i.test(msg)) return "Please wait a moment before claiming.";
+  if (/already claimed/i.test(msg)) return "This gift has already been claimed.";
+  return msg;
+}
+
 export default function Claim() {
   const publicId = getPublicIdFromPath();
 
@@ -19,6 +27,7 @@ export default function Claim() {
   const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState("");
   const [ok, setOk] = useState(false);
+  const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
 
   const turnstileTokenRef = useRef<string>("");
 
@@ -89,11 +98,18 @@ export default function Claim() {
       });
 
       const j = await r.json();
+
+      if (r.status === 429 && j?.retryAfterSec) {
+        setRetryAfterSec(j.retryAfterSec);
+        throw new Error("MIN_DELAY");
+      }
+
       if (!r.ok) throw new Error(j?.error || "Claim failed");
 
       setOk(true);
     } catch (e: any) {
-      setError(e.message || "Claim failed");
+      const msg = friendlyError(e.message || "Claim failed");
+      setError(msg);
     } finally {
       setClaiming(false);
     }
@@ -116,7 +132,13 @@ export default function Claim() {
       <h1>You’ve got a ThankuMail</h1>
       <p>Someone left you a note and a gift. Take a breath — it’s meant for you.</p>
 
-      {error && <div style={{ color: "red", marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "#b00020", marginBottom: 12 }}>{error}</div>}
+
+      {retryAfterSec !== null && (
+        <div style={{ color: "#666", marginBottom: 12 }}>
+          You can claim in about {retryAfterSec} seconds.
+        </div>
+      )}
 
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
         <div style={{ marginBottom: 12 }}>
