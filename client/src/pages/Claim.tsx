@@ -29,6 +29,7 @@ export default function Claim() {
   const [ok, setOk] = useState(false);
 
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
+  const [alreadyClaimed, setAlreadyClaimed] = useState(false);
 
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 
@@ -42,13 +43,18 @@ export default function Claim() {
 
   const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
 
+  const shouldShowCaptcha = Boolean(siteKey) && !alreadyClaimed && !ok;
+  const canAttemptClaim = !alreadyClaimed && !ok;
+
   useEffect(() => {
     async function loadGift() {
       try {
         const r = await fetch(`/api/gifts/${publicId}`);
         const j = await r.json();
         if (!r.ok) throw new Error(j?.error || "Failed to load gift");
+
         setGift(j);
+        setAlreadyClaimed(Boolean(j?.isClaimed));
       } catch (e: any) {
         setError(e.message || "Failed to load gift");
       } finally {
@@ -57,6 +63,16 @@ export default function Claim() {
     }
     loadGift();
   }, [publicId]);
+
+  // If we learn it's already claimed, clean up claim UI state
+  useEffect(() => {
+    if (!alreadyClaimed) return;
+    setRetryAfterSec(null);
+    setClaiming(false);
+    setCaptchaReady(false);
+    tokenRef.current = "";
+    tokenAtRef.current = 0;
+  }, [alreadyClaimed]);
 
   // countdown
   useEffect(() => {
@@ -93,6 +109,12 @@ export default function Claim() {
       return;
     }
 
+    if (!shouldShowCaptcha) {
+      // if we shouldn't show captcha (already claimed), don't boot it
+      setTurnstileBooting(false);
+      return;
+    }
+
     // if script already present, just mark booting and let render loop pick it up
     const existing = document.querySelector<HTMLScriptElement>('script[data-turnstile="1"]');
     if (existing) return;
@@ -104,7 +126,6 @@ export default function Claim() {
     script.setAttribute("data-turnstile", "1");
 
     script.onload = () => {
-      // render loop will handle actual render
       setTurnstileBooting(false);
     };
 
@@ -114,15 +135,14 @@ export default function Claim() {
     };
 
     document.body.appendChild(script);
-
-    return () => {
-      // keep script in DOM; no cleanup to avoid reloading on route changes
-    };
-  }, [siteKey]);
+  }, [siteKey, shouldShowCaptcha]);
 
   // Render Turnstile when ready (retry loop)
   useEffect(() => {
     if (!siteKey) return;
+    if (!shouldShowCaptcha) return;
+
+    // if we hid it then show it again later, allow re-render
     if (renderedRef.current) return;
 
     let cancelled = false;
@@ -134,7 +154,6 @@ export default function Claim() {
       const el = document.getElementById("turnstile-container");
       if (!ts || !el) return;
 
-      // Avoid double-render
       if (renderedRef.current) return;
 
       try {
@@ -168,7 +187,6 @@ export default function Claim() {
       }
     };
 
-    // Try immediately + retry for ~3 seconds
     tryRender();
     const interval = window.setInterval(tryRender, 150);
     const timeout = window.setTimeout(() => {
@@ -184,10 +202,11 @@ export default function Claim() {
       window.clearInterval(interval);
       window.clearTimeout(timeout);
     };
-  }, [siteKey]);
+  }, [siteKey, shouldShowCaptcha]);
 
   async function handleClaim() {
     if (!publicId) return;
+    if (!canAttemptClaim) return;
 
     if (waitingOnDelay) {
       setError("Just a moment — we’re securing this gift.");
@@ -195,7 +214,6 @@ export default function Claim() {
     }
 
     if (siteKey) {
-      // If token is stale, re-verify (Turnstile tokens can expire quickly)
       const ageMs = Date.now() - (tokenAtRef.current || 0);
       if (!tokenRef.current || ageMs > 45_000) {
         setError("Please complete the quick verification below.");
@@ -219,21 +237,40 @@ export default function Claim() {
         body: JSON.stringify({ turnstileToken: tokenRef.current || "" }),
       });
 
-      const j = await r.json();
+      const j = await r.json().catch(() => ({} as any));
 
       if (r.status === 429 && j?.retryAfterSec) {
         setRetryAfterSec(Number(j.retryAfterSec) || 0);
         throw new Error("MIN_DELAY");
       }
 
-      if (!r.ok) throw new Error(j?.error || "Claim failed");
+      if (!r.ok) {
+        // if already claimed, flip UI into claimed state immediately
+        const code = String(j?.code || "");
+        const msg = String(j?.error || "Claim failed");
+        if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
+          setAlreadyClaimed(true);
+          setError("This ThankuMail has already been claimed.");
+          return;
+        }
+        throw new Error(msg);
+      }
 
       setOk(true);
+
+      // refresh gift so page reflects claimed status if user reloads
+      try {
+        const rr = await fetch(`/api/gifts/${publicId}`);
+        const jj = await rr.json();
+        if (rr.ok) {
+          setGift(jj);
+          setAlreadyClaimed(Boolean(jj?.isClaimed));
+        }
+      } catch {}
     } catch (e: any) {
       const msg = friendlyError(e.message || "Claim failed");
       setError(msg);
 
-      // If captcha-related error, force refresh of widget
       if (/captcha/i.test(String(e?.message || ""))) resetTurnstile();
     } finally {
       setClaiming(false);
@@ -253,10 +290,11 @@ export default function Claim() {
     );
   }
 
-  const buttonDisabled = claiming || waitingOnDelay || !captchaReady;
+  const buttonDisabled = !canAttemptClaim || claiming || waitingOnDelay || !captchaReady;
 
   let buttonText = "Claim gift";
-  if (claiming) buttonText = "Finalizing…";
+  if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
+  else if (claiming) buttonText = "Finalizing…";
   else if (waitingOnDelay) buttonText = `Securing… ${retryAfterSec}s`;
   else if (!captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
 
@@ -269,9 +307,13 @@ export default function Claim() {
         For security, there’s a brief verification and short pause before claiming.
       </div>
 
-      {error && <div style={{ color: "#b00020", marginBottom: 12 }}>{error}</div>}
+      {alreadyClaimed ? (
+        <div style={{ color: "#b00020", marginBottom: 12 }}>This ThankuMail has already been claimed.</div>
+      ) : error ? (
+        <div style={{ color: "#b00020", marginBottom: 12 }}>{error}</div>
+      ) : null}
 
-      {retryAfterSec !== null && retryAfterSec > 0 && (
+      {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 && (
         <div style={{ color: "#666", marginBottom: 12 }}>
           Finalizing your gift… about {retryAfterSec} seconds.
         </div>
@@ -288,14 +330,12 @@ export default function Claim() {
           <div>${(Number(gift?.amount || 0) / 100).toFixed(2)}</div>
         </div>
 
-        {siteKey && (
+        {shouldShowCaptcha ? (
           <div style={{ marginBottom: 12 }}>
             <div id="turnstile-container" />
-            {turnstileBooting && (
-              <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div>
-            )}
+            {turnstileBooting && <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div>}
           </div>
-        )}
+        ) : null}
 
         <button
           onClick={handleClaim}
@@ -314,6 +354,12 @@ export default function Claim() {
         >
           {buttonText}
         </button>
+
+        {alreadyClaimed ? (
+          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+            If you believe this is a mistake, ask the sender to create a new ThankuMail.
+          </div>
+        ) : null}
       </div>
     </div>
   );
