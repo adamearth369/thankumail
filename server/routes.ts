@@ -32,8 +32,6 @@ async function verifyTurnstile(token: string, req: Request) {
   const secret = process.env.TURNSTILE_SECRET_KEY || "";
   const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
 
-  const enforced = !!secret && !bypass;
-
   if (!secret) return { ok: true, mode: "not_configured" as const };
   if (bypass) return { ok: true, mode: "bypass" as const };
   if (!token) return { ok: false, mode: "enforced" as const, codes: ["missing-input-response"] as string[] };
@@ -58,7 +56,7 @@ async function verifyTurnstile(token: string, req: Request) {
   const json: any = await resp.json().catch(() => ({}));
   const ok = !!json?.success;
   const codes: string[] = Array.isArray(json?.["error-codes"]) ? json["error-codes"] : [];
-  return { ok, mode: enforced ? ("enforced" as const) : ("unknown" as const), codes };
+  return { ok, mode: "enforced" as const, codes };
 }
 
 /* -------------------- HELPERS -------------------- */
@@ -96,7 +94,7 @@ const claimLimiter = rateLimit({
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-23_011";
+  const VERSION = "routes_v2026-01-24_012";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -107,6 +105,7 @@ export function registerRoutes(app: Express): Server {
       version: VERSION,
       commit: COMMIT,
       env: process.env.NODE_ENV || "",
+      minClaimDelaySec: Number(process.env.MIN_CLAIM_DELAY_SEC || 0),
     }),
   );
 
@@ -243,6 +242,7 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
+    // ✅ enforce min delay
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
 
     try {
@@ -258,7 +258,13 @@ export function registerRoutes(app: Express): Server {
         const ageMs = Date.now() - new Date(gift.createdAt).getTime();
         if (ageMs < minDelaySec * 1000) {
           const retryAfterSec = Math.ceil((minDelaySec * 1000 - ageMs) / 1000);
-          return res.status(429).json({ error: "Please wait before claiming", code: "MIN_DELAY", retryAfterSec, version: VERSION, commit: COMMIT });
+          return res.status(429).json({
+            error: "Please wait before claiming",
+            code: "MIN_DELAY",
+            retryAfterSec,
+            version: VERSION,
+            commit: COMMIT,
+          });
         }
       }
 
@@ -273,6 +279,8 @@ export function registerRoutes(app: Express): Server {
       return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
+
+  // Admin reminders route was removed in _011; add back later once min-delay is correct.
 
   const httpServer = createServer(app);
   return httpServer;
