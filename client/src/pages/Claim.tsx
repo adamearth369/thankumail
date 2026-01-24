@@ -51,6 +51,7 @@ export default function Claim() {
   }, [publicId]);
 
   useEffect(() => {
+    // If no site key is configured, don't block claiming in dev/test.
     if (!siteKey) {
       setCaptchaReady(true);
       return;
@@ -91,6 +92,7 @@ export default function Claim() {
 
   async function handleClaim() {
     if (!publicId) return;
+
     if (!captchaReady) {
       setError("Please verify you’re not a bot.");
       return;
@@ -119,8 +121,7 @@ export default function Claim() {
 
       setOk(true);
     } catch (e: any) {
-      const msg = friendlyError(e.message || "Claim failed");
-      setError(msg);
+      setError(friendlyError(e.message || "Claim failed"));
     } finally {
       setClaiming(false);
     }
