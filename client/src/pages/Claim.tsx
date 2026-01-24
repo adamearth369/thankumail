@@ -1,207 +1,158 @@
-// client/src/pages/Claim.tsx
-import React, { useEffect, useMemo, useState } from "react";
-import { useRoute } from "wouter";
+import React, { useEffect, useRef, useState } from "react";
 
-type GiftGetOk = {
-  ok: true;
-  publicId: string;
-  message: string;
-  amount: number; // cents
-  isClaimed: boolean;
-  createdAt?: string;
-};
-
-type ApiErr = {
-  error: string;
-  code?: string;
-  field?: string;
-};
-
-type GiftGetResponse = GiftGetOk | ApiErr;
-
-function money(cents: number) {
-  const n = Number(cents || 0) / 100;
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
-}
-
-function getApiBase() {
-  const v = (import.meta as any).env?.VITE_API_BASE_URL || "";
-  return String(v || "").replace(/\/+$/, "");
-}
-
-function isDebugMode() {
-  try {
-    const u = new URL(window.location.href);
-    return u.searchParams.get("debug") === "1";
-  } catch {
-    return false;
+declare global {
+  interface Window {
+    turnstile?: any;
   }
 }
 
-async function readJson(res: Response) {
-  const text = await res.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { error: text || `HTTP ${res.status}` };
-  }
+function getPublicIdFromPath() {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  return parts[parts.length - 1] || "";
 }
 
 export default function Claim() {
-  const [match, params] = useRoute<{ publicId: string }>("/claim/:publicId");
-  const publicId = match ? params.publicId : "";
+  const publicId = getPublicIdFromPath();
 
+  const [gift, setGift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [gift, setGift] = useState<GiftGetOk | null>(null);
-  const [err, setErr] = useState("");
   const [claiming, setClaiming] = useState(false);
-  const [claimMsg, setClaimMsg] = useState("");
+  const [error, setError] = useState("");
+  const [ok, setOk] = useState(false);
 
-  const apiBase = useMemo(() => getApiBase(), []);
-  const debug = useMemo(() => (typeof window !== "undefined" ? isDebugMode() : false), []);
+  const turnstileTokenRef = useRef<string>("");
 
-  const getUrl = useMemo(() => {
-    const path = `/api/gifts/${encodeURIComponent(publicId)}`;
-    return apiBase ? `${apiBase}${path}` : path;
-  }, [apiBase, publicId]);
+  const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 
-  const claimUrl = useMemo(() => {
-    const path = `/api/gifts/${encodeURIComponent(publicId)}/claim`;
-    return apiBase ? `${apiBase}${path}` : path;
-  }, [apiBase, publicId]);
-
-  async function loadGift() {
-    if (!publicId) {
-      setErr("Invalid link.");
-      setGift(null);
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    setErr("");
-    setClaimMsg("");
-
-    try {
-      const res = await fetch(getUrl, { method: "GET" });
-      const data = (await readJson(res)) as GiftGetResponse;
-
-      if (!res.ok || (data && typeof data === "object" && "error" in data)) {
-        setErr((data as any)?.error || `Request failed (HTTP ${res.status})`);
-        setGift(null);
-        return;
+  useEffect(() => {
+    async function loadGift() {
+      try {
+        const r = await fetch(`/api/gifts/${publicId}`);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j?.error || "Failed to load gift");
+        setGift(j);
+      } catch (e: any) {
+        setError(e.message || "Failed to load gift");
+      } finally {
+        setLoading(false);
       }
-
-      setGift(data as GiftGetOk);
-    } catch (e: any) {
-      setErr(e?.message || "Network error.");
-      setGift(null);
-    } finally {
-      setLoading(false);
     }
-  }
+    loadGift();
+  }, [publicId]);
 
-  async function doClaim() {
+  useEffect(() => {
+    if (!siteKey) return;
+
+    const script = document.createElement("script");
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, [siteKey]);
+
+  useEffect(() => {
+    if (!siteKey) return;
+    if (!window.turnstile) return;
+
+    window.turnstile.render("#turnstile-container", {
+      sitekey: siteKey,
+      callback: (token: string) => {
+        turnstileTokenRef.current = token;
+        setError("");
+      },
+      "expired-callback": () => {
+        turnstileTokenRef.current = "";
+      },
+      "error-callback": () => {
+        turnstileTokenRef.current = "";
+      },
+    });
+  }, [siteKey]);
+
+  async function handleClaim() {
     if (!publicId) return;
 
+    const token = turnstileTokenRef.current || "";
+
     setClaiming(true);
-    setErr("");
-    setClaimMsg("");
+    setError("");
 
     try {
-      const res = await fetch(claimUrl, {
+      const r = await fetch(`/api/gifts/${publicId}/claim`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ turnstileToken: token }),
       });
 
-      const data = await readJson(res);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Claim failed");
 
-      if (!res.ok || (data && typeof data === "object" && "error" in data)) {
-        setErr((data as any)?.error || `Claim failed (HTTP ${res.status})`);
-        return;
-      }
-
-      setClaimMsg("Claimed.");
-      await loadGift();
+      setOk(true);
     } catch (e: any) {
-      setErr(e?.message || "Network error.");
+      setError(e.message || "Claim failed");
     } finally {
       setClaiming(false);
     }
   }
 
-  useEffect(() => {
-    loadGift();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [publicId]);
+  if (loading) {
+    return <div style={{ padding: 32 }}>Loading…</div>;
+  }
+
+  if (error && !gift) {
+    return <div style={{ padding: 32, color: "red" }}>{error}</div>;
+  }
+
+  if (ok) {
+    return (
+      <div style={{ padding: 32 }}>
+        <h2>🎉 Gift claimed</h2>
+        <p>Your ThankuMail has been successfully claimed.</p>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ maxWidth: 760, padding: "18px 14px" }}>
-      <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800 }}>You’ve got a ThanküMail</h1>
-      <div style={{ marginTop: 6, fontSize: 18 }}>Someone left you a note and a gift. Take a breath — it’s meant for you.</div>
+    <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
+      <h1>You’ve got a ThankuMail</h1>
+      <p>Someone left you a note and a gift. Take a breath — it’s meant for you.</p>
 
-      {debug ? (
-        <div style={{ marginTop: 14, padding: 10, border: "1px solid #ddd", borderRadius: 8, fontSize: 14 }}>
-          <div style={{ fontWeight: 800 }}>Debug</div>
-          <div style={{ marginTop: 6 }}>
-            API base: <span style={{ fontFamily: "monospace" }}>{apiBase || "same origin"}</span>
-          </div>
-          <div style={{ marginTop: 6 }}>
-            GET: <span style={{ fontFamily: "monospace" }}>{getUrl}</span>
-          </div>
-          <div style={{ marginTop: 6 }}>
-            CLAIM: <span style={{ fontFamily: "monospace" }}>{claimUrl}</span>
-          </div>
+      {error && <div style={{ color: "red", marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
+        <div style={{ marginBottom: 12 }}>
+          <strong>Message</strong>
+          <div>{gift.message || "—"}</div>
         </div>
-      ) : null}
 
-      <div style={{ marginTop: 18 }}>
-        {loading ? <div>Loading…</div> : null}
+        <div style={{ marginBottom: 12 }}>
+          <strong>Amount</strong>
+          <div>${(Number(gift.amount) / 100).toFixed(2)}</div>
+        </div>
 
-        {!loading && err ? (
-          <div style={{ color: "crimson", fontWeight: 800 }}>
-            {err}
-            <div style={{ marginTop: 10 }}>
-              <button type="button" onClick={loadGift}>
-                Retry
-              </button>
-            </div>
-          </div>
-        ) : null}
+        {siteKey && <div id="turnstile-container" style={{ marginBottom: 12 }} />}
 
-        {!loading && gift ? (
-          <div style={{ marginTop: 10 }}>
-            <div style={{ padding: 14, border: "1px solid #e5e5e5", borderRadius: 12 }}>
-              <div style={{ fontSize: 14, opacity: 0.85 }}>Message</div>
-              <div style={{ marginTop: 8, fontSize: 18, fontWeight: 700, lineHeight: 1.35 }}>{gift.message}</div>
-
-              <div style={{ marginTop: 16, fontSize: 14, opacity: 0.85 }}>Amount</div>
-              <div style={{ marginTop: 6, fontSize: 22, fontWeight: 900 }}>{money(gift.amount)}</div>
-
-              {gift.isClaimed ? (
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ fontWeight: 900 }}>
-                    Already claimed <span aria-hidden="true">✅</span>
-                  </div>
-                  <div style={{ marginTop: 6, opacity: 0.85 }}>This gift has already been claimed.</div>
-                </div>
-              ) : (
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ fontWeight: 900 }}>Claim</div>
-                  <div style={{ marginTop: 6, opacity: 0.85 }}>By claiming, you confirm this gift is intended for you.</div>
-                  <div style={{ marginTop: 12 }}>
-                    <button type="button" onClick={doClaim} disabled={claiming} style={{ padding: "10px 12px" }}>
-                      {claiming ? "Claiming…" : "Claim gift"}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {claimMsg ? <div style={{ marginTop: 12, color: "green", fontWeight: 800 }}>{claimMsg}</div> : null}
-            </div>
-          </div>
-        ) : null}
+        <button
+          onClick={handleClaim}
+          disabled={claiming}
+          style={{
+            width: "100%",
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "none",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 700,
+            cursor: "pointer",
+            opacity: claiming ? 0.6 : 1,
+          }}
+        >
+          {claiming ? "Claiming…" : "Claim gift"}
+        </button>
       </div>
     </div>
   );
