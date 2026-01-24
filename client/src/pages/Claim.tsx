@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 declare global {
   interface Window {
@@ -29,14 +29,18 @@ export default function Claim() {
   const [ok, setOk] = useState(false);
 
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
-  const retryTimerRef = useRef<number | null>(null);
-
-  const [captchaReady, setCaptchaReady] = useState(false);
-  const turnstileTokenRef = useRef<string>("");
-  const turnstileTokenAtRef = useRef<number>(0);
-  const turnstileWidgetIdRef = useRef<any>(null);
 
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
+
+  // Turnstile state
+  const [turnstileBooting, setTurnstileBooting] = useState<boolean>(!!siteKey);
+  const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey); // if no siteKey, don't block
+  const tokenRef = useRef<string>("");
+  const tokenAtRef = useRef<number>(0);
+  const widgetIdRef = useRef<any>(null);
+  const renderedRef = useRef<boolean>(false);
+
+  const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
 
   useEffect(() => {
     async function loadGift() {
@@ -54,121 +58,146 @@ export default function Claim() {
     loadGift();
   }, [publicId]);
 
+  // countdown
   useEffect(() => {
-    // If no site key is configured, don't block claiming in dev/test.
-    if (!siteKey) {
-      setCaptchaReady(true);
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
-    script.async = true;
-    script.defer = true;
-    document.body.appendChild(script);
-
-    return () => {
-      document.body.removeChild(script);
-    };
-  }, [siteKey]);
-
-  useEffect(() => {
-    if (!siteKey) return;
-    if (!window.turnstile) return;
-
-    // Only render once
-    if (turnstileWidgetIdRef.current !== null) return;
-
-    const widgetId = window.turnstile.render("#turnstile-container", {
-      sitekey: siteKey,
-      callback: (token: string) => {
-        turnstileTokenRef.current = token || "";
-        turnstileTokenAtRef.current = Date.now();
-        setCaptchaReady(!!token);
-        setError("");
-      },
-      "expired-callback": () => {
-        turnstileTokenRef.current = "";
-        turnstileTokenAtRef.current = 0;
-        setCaptchaReady(false);
-      },
-      "error-callback": () => {
-        turnstileTokenRef.current = "";
-        turnstileTokenAtRef.current = 0;
-        setCaptchaReady(false);
-      },
-    });
-
-    turnstileWidgetIdRef.current = widgetId;
-  }, [siteKey]);
-
-  function resetTurnstile() {
-    try {
-      if (window.turnstile && turnstileWidgetIdRef.current !== null) {
-        window.turnstile.reset(turnstileWidgetIdRef.current);
-      }
-    } catch {}
-    turnstileTokenRef.current = "";
-    turnstileTokenAtRef.current = 0;
-    setCaptchaReady(false);
-  }
-
-  useEffect(() => {
-    // countdown ticker
-    if (retryTimerRef.current) {
-      window.clearInterval(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
-
     if (retryAfterSec === null) return;
+    if (retryAfterSec <= 0) return;
 
-    retryTimerRef.current = window.setInterval(() => {
+    const t = window.setInterval(() => {
       setRetryAfterSec((prev) => {
         if (prev === null) return null;
-
-        if (prev <= 1) {
-          // countdown finished
-          if (retryTimerRef.current) {
-            window.clearInterval(retryTimerRef.current);
-            retryTimerRef.current = null;
-          }
-
-          // IMPORTANT: Turnstile tokens can expire while waiting.
-          // Force a fresh verification when the wait ends.
-          resetTurnstile();
-          setError("Quick verification again, then you can claim.");
-
-          return 0;
-        }
-
+        if (prev <= 1) return 0;
         return prev - 1;
       });
     }, 1000);
 
+    return () => window.clearInterval(t);
+  }, [retryAfterSec]);
+
+  function resetTurnstile() {
+    try {
+      if (window.turnstile && widgetIdRef.current !== null) {
+        window.turnstile.reset(widgetIdRef.current);
+      }
+    } catch {}
+    tokenRef.current = "";
+    tokenAtRef.current = 0;
+    setCaptchaReady(false);
+  }
+
+  // Load Turnstile script (once)
+  useEffect(() => {
+    if (!siteKey) {
+      setTurnstileBooting(false);
+      setCaptchaReady(true);
+      return;
+    }
+
+    // if script already present, just mark booting and let render loop pick it up
+    const existing = document.querySelector<HTMLScriptElement>('script[data-turnstile="1"]');
+    if (existing) return;
+
+    const script = document.createElement("script");
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    script.async = true;
+    script.defer = true;
+    script.setAttribute("data-turnstile", "1");
+
+    script.onload = () => {
+      // render loop will handle actual render
+      setTurnstileBooting(false);
+    };
+
+    script.onerror = () => {
+      setTurnstileBooting(false);
+      setError("Verification failed to load. Please refresh the page.");
+    };
+
+    document.body.appendChild(script);
+
     return () => {
-      if (retryTimerRef.current) {
-        window.clearInterval(retryTimerRef.current);
-        retryTimerRef.current = null;
+      // keep script in DOM; no cleanup to avoid reloading on route changes
+    };
+  }, [siteKey]);
+
+  // Render Turnstile when ready (retry loop)
+  useEffect(() => {
+    if (!siteKey) return;
+    if (renderedRef.current) return;
+
+    let cancelled = false;
+
+    const tryRender = () => {
+      if (cancelled) return;
+
+      const ts = window.turnstile;
+      const el = document.getElementById("turnstile-container");
+      if (!ts || !el) return;
+
+      // Avoid double-render
+      if (renderedRef.current) return;
+
+      try {
+        setTurnstileBooting(false);
+
+        const id = ts.render("#turnstile-container", {
+          sitekey: siteKey,
+          callback: (token: string) => {
+            tokenRef.current = token || "";
+            tokenAtRef.current = Date.now();
+            setCaptchaReady(!!token);
+            setError("");
+          },
+          "expired-callback": () => {
+            tokenRef.current = "";
+            tokenAtRef.current = 0;
+            setCaptchaReady(false);
+          },
+          "error-callback": () => {
+            tokenRef.current = "";
+            tokenAtRef.current = 0;
+            setCaptchaReady(false);
+            setError("Verification failed. Please try again.");
+          },
+        });
+
+        widgetIdRef.current = id;
+        renderedRef.current = true;
+      } catch {
+        // keep retrying
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryAfterSec]);
+
+    // Try immediately + retry for ~3 seconds
+    tryRender();
+    const interval = window.setInterval(tryRender, 150);
+    const timeout = window.setTimeout(() => {
+      window.clearInterval(interval);
+      if (!renderedRef.current) {
+        setTurnstileBooting(false);
+        setError("Verification didn’t load. Please refresh the page.");
+      }
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
+    };
+  }, [siteKey]);
 
   async function handleClaim() {
     if (!publicId) return;
 
-    // If we are still counting down, block clicks without spamming the API.
-    if (retryAfterSec !== null && retryAfterSec > 0) {
+    if (waitingOnDelay) {
       setError("Just a moment — we’re securing this gift.");
       return;
     }
 
-    if (!siteKey) {
-      setCaptchaReady(true);
-    } else {
-      // Token should be fresh; if it's older than ~45s, make user re-verify.
-      const ageMs = Date.now() - (turnstileTokenAtRef.current || 0);
-      if (!turnstileTokenRef.current || ageMs > 45_000) {
+    if (siteKey) {
+      // If token is stale, re-verify (Turnstile tokens can expire quickly)
+      const ageMs = Date.now() - (tokenAtRef.current || 0);
+      if (!tokenRef.current || ageMs > 45_000) {
         setError("Please complete the quick verification below.");
         resetTurnstile();
         return;
@@ -180,8 +209,6 @@ export default function Claim() {
       return;
     }
 
-    const token = turnstileTokenRef.current || "";
-
     setClaiming(true);
     setError("");
 
@@ -189,7 +216,7 @@ export default function Claim() {
       const r = await fetch(`/api/gifts/${publicId}/claim`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ turnstileToken: token }),
+        body: JSON.stringify({ turnstileToken: tokenRef.current || "" }),
       });
 
       const j = await r.json();
@@ -203,8 +230,10 @@ export default function Claim() {
 
       setOk(true);
     } catch (e: any) {
-      setError(friendlyError(e.message || "Claim failed"));
-      // If claim failed due to captcha, force a fresh one.
+      const msg = friendlyError(e.message || "Claim failed");
+      setError(msg);
+
+      // If captcha-related error, force refresh of widget
       if (/captcha/i.test(String(e?.message || ""))) resetTurnstile();
     } finally {
       setClaiming(false);
@@ -224,13 +253,12 @@ export default function Claim() {
     );
   }
 
-  const waitingOnDelay = retryAfterSec !== null && retryAfterSec > 0;
   const buttonDisabled = claiming || waitingOnDelay || !captchaReady;
 
   let buttonText = "Claim gift";
   if (claiming) buttonText = "Finalizing…";
-  else if (!captchaReady) buttonText = "Verify to claim";
   else if (waitingOnDelay) buttonText = `Securing… ${retryAfterSec}s`;
+  else if (!captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
 
   return (
     <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
@@ -260,7 +288,14 @@ export default function Claim() {
           <div>${(Number(gift?.amount || 0) / 100).toFixed(2)}</div>
         </div>
 
-        {siteKey && <div id="turnstile-container" style={{ marginBottom: 12 }} />}
+        {siteKey && (
+          <div style={{ marginBottom: 12 }}>
+            <div id="turnstile-container" />
+            {turnstileBooting && (
+              <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div>
+            )}
+          </div>
+        )}
 
         <button
           onClick={handleClaim}
