@@ -23,6 +23,14 @@ type CreateGiftOk = {
 
 type CreateGiftResponse = CreateGiftOk | ApiError;
 
+type LastLink = {
+  claimUrl: string;
+  createdAt: number; // ms
+};
+
+const LAST_LINK_STRUCTURED_KEY = "thankumail:lastClaim";
+const LAST_LINK_LEGACY_KEY = "thankumail:lastClaimUrl";
+
 function moneyToCents(dollars: number) {
   const cents = Math.round((Number(dollars) || 0) * 100);
   return Number.isFinite(cents) ? cents : 0;
@@ -44,6 +52,29 @@ function absoluteLink(maybeRelative: string) {
   return `${origin}${path}`;
 }
 
+function isValidHttpUrl(s: string) {
+  try {
+    const u = new URL(s);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function saveLastClaimUrl(url: string) {
+  try {
+    if (!url) return;
+    if (typeof window === "undefined") return;
+    if (!isValidHttpUrl(url)) return;
+
+    const structured: LastLink = { claimUrl: url, createdAt: Date.now() };
+    localStorage.setItem(LAST_LINK_STRUCTURED_KEY, JSON.stringify(structured));
+    localStorage.setItem(LAST_LINK_LEGACY_KEY, url);
+  } catch {
+    // ignore
+  }
+}
+
 declare global {
   interface Window {
     turnstile?: any;
@@ -57,7 +88,9 @@ function loadTurnstileScript(): Promise<void> {
     if (typeof window === "undefined") return resolve();
     if (window.turnstile) return resolve();
 
-    const existing = document.querySelector<HTMLScriptElement>(`script[src^="https://challenges.cloudflare.com/turnstile/"]`);
+    const existing = document.querySelector<HTMLScriptElement>(
+      `script[src^="https://challenges.cloudflare.com/turnstile/"]`
+    );
     if (existing) {
       existing.addEventListener("load", () => resolve(), { once: true });
       existing.addEventListener("error", () => reject(new Error("Failed to load Turnstile script")), { once: true });
@@ -277,6 +310,10 @@ export default function CreateGiftForm() {
       const ok = data as CreateGiftOk;
       setCreated(ok);
 
+      // Save "last link" locally (structured + legacy) so Home updates on next load
+      const abs = ok?.claimUrl ? absoluteLink(ok.claimUrl) : "";
+      if (abs) saveLastClaimUrl(abs);
+
       setRecipientEmail("");
       setRecipientPhone("");
       setAmountDollars(10);
@@ -305,7 +342,9 @@ export default function CreateGiftForm() {
         </div>
 
         {apiError ? (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{apiError}</div>
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {apiError}
+          </div>
         ) : null}
 
         {created ? (
