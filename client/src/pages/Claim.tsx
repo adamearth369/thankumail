@@ -27,9 +27,11 @@ export default function Claim() {
   const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState("");
   const [ok, setOk] = useState(false);
-  const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
-  const [captchaReady, setCaptchaReady] = useState(false);
 
+  const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
+
+  const [captchaReady, setCaptchaReady] = useState(false);
   const turnstileTokenRef = useRef<string>("");
 
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
@@ -90,8 +92,46 @@ export default function Claim() {
     });
   }, [siteKey]);
 
+  useEffect(() => {
+    // countdown ticker
+    if (retryTimerRef.current) {
+      window.clearInterval(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+
+    if (retryAfterSec === null) return;
+
+    retryTimerRef.current = window.setInterval(() => {
+      setRetryAfterSec((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          // auto-clear + allow user to click again without spam
+          if (retryTimerRef.current) {
+            window.clearInterval(retryTimerRef.current);
+            retryTimerRef.current = null;
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (retryTimerRef.current) {
+        window.clearInterval(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, [retryAfterSec]);
+
   async function handleClaim() {
     if (!publicId) return;
+
+    // if we are still counting down, block clicks
+    if (retryAfterSec !== null && retryAfterSec > 0) {
+      setError("Please wait a moment before claiming.");
+      return;
+    }
 
     if (!captchaReady) {
       setError("Please verify you’re not a bot.");
@@ -113,7 +153,7 @@ export default function Claim() {
       const j = await r.json();
 
       if (r.status === 429 && j?.retryAfterSec) {
-        setRetryAfterSec(j.retryAfterSec);
+        setRetryAfterSec(Number(j.retryAfterSec) || 0);
         throw new Error("MIN_DELAY");
       }
 
@@ -139,6 +179,14 @@ export default function Claim() {
     );
   }
 
+  const waitingOnDelay = retryAfterSec !== null && retryAfterSec > 0;
+  const buttonDisabled = claiming || waitingOnDelay || !captchaReady;
+
+  let buttonText = "Claim gift";
+  if (claiming) buttonText = "Claiming…";
+  else if (!captchaReady) buttonText = "Verify to claim";
+  else if (waitingOnDelay) buttonText = `Wait ${retryAfterSec}s`;
+
   return (
     <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
       <h1>You’ve got a ThankuMail</h1>
@@ -146,7 +194,7 @@ export default function Claim() {
 
       {error && <div style={{ color: "#b00020", marginBottom: 12 }}>{error}</div>}
 
-      {retryAfterSec !== null && (
+      {retryAfterSec !== null && retryAfterSec > 0 && (
         <div style={{ color: "#666", marginBottom: 12 }}>
           You can claim in about {retryAfterSec} seconds.
         </div>
@@ -167,7 +215,7 @@ export default function Claim() {
 
         <button
           onClick={handleClaim}
-          disabled={claiming || !captchaReady}
+          disabled={buttonDisabled}
           style={{
             width: "100%",
             padding: "10px 14px",
@@ -176,11 +224,11 @@ export default function Claim() {
             background: "#111",
             color: "#fff",
             fontWeight: 700,
-            cursor: claiming || !captchaReady ? "not-allowed" : "pointer",
-            opacity: claiming || !captchaReady ? 0.5 : 1,
+            cursor: buttonDisabled ? "not-allowed" : "pointer",
+            opacity: buttonDisabled ? 0.5 : 1,
           }}
         >
-          {claiming ? "Claiming…" : !captchaReady ? "Verify to claim" : "Claim gift"}
+          {buttonText}
         </button>
       </div>
     </div>
