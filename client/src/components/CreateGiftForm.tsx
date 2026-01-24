@@ -23,14 +23,6 @@ type CreateGiftOk = {
 
 type CreateGiftResponse = CreateGiftOk | ApiError;
 
-type LastLink = {
-  claimUrl: string;
-  createdAt: number; // ms
-};
-
-const LAST_LINK_STRUCTURED_KEY = "thankumail:lastClaim";
-const LAST_LINK_LEGACY_KEY = "thankumail:lastClaimUrl";
-
 function moneyToCents(dollars: number) {
   const cents = Math.round((Number(dollars) || 0) * 100);
   return Number.isFinite(cents) ? cents : 0;
@@ -52,24 +44,16 @@ function absoluteLink(maybeRelative: string) {
   return `${origin}${path}`;
 }
 
-function isValidHttpUrl(s: string) {
-  try {
-    const u = new URL(s);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
+function lastLinkKey() {
+  return "thankumail:lastClaimUrl";
 }
-
-function saveLastClaimUrl(url: string) {
+function lastLinkTsKey() {
+  return "thankumail:lastClaimUrlTs";
+}
+function safeSetLastClaimUrl(url: string) {
   try {
-    if (!url) return;
-    if (typeof window === "undefined") return;
-    if (!isValidHttpUrl(url)) return;
-
-    const structured: LastLink = { claimUrl: url, createdAt: Date.now() };
-    localStorage.setItem(LAST_LINK_STRUCTURED_KEY, JSON.stringify(structured));
-    localStorage.setItem(LAST_LINK_LEGACY_KEY, url);
+    localStorage.setItem(lastLinkKey(), url);
+    localStorage.setItem(lastLinkTsKey(), String(Date.now()));
   } catch {
     // ignore
   }
@@ -120,6 +104,7 @@ export default function CreateGiftForm() {
   const [apiError, setApiError] = useState<string>("");
   const [apiField, setApiField] = useState<string>("");
   const [created, setCreated] = useState<CreateGiftOk | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // ---- Turnstile ----
   const siteKey =
@@ -240,6 +225,7 @@ export default function CreateGiftForm() {
     setApiError("");
     setApiField("");
     setCreated(null);
+    setCopied(false);
 
     if (!senderOk) {
       setApiError("Sender email is required and must be valid.");
@@ -310,10 +296,11 @@ export default function CreateGiftForm() {
       const ok = data as CreateGiftOk;
       setCreated(ok);
 
-      // Save "last link" locally (structured + legacy) so Home updates on next load
-      const abs = ok?.claimUrl ? absoluteLink(ok.claimUrl) : "";
-      if (abs) saveLastClaimUrl(abs);
+      // Save last link locally for "Last ThanküMail link" card on Home
+      const abs = absoluteLink(ok.claimUrl || "");
+      if (abs) safeSetLastClaimUrl(abs);
 
+      // Keep sender email (convenience), clear recipient/message/amount for next send
       setRecipientEmail("");
       setRecipientPhone("");
       setAmountDollars(10);
@@ -332,6 +319,28 @@ export default function CreateGiftForm() {
   }
 
   const claimUrl = created?.claimUrl ? absoluteLink(created.claimUrl) : "";
+  const deliveryLine =
+    created && typeof created.deliveryOk === "boolean"
+      ? created.deliveryOk
+        ? "Delivered/queued successfully."
+        : `Delivery did not complete${created.deliveryError ? `: ${created.deliveryError}` : "."}`
+      : "";
+
+  async function copyLink() {
+    if (!claimUrl) return;
+    try {
+      await navigator.clipboard?.writeText(claimUrl);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore
+    }
+  }
+
+  function openClaim() {
+    if (!claimUrl) return;
+    window.open(claimUrl, "_blank", "noopener,noreferrer");
+  }
 
   return (
     <div className="w-full max-w-xl">
@@ -342,22 +351,45 @@ export default function CreateGiftForm() {
         </div>
 
         {apiError ? (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-            {apiError}
-          </div>
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{apiError}</div>
         ) : null}
 
         {created ? (
-          <div className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900">
-            <div className="font-semibold">Created</div>
-            <div className="mt-1">
-              Claim link:{" "}
-              <a className="underline" href={claimUrl} target="_blank" rel="noreferrer">
-                {claimUrl}
-              </a>
+          <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 px-4 py-4 text-sm text-green-950">
+            <div className="text-base font-semibold">Sent.</div>
+            <div className="mt-1 text-sm opacity-90">
+              Your message is on its way. The gift can be claimed after a quick verification (and a short safety pause).
             </div>
-            {typeof created.deliveryOk === "boolean" ? (
-              <div className="mt-1">Delivery: {created.deliveryOk ? "queued/sent" : "not sent"}</div>
+
+            {deliveryLine ? <div className="mt-2 text-xs opacity-80">{deliveryLine}</div> : null}
+
+            {claimUrl ? (
+              <div className="mt-3 rounded-xl border border-green-200 bg-white px-3 py-3">
+                <div className="text-xs font-semibold text-gray-700">Claim link</div>
+                <div className="mt-1 break-all text-xs text-gray-800">{claimUrl}</div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={openClaim}
+                    className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white"
+                  >
+                    Open claim page →
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={copyLink}
+                    className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900"
+                  >
+                    {copied ? "Copied" : "Copy link"}
+                  </button>
+                </div>
+
+                <div className="mt-2 text-xs text-gray-500">
+                  Tip: This link is also saved on the home page as your “Last ThanküMail link” (on this device).
+                </div>
+              </div>
             ) : null}
           </div>
         ) : null}
