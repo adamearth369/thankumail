@@ -99,13 +99,8 @@ export default function Claim() {
     }
   }
 
-  if (loading) {
-    return <div style={{ padding: 32 }}>Loading…</div>;
-  }
-
-  if (error && !gift) {
-    return <div style={{ padding: 32, color: "red" }}>{error}</div>;
-  }
+  if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
+  if (error && !gift) return <div style={{ padding: 32, color: "red" }}>{error}</div>;
 
   if (ok) {
     return (
