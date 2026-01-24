@@ -13,7 +13,7 @@ function getPublicIdFromPath() {
 
 function friendlyError(msg: string) {
   if (!msg) return "";
-  if (/captcha/i.test(msg)) return "Please verify you’re not a bot.";
+  if (/captcha/i.test(msg)) return "Please complete the quick verification below.";
   if (/MIN_DELAY/i.test(msg) || /wait/i.test(msg)) return "Just a moment — we’re securing this gift.";
   if (/already claimed/i.test(msg)) return "This ThankuMail has already been claimed.";
   return msg;
@@ -33,6 +33,8 @@ export default function Claim() {
 
   const [captchaReady, setCaptchaReady] = useState(false);
   const turnstileTokenRef = useRef<string>("");
+  const turnstileTokenAtRef = useRef<number>(0);
+  const turnstileWidgetIdRef = useRef<any>(null);
 
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 
@@ -74,25 +76,45 @@ export default function Claim() {
     if (!siteKey) return;
     if (!window.turnstile) return;
 
-    window.turnstile.render("#turnstile-container", {
+    // Only render once
+    if (turnstileWidgetIdRef.current !== null) return;
+
+    const widgetId = window.turnstile.render("#turnstile-container", {
       sitekey: siteKey,
       callback: (token: string) => {
-        turnstileTokenRef.current = token;
-        setCaptchaReady(true);
+        turnstileTokenRef.current = token || "";
+        turnstileTokenAtRef.current = Date.now();
+        setCaptchaReady(!!token);
         setError("");
       },
       "expired-callback": () => {
         turnstileTokenRef.current = "";
+        turnstileTokenAtRef.current = 0;
         setCaptchaReady(false);
       },
       "error-callback": () => {
         turnstileTokenRef.current = "";
+        turnstileTokenAtRef.current = 0;
         setCaptchaReady(false);
       },
     });
+
+    turnstileWidgetIdRef.current = widgetId;
   }, [siteKey]);
 
+  function resetTurnstile() {
+    try {
+      if (window.turnstile && turnstileWidgetIdRef.current !== null) {
+        window.turnstile.reset(turnstileWidgetIdRef.current);
+      }
+    } catch {}
+    turnstileTokenRef.current = "";
+    turnstileTokenAtRef.current = 0;
+    setCaptchaReady(false);
+  }
+
   useEffect(() => {
+    // countdown ticker
     if (retryTimerRef.current) {
       window.clearInterval(retryTimerRef.current);
       retryTimerRef.current = null;
@@ -103,13 +125,22 @@ export default function Claim() {
     retryTimerRef.current = window.setInterval(() => {
       setRetryAfterSec((prev) => {
         if (prev === null) return null;
+
         if (prev <= 1) {
+          // countdown finished
           if (retryTimerRef.current) {
             window.clearInterval(retryTimerRef.current);
             retryTimerRef.current = null;
           }
+
+          // IMPORTANT: Turnstile tokens can expire while waiting.
+          // Force a fresh verification when the wait ends.
+          resetTurnstile();
+          setError("Quick verification again, then you can claim.");
+
           return 0;
         }
+
         return prev - 1;
       });
     }, 1000);
@@ -120,15 +151,28 @@ export default function Claim() {
         retryTimerRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryAfterSec]);
 
   async function handleClaim() {
     if (!publicId) return;
 
-    // If we are still counting down, block clicks without throwing errors.
+    // If we are still counting down, block clicks without spamming the API.
     if (retryAfterSec !== null && retryAfterSec > 0) {
       setError("Just a moment — we’re securing this gift.");
       return;
+    }
+
+    if (!siteKey) {
+      setCaptchaReady(true);
+    } else {
+      // Token should be fresh; if it's older than ~45s, make user re-verify.
+      const ageMs = Date.now() - (turnstileTokenAtRef.current || 0);
+      if (!turnstileTokenRef.current || ageMs > 45_000) {
+        setError("Please complete the quick verification below.");
+        resetTurnstile();
+        return;
+      }
     }
 
     if (!captchaReady) {
@@ -160,6 +204,8 @@ export default function Claim() {
       setOk(true);
     } catch (e: any) {
       setError(friendlyError(e.message || "Claim failed"));
+      // If claim failed due to captcha, force a fresh one.
+      if (/captcha/i.test(String(e?.message || ""))) resetTurnstile();
     } finally {
       setClaiming(false);
     }
@@ -172,9 +218,7 @@ export default function Claim() {
     return (
       <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
         <h2>🎉 You’ve received a ThankuMail</h2>
-        <p>
-          This moment was meant just for you. Someone took the time to send you a gift and a message.
-        </p>
+        <p>This moment was meant just for you.</p>
         <p style={{ color: "#666" }}>We hope it brought a little light to your day.</p>
       </div>
     );
@@ -193,7 +237,6 @@ export default function Claim() {
       <h1>You’ve got a ThankuMail</h1>
       <p>Someone left you a note and a gift. Take a breath — it’s meant for you.</p>
 
-      {/* Gentle pre-framing (prevents abandonment) */}
       <div style={{ color: "#666", marginBottom: 12 }}>
         For security, there’s a brief verification and short pause before claiming.
       </div>
