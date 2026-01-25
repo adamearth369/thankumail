@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: Replace the entire contents of server/routes.ts with this file.
+
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -8,6 +11,9 @@ import { eq, and } from "drizzle-orm";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { sendGiftEmail } from "./email";
+
+/* -------------------- VERSION MARKER -------------------- */
+const ROUTES_VERSION = "routes_v2026-01-24_014";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -25,6 +31,15 @@ function getBaseUrl(req: Request) {
   const proto = (req.headers["x-forwarded-proto"] || "https").toString();
   const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
   return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
+/* -------------------- CLAIM DELAY -------------------- */
+// Keep a single source of truth for default + reporting.
+// If MIN_CLAIM_DELAY_SEC is not set, we behave as 60 seconds by default.
+function getMinClaimDelaySec() {
+  const raw = Number(process.env.MIN_CLAIM_DELAY_SEC);
+  if (Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
+  return 60;
 }
 
 /* -------------------- TURNSTILE -------------------- */
@@ -94,25 +109,32 @@ const claimLimiter = rateLimit({
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-24_013";
+  const VERSION = ROUTES_VERSION;
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
+  const minClaimDelaySec = getMinClaimDelaySec();
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
 
+  // IMPORTANT: report the effective delay (default 60 if env missing)
   app.get("/api/version", (_req, res) =>
     res.json({
       ok: true,
       version: VERSION,
       commit: COMMIT,
       env: process.env.NODE_ENV || "",
-      minClaimDelaySec: Number(process.env.MIN_CLAIM_DELAY_SEC || 0),
+      minClaimDelaySec,
     }),
   );
 
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
     const parsed = CreateGiftSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        error: "Invalid payload",
+        issues: parsed.error.issues,
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
@@ -121,7 +143,12 @@ export function registerRoutes(app: Express): Server {
     const amount = Number(parsed.data.amount);
 
     if (!recipientEmail) {
-      return res.status(400).json({ error: "Recipient email is required", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        error: "Recipient email is required",
+        field: "recipientEmail",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
 
     const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
@@ -221,7 +248,6 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // ✅ FIX: Check MIN_DELAY before Turnstile verification so users don't need CAPTCHA twice.
   app.post("/api/gifts/:publicId/claim", claimLimiter, async (req, res) => {
     const publicId = safeStr(req.params.publicId).trim();
     if (!publicId) return res.status(400).json({ error: "Invalid id", version: VERSION, commit: COMMIT });
@@ -231,7 +257,17 @@ export function registerRoutes(app: Express): Server {
       return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
-    const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
+    const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
+    if (!t.ok) {
+      return res.status(400).json({
+        error: "Missing CAPTCHA token",
+        field: "turnstileToken",
+        codes: (t as any).codes || [],
+        code: "TURNSTILE_FAILED",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
 
     try {
       const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
@@ -242,10 +278,11 @@ export function registerRoutes(app: Express): Server {
         return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
 
-      if (gift.createdAt && minDelaySec > 0) {
+      // Enforce min delay (default 60)
+      if (gift.createdAt && minClaimDelaySec > 0) {
         const ageMs = Date.now() - new Date(gift.createdAt).getTime();
-        if (ageMs < minDelaySec * 1000) {
-          const retryAfterSec = Math.ceil((minDelaySec * 1000 - ageMs) / 1000);
+        if (ageMs < minClaimDelaySec * 1000) {
+          const retryAfterSec = Math.ceil((minClaimDelaySec * 1000 - ageMs) / 1000);
           return res.status(429).json({
             error: "Please wait before claiming",
             code: "MIN_DELAY",
@@ -254,19 +291,6 @@ export function registerRoutes(app: Express): Server {
             commit: COMMIT,
           });
         }
-      }
-
-      // Only verify Turnstile once the gift is eligible to be claimed
-      const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
-      if (!t.ok) {
-        return res.status(400).json({
-          error: "Missing CAPTCHA token",
-          field: "turnstileToken",
-          codes: (t as any).codes || [],
-          code: "TURNSTILE_FAILED",
-          version: VERSION,
-          commit: COMMIT,
-        });
       }
 
       await db
