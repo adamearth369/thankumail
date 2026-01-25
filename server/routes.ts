@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { eq, and, lt, isNull } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
@@ -94,7 +94,7 @@ const claimLimiter = rateLimit({
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-24_012";
+  const VERSION = "routes_v2026-01-24_013";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -221,6 +221,7 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // ✅ FIX: Check MIN_DELAY before Turnstile verification so users don't need CAPTCHA twice.
   app.post("/api/gifts/:publicId/claim", claimLimiter, async (req, res) => {
     const publicId = safeStr(req.params.publicId).trim();
     if (!publicId) return res.status(400).json({ error: "Invalid id", version: VERSION, commit: COMMIT });
@@ -230,19 +231,6 @@ export function registerRoutes(app: Express): Server {
       return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
-    const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
-    if (!t.ok) {
-      return res.status(400).json({
-        error: "Missing CAPTCHA token",
-        field: "turnstileToken",
-        codes: (t as any).codes || [],
-        code: "TURNSTILE_FAILED",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    // ✅ enforce min delay
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
 
     try {
@@ -268,6 +256,19 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
+      // Only verify Turnstile once the gift is eligible to be claimed
+      const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
+      if (!t.ok) {
+        return res.status(400).json({
+          error: "Missing CAPTCHA token",
+          field: "turnstileToken",
+          codes: (t as any).codes || [],
+          code: "TURNSTILE_FAILED",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+
       await db
         .update(gifts)
         .set({ isClaimed: true, claimedAt: new Date() })
@@ -279,8 +280,6 @@ export function registerRoutes(app: Express): Server {
       return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
-
-  // Admin reminders route was removed in _011; add back later once min-delay is correct.
 
   const httpServer = createServer(app);
   return httpServer;

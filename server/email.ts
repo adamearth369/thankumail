@@ -71,6 +71,45 @@ function money(cents: number) {
   return `$${dollars}`;
 }
 
+/* -------------------- KEY HANDLING -------------------- */
+function redactKey(k: string) {
+  const s = (k || "").trim();
+  if (!s) return "";
+  const a = s.slice(0, 6);
+  const b = s.slice(-2);
+  return `${a}…${b}`;
+}
+
+function looksLikeBrevoApiKey(k: string) {
+  const s = (k || "").trim();
+  return /^xkeysib-/.test(s);
+}
+
+function getBrevoApiKey():
+  | { ok: true; key: string; note: string; preview: string }
+  | { ok: false; error: string; note: string } {
+  const apiKey = env("BREVO_API_KEY");
+  const smtpKey = env("BREVO_SMTP_KEY");
+
+  if (apiKey) {
+    const note = looksLikeBrevoApiKey(apiKey)
+      ? "BREVO_API_KEY_present"
+      : "BREVO_API_KEY_present_nonstandard_format";
+    return { ok: true, key: apiKey, note, preview: redactKey(apiKey) };
+  }
+
+  if (smtpKey) {
+    return {
+      ok: false,
+      error: "BREVO_API_KEY is missing (BREVO_SMTP_KEY is set, but the API endpoint requires an API v3 key)",
+      note: "BREVO_SMTP_KEY_present_but_rejected",
+    };
+  }
+
+  return { ok: false, error: "Missing BREVO_API_KEY", note: "no_brevo_keys_present" };
+}
+
+/* -------------------- BREVO SEND -------------------- */
 async function sendBrevoEmail(params: {
   to: string;
   subject: string;
@@ -84,20 +123,35 @@ async function sendBrevoEmail(params: {
     const to = (params.to || "").trim();
     if (!isEmail(to)) return { ok: false, error: `Invalid recipient email: "${to}"` };
 
-    const apiKey = env("BREVO_API_KEY") || env("BREVO_SMTP_KEY");
-    if (!apiKey) return { ok: false, error: "Missing BREVO_API_KEY" };
-
+    const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
     const fromEmail = env("FROM_EMAIL", "noreply@thankumail.com");
     const fromName = env("FROM_NAME", "ThankuMail");
-    const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
 
-    logEmail("email_api_send_start", { toDomain: emailDomain(to), endpoint });
+    const keyInfo = getBrevoApiKey();
+
+    logEmail("email_api_send_start", {
+      toDomain: emailDomain(to),
+      endpoint,
+      fromDomain: emailDomain(fromEmail),
+      keyNote: keyInfo.note,
+      keyPreview: keyInfo.ok ? keyInfo.preview : "",
+    });
+
+    if (!keyInfo.ok) {
+      logEmail("email_api_send_failed", {
+        toDomain: emailDomain(to),
+        status: 0,
+        body: keyInfo.error,
+        ms: Date.now() - started,
+      });
+      return { ok: false, error: keyInfo.error };
+    }
 
     const resp = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "api-key": apiKey,
+        "api-key": keyInfo.key,
         Accept: "application/json",
       },
       body: JSON.stringify({
@@ -119,17 +173,27 @@ async function sendBrevoEmail(params: {
     }
 
     if (!resp.ok) {
+      const bodyPreview = (bodyJson ? JSON.stringify(bodyJson) : bodyText || "")
+        .toString()
+        .slice(0, 800);
+
       logEmail("email_api_send_failed", {
         toDomain: emailDomain(to),
         status: resp.status,
-        body: (bodyJson ?? bodyText)?.toString?.().slice?.(0, 500) ?? "",
+        body: bodyPreview,
         ms: Date.now() - started,
       });
-      return { ok: false, error: `Brevo API error (${resp.status})` };
+
+      return { ok: false, error: `Brevo API error (${resp.status}): ${bodyPreview}` };
     }
 
     const messageId = (bodyJson && (bodyJson.messageId || bodyJson["messageId"])) || "unknown";
-    logEmail("email_api_send_ok", { toDomain: emailDomain(to), messageId, ms: Date.now() - started });
+
+    logEmail("email_api_send_ok", {
+      toDomain: emailDomain(to),
+      messageId: String(messageId),
+      ms: Date.now() - started,
+    });
 
     return { ok: true, messageId: String(messageId) };
   } catch (err: any) {
@@ -139,6 +203,7 @@ async function sendBrevoEmail(params: {
   }
 }
 
+/* -------------------- PUBLIC API -------------------- */
 export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: boolean; error?: string }> {
   const claimUrl = toAbsoluteLink(args.claimUrl);
   const subject = `You received a ThankuMail`;
@@ -225,7 +290,7 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
 }
 
 export async function sendReturnToSenderEmail(
-  args: SendReturnToSenderEmailArgs
+  args: SendReturnToSenderEmailArgs,
 ): Promise<{ ok: boolean; error?: string }> {
   const subject = `Your ThankuMail update`;
 

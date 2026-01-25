@@ -1,3 +1,4 @@
+// client/src/pages/Claim.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 declare global {
@@ -12,11 +13,17 @@ function getPublicIdFromPath() {
 }
 
 function friendlyError(msg: string) {
-  if (!msg) return "";
-  if (/captcha/i.test(msg)) return "Please complete the quick verification below.";
-  if (/MIN_DELAY/i.test(msg) || /wait/i.test(msg)) return "Just a moment — we’re securing this gift.";
-  if (/already claimed/i.test(msg)) return "This ThankuMail has already been claimed.";
-  return msg;
+  const m = String(msg || "");
+  if (!m) return "";
+  if (/captcha|turnstile/i.test(m)) return "Please complete the quick verification below.";
+  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "Just a moment — we’re securing this gift.";
+  if (/already claimed/i.test(m)) return "This ThankuMail has already been claimed.";
+  return m;
+}
+
+function clampInt(n: any, fallback = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.trunc(v) : fallback;
 }
 
 export default function Claim() {
@@ -24,75 +31,42 @@ export default function Claim() {
 
   const [gift, setGift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+
+  const [ok, setOk] = useState(false);
+  const [alreadyClaimed, setAlreadyClaimed] = useState(false);
+
+  // waiting state (we start countdown BEFORE captcha so user only solves once)
+  const [retryAfterSec, setRetryAfterSec] = useState<number>(0);
+
   const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState("");
-  const [ok, setOk] = useState(false);
-
-  const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
-  const [alreadyClaimed, setAlreadyClaimed] = useState(false);
 
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 
-  // Turnstile state
+  const shouldShowCaptcha = Boolean(siteKey) && !alreadyClaimed && !ok && retryAfterSec <= 0;
+  const waitingOnDelay = useMemo(() => retryAfterSec > 0, [retryAfterSec]);
+
+  // Turnstile
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(!!siteKey);
-  const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey); // if no siteKey, don't block
+  const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey);
   const tokenRef = useRef<string>("");
   const tokenAtRef = useRef<number>(0);
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
 
-  const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
-
-  const shouldShowCaptcha = Boolean(siteKey) && !alreadyClaimed && !ok;
-  const canAttemptClaim = !alreadyClaimed && !ok;
-
-  useEffect(() => {
-    async function loadGift() {
-      try {
-        const r = await fetch(`/api/gifts/${publicId}`);
-        const j = await r.json();
-        if (!r.ok) throw new Error(j?.error || "Failed to load gift");
-
-        setGift(j);
-        setAlreadyClaimed(Boolean(j?.isClaimed));
-      } catch (e: any) {
-        setError(e.message || "Failed to load gift");
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadGift();
-  }, [publicId]);
-
-  // If we learn it's already claimed, clean up claim UI state
-  useEffect(() => {
-    if (!alreadyClaimed) return;
-    setRetryAfterSec(null);
-    setClaiming(false);
-    setCaptchaReady(false);
+  function clearTurnstileUi() {
+    renderedRef.current = false;
+    widgetIdRef.current = null;
     tokenRef.current = "";
     tokenAtRef.current = 0;
-  }, [alreadyClaimed]);
+    setCaptchaReady(!siteKey); // if no siteKey, it's always "ready"
+    const el = document.getElementById("turnstile-container");
+    if (el) el.innerHTML = "";
+  }
 
-  // countdown
-  useEffect(() => {
-    if (retryAfterSec === null) return;
-    if (retryAfterSec <= 0) return;
-
-    const t = window.setInterval(() => {
-      setRetryAfterSec((prev) => {
-        if (prev === null) return null;
-        if (prev <= 1) return 0;
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => window.clearInterval(t);
-  }, [retryAfterSec]);
-
-  function resetTurnstile() {
+  function hardResetTurnstile() {
     try {
-      if (window.turnstile && widgetIdRef.current !== null) {
+      if (window.turnstile && widgetIdRef.current != null) {
         window.turnstile.reset(widgetIdRef.current);
       }
     } catch {}
@@ -101,23 +75,135 @@ export default function Claim() {
     setCaptchaReady(false);
   }
 
-  // Load Turnstile script (once)
+  // Load gift + determine remaining delay from /api/version + gift.createdAt
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError("");
+
+      try {
+        const [giftResp, verResp] = await Promise.all([
+          fetch(`/api/gifts/${publicId}`),
+          fetch(`/api/version`).catch(() => null as any),
+        ]);
+
+        const giftJson = await giftResp.json().catch(() => ({} as any));
+        if (!giftResp.ok) throw new Error(giftJson?.error || "Failed to load gift");
+
+        if (cancelled) return;
+
+        setGift(giftJson);
+        const claimed = Boolean(giftJson?.isClaimed);
+        setAlreadyClaimed(claimed);
+
+        // If claimed, lock state and never show captcha
+        if (claimed) {
+          setRetryAfterSec(0);
+          clearTurnstileUi();
+          setTurnstileBooting(false);
+          setLoading(false);
+          return;
+        }
+
+        // Compute remaining delay using server-configured minClaimDelaySec
+        let minDelaySec = 0;
+        try {
+          if (verResp) {
+            const verJson = await verResp.json().catch(() => ({} as any));
+            minDelaySec = clampInt(verJson?.minClaimDelaySec, 0);
+          }
+        } catch {
+          minDelaySec = 0;
+        }
+
+        const createdAt = giftJson?.createdAt ? new Date(giftJson.createdAt).getTime() : 0;
+        const ageMs = createdAt ? Date.now() - createdAt : 0;
+        const remaining = createdAt && minDelaySec > 0 ? Math.max(0, Math.ceil((minDelaySec * 1000 - ageMs) / 1000)) : 0;
+
+        setRetryAfterSec(remaining);
+
+        // IMPORTANT: during countdown we do not render captcha (prevents double solve)
+        if (remaining > 0) {
+          clearTurnstileUi();
+          setTurnstileBooting(false);
+        } else {
+          // ready for captcha if enabled
+          setTurnstileBooting(!!siteKey);
+          setCaptchaReady(!siteKey);
+        }
+
+        setLoading(false);
+      } catch (e: any) {
+        if (cancelled) return;
+        setError(String(e?.message || "Failed to load gift"));
+        setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicId]);
+
+  // Countdown tick
+  useEffect(() => {
+    if (retryAfterSec <= 0) return;
+
+    const t = window.setInterval(() => {
+      setRetryAfterSec((prev) => {
+        if (prev <= 1) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(t);
+  }, [retryAfterSec]);
+
+  // When countdown ends, allow captcha (single solve)
   useEffect(() => {
     if (!siteKey) {
-      setTurnstileBooting(false);
       setCaptchaReady(true);
-      return;
-    }
-
-    if (!shouldShowCaptcha) {
-      // if we shouldn't show captcha (already claimed), don't boot it
       setTurnstileBooting(false);
       return;
     }
 
-    // if script already present, just mark booting and let render loop pick it up
+    if (alreadyClaimed || ok) {
+      clearTurnstileUi();
+      setTurnstileBooting(false);
+      return;
+    }
+
+    if (retryAfterSec > 0) {
+      // waiting: keep captcha hidden + cleared
+      clearTurnstileUi();
+      setTurnstileBooting(false);
+      return;
+    }
+
+    // ready: boot captcha
+    setTurnstileBooting(true);
+    setCaptchaReady(false);
+  }, [siteKey, retryAfterSec, alreadyClaimed, ok]);
+
+  // Load Turnstile script (only when we actually need to show captcha)
+  useEffect(() => {
+    if (!siteKey) return;
+    if (!shouldShowCaptcha) return;
+
+    if (window.turnstile) {
+      setTurnstileBooting(false);
+      return;
+    }
+
     const existing = document.querySelector<HTMLScriptElement>('script[data-turnstile="1"]');
-    if (existing) return;
+    if (existing) {
+      setTurnstileBooting(false);
+      return;
+    }
 
     const script = document.createElement("script");
     script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
@@ -125,10 +211,7 @@ export default function Claim() {
     script.defer = true;
     script.setAttribute("data-turnstile", "1");
 
-    script.onload = () => {
-      setTurnstileBooting(false);
-    };
-
+    script.onload = () => setTurnstileBooting(false);
     script.onerror = () => {
       setTurnstileBooting(false);
       setError("Verification failed to load. Please refresh the page.");
@@ -141,8 +224,6 @@ export default function Claim() {
   useEffect(() => {
     if (!siteKey) return;
     if (!shouldShowCaptcha) return;
-
-    // if we hid it then show it again later, allow re-render
     if (renderedRef.current) return;
 
     let cancelled = false;
@@ -153,7 +234,6 @@ export default function Claim() {
       const ts = window.turnstile;
       const el = document.getElementById("turnstile-container");
       if (!ts || !el) return;
-
       if (renderedRef.current) return;
 
       try {
@@ -206,25 +286,28 @@ export default function Claim() {
 
   async function handleClaim() {
     if (!publicId) return;
-    if (!canAttemptClaim) return;
+    if (alreadyClaimed || ok) return;
 
+    // During countdown: don't ask for captcha; just wait
     if (waitingOnDelay) {
       setError("Just a moment — we’re securing this gift.");
       return;
     }
 
+    // If captcha is enabled, require a token now (only once, after countdown)
     if (siteKey) {
-      const ageMs = Date.now() - (tokenAtRef.current || 0);
-      if (!tokenRef.current || ageMs > 45_000) {
+      if (!captchaReady || !tokenRef.current) {
         setError("Please complete the quick verification below.");
-        resetTurnstile();
         return;
       }
-    }
 
-    if (!captchaReady) {
-      setError("Please complete the quick verification below.");
-      return;
+      // Avoid stale tokens
+      const ageMs = Date.now() - (tokenAtRef.current || 0);
+      if (ageMs > 60_000) {
+        setError("Please complete the quick verification below.");
+        hardResetTurnstile();
+        return;
+      }
     }
 
     setClaiming(true);
@@ -239,39 +322,47 @@ export default function Claim() {
 
       const j = await r.json().catch(() => ({} as any));
 
+      // If server still says wait (clock skew), go back to countdown and hide captcha
       if (r.status === 429 && j?.retryAfterSec) {
-        setRetryAfterSec(Number(j.retryAfterSec) || 0);
-        throw new Error("MIN_DELAY");
+        const secs = clampInt(j.retryAfterSec, 0);
+        setRetryAfterSec(secs);
+
+        // Hide captcha while waiting so user doesn't solve twice
+        clearTurnstileUi();
+        setTurnstileBooting(false);
+        return;
       }
 
       if (!r.ok) {
-        // if already claimed, flip UI into claimed state immediately
         const code = String(j?.code || "");
         const msg = String(j?.error || "Claim failed");
+
         if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
           setAlreadyClaimed(true);
           setError("This ThankuMail has already been claimed.");
+          clearTurnstileUi();
           return;
         }
+
+        // Only reset captcha if server explicitly says captcha failed
+        if (code === "TURNSTILE_FAILED" || /captcha|turnstile/i.test(msg)) {
+          hardResetTurnstile();
+        }
+
         throw new Error(msg);
       }
 
       setOk(true);
+      setAlreadyClaimed(true);
+      clearTurnstileUi();
 
-      // refresh gift so page reflects claimed status if user reloads
       try {
         const rr = await fetch(`/api/gifts/${publicId}`);
         const jj = await rr.json();
-        if (rr.ok) {
-          setGift(jj);
-          setAlreadyClaimed(Boolean(jj?.isClaimed));
-        }
+        if (rr.ok) setGift(jj);
       } catch {}
     } catch (e: any) {
-      const msg = friendlyError(e.message || "Claim failed");
-      setError(msg);
-
-      if (/captcha/i.test(String(e?.message || ""))) resetTurnstile();
+      setError(friendlyError(e?.message || "Claim failed"));
     } finally {
       setClaiming(false);
     }
@@ -290,13 +381,17 @@ export default function Claim() {
     );
   }
 
-  const buttonDisabled = !canAttemptClaim || claiming || waitingOnDelay || !captchaReady;
+  const buttonDisabled =
+    alreadyClaimed ||
+    claiming ||
+    waitingOnDelay ||
+    (siteKey ? !captchaReady : false);
 
   let buttonText = "Claim gift";
-  if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
+  if (alreadyClaimed) buttonText = "Already claimed";
   else if (claiming) buttonText = "Finalizing…";
   else if (waitingOnDelay) buttonText = `Securing… ${retryAfterSec}s`;
-  else if (!captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
+  else if (siteKey && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
 
   return (
     <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
@@ -304,7 +399,7 @@ export default function Claim() {
       <p>Someone left you a note and a gift. Take a breath — it’s meant for you.</p>
 
       <div style={{ color: "#666", marginBottom: 12 }}>
-        For security, there’s a brief verification and short pause before claiming.
+        For security, there’s a short pause before claiming.
       </div>
 
       {alreadyClaimed ? (
@@ -313,11 +408,11 @@ export default function Claim() {
         <div style={{ color: "#b00020", marginBottom: 12 }}>{error}</div>
       ) : null}
 
-      {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 && (
+      {!alreadyClaimed && retryAfterSec > 0 ? (
         <div style={{ color: "#666", marginBottom: 12 }}>
-          Finalizing your gift… about {retryAfterSec} seconds.
+          Securing your gift… about {retryAfterSec} seconds.
         </div>
-      )}
+      ) : null}
 
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
         <div style={{ marginBottom: 12 }}>
@@ -333,7 +428,7 @@ export default function Claim() {
         {shouldShowCaptcha ? (
           <div style={{ marginBottom: 12 }}>
             <div id="turnstile-container" />
-            {turnstileBooting && <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div>}
+            {turnstileBooting ? <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div> : null}
           </div>
         ) : null}
 
