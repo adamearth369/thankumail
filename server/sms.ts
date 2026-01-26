@@ -2,7 +2,20 @@ import twilio from "twilio";
 
 export type SmsSendResult = { ok: boolean; error?: string | null };
 
-export async function sendGiftSms(opts: { to: string; claimUrl: string; publicId: string }) : Promise<SmsSendResult> {
+function safeStr(v: any) {
+  return typeof v === "string" ? v : "";
+}
+
+function normalizeE164(s: string) {
+  const v = safeStr(s).trim();
+  return v;
+}
+
+function isE164(s: string) {
+  return /^\+[1-9]\d{7,14}$/.test(safeStr(s).trim());
+}
+
+export async function sendGiftSms(opts: { to: string; claimUrl: string; publicId: string }): Promise<SmsSendResult> {
   const provider = (process.env.SMS_PROVIDER || "twilio").toLowerCase();
   if (provider !== "twilio") return { ok: false, error: "SMS provider not configured" };
 
@@ -12,14 +25,18 @@ export async function sendGiftSms(opts: { to: string; claimUrl: string; publicId
 
   if (!sid || !token || !from) return { ok: false, error: "Missing Twilio env vars" };
 
+  const to = normalizeE164(opts.to);
+  if (!isE164(to)) return { ok: false, error: "Invalid phone (must be E.164 like +14165551234)" };
+
   try {
     const client = twilio(sid, token);
 
-    const body = `You received a ThankuMail. Open: ${opts.claimUrl}`;
+    // Compliance-safe copy (opt-out + help). Keep it short.
+    const body = `ThankuMail: you received a gift. Open: ${opts.claimUrl} Reply STOP to opt out. HELP for help.`;
 
     await client.messages.create({
       from,
-      to: opts.to,
+      to,
       body,
     });
 
