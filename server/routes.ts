@@ -8,6 +8,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { sendGiftEmail } from "./email";
+import { sendGiftSms } from "./sms";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -64,10 +65,19 @@ function newPublicId() {
   return crypto.randomBytes(16).toString("hex");
 }
 
+function isE164(s: string) {
+  return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
+}
+
 /* -------------------- VALIDATION -------------------- */
 const CreateGiftSchema = z.object({
   senderEmail: z.string().email().optional().or(z.literal("")),
-  recipientEmail: z.string().email().or(z.literal("")),
+  recipientEmail: z.string().email().optional().or(z.literal("")),
+  recipientPhone: z
+    .string()
+    .optional()
+    .or(z.literal(""))
+    .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
   message: z.string().min(1).max(2000),
   amount: z.number().int().min(1000).max(100000),
   turnstileToken: z.string().optional().or(z.literal("")),
@@ -94,7 +104,7 @@ const claimLimiter = rateLimit({
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-25_001";
+  const VERSION = "routes_v2026-01-25_002";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -105,23 +115,45 @@ export function registerRoutes(app: Express): Server {
       version: VERSION,
       commit: COMMIT,
       env: process.env.NODE_ENV || "",
-      minClaimDelaySec: Number(process.env.MIN_CLAIM_DELAY_SEC || 0),
+      minClaimDelaySec: Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60)),
     }),
   );
 
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
     const parsed = CreateGiftSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        error: "Invalid payload",
+        issues: parsed.error.issues,
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
     const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
+    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
     const message = safeStr(parsed.data.message);
     const amount = Number(parsed.data.amount);
 
-    if (!recipientEmail) {
-      return res.status(400).json({ error: "Recipient email is required", field: "recipientEmail", version: VERSION, commit: COMMIT });
+    // REQUIRE: at least one delivery target
+    if (!recipientEmail && !recipientPhone) {
+      return res.status(400).json({
+        error: "Provide a recipient email or phone",
+        field: "recipient",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    // If present, phone must be valid (already refined, but keep explicit field error)
+    if (recipientPhone && !isE164(recipientPhone)) {
+      return res.status(400).json({
+        error: "Phone must be E.164 like +14165551234",
+        field: "recipientPhone",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
 
     const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
@@ -144,7 +176,8 @@ export function registerRoutes(app: Express): Server {
       await db.insert(gifts).values({
         publicId,
         senderEmail,
-        recipientEmail,
+        recipientEmail: recipientEmail || null,
+        recipientPhone: recipientPhone || null,
         message,
         amount,
         isClaimed: false,
@@ -152,28 +185,63 @@ export function registerRoutes(app: Express): Server {
         lastReminderSentAt: null,
         returnedToSenderAt: null,
         claimedAt: null,
-      });
-
-      logEvent("gift_created", { publicId, amount, captchaMode: (t as any).mode || "unknown" });
-
-      let deliveryOk = true;
-      let deliveryError = "";
-
-      const emailRes = await sendGiftEmail({
-        to: recipientEmail,
-        publicId,
-        claimUrl,
-        amountCents: amount,
-        senderEmail: senderEmail || undefined,
-        message,
       } as any);
 
-      if (!emailRes.ok) {
-        deliveryOk = false;
-        deliveryError = safeStr((emailRes as any).error) || "Email failed";
-        logEvent("email_send_failed", { publicId, err: deliveryError });
-      } else {
-        logEvent("email_send_ok", { publicId });
+      logEvent("gift_created", {
+        publicId,
+        amount,
+        hasEmail: !!recipientEmail,
+        hasPhone: !!recipientPhone,
+        captchaMode: (t as any).mode || "unknown",
+      });
+
+      // delivery results
+      let deliveryOk = true;
+      let deliveryError = "";
+      let emailSent = false;
+      let smsQueued = false;
+
+      // Email (optional)
+      if (recipientEmail) {
+        const emailRes = await sendGiftEmail({
+          to: recipientEmail,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: senderEmail || undefined,
+          message,
+        } as any);
+
+        if (!emailRes.ok) {
+          deliveryOk = false;
+          deliveryError = safeStr((emailRes as any).error) || "Email failed";
+          logEvent("email_send_failed", { publicId, err: deliveryError });
+        } else {
+          emailSent = true;
+          logEvent("email_send_ok", { publicId });
+        }
+      }
+
+      // SMS (optional)
+      if (recipientPhone) {
+        const smsRes = await sendGiftSms({
+          to: recipientPhone,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: senderEmail || undefined,
+          message,
+        } as any);
+
+        if (!smsRes.ok) {
+          deliveryOk = false;
+          const err = safeStr((smsRes as any).error) || "SMS failed";
+          deliveryError = deliveryError ? `${deliveryError}; ${err}` : err;
+          logEvent("sms_send_failed", { publicId, err });
+        } else {
+          smsQueued = true;
+          logEvent("sms_send_ok", { publicId });
+        }
       }
 
       return res.json({
@@ -182,6 +250,8 @@ export function registerRoutes(app: Express): Server {
         claimUrl,
         amount,
         deliveryOk,
+        emailSent,
+        smsQueued,
         deliveryError: deliveryOk ? undefined : deliveryError,
         version: VERSION,
         commit: COMMIT,
@@ -233,17 +303,15 @@ export function registerRoutes(app: Express): Server {
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
 
     try {
-      // 1) Load gift first
       const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
       const gift = rows?.[0];
       if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
 
-      // 2) Already claimed?
       if (gift.isClaimed) {
         return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
 
-      // 3) Enforce min delay BEFORE verifying Turnstile (prevents consuming the token too early)
+      // enforce delay BEFORE consuming captcha token
       if (gift.createdAt && minDelaySec > 0) {
         const ageMs = Date.now() - new Date(gift.createdAt).getTime();
         if (ageMs < minDelaySec * 1000) {
@@ -258,7 +326,6 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // 4) Only now verify Turnstile
       const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
       if (!t.ok) {
         return res.status(400).json({
@@ -271,7 +338,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // 5) Claim atomically
       await db
         .update(gifts)
         .set({ isClaimed: true, claimedAt: new Date() })
