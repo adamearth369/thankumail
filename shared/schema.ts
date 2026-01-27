@@ -31,6 +31,16 @@ export const gifts = pgTable("gifts", {
 });
 
 export const insertGiftSchema = createInsertSchema(gifts)
+  .omit({
+    id: true,
+    createdAt: true,
+    claimedAt: true,
+    isClaimed: true,
+    publicId: true,
+    reminderCount: true,
+    lastReminderSentAt: true,
+    returnedToSenderAt: true,
+  })
   .extend({
     senderEmail: z.string().email("Enter a valid sender email").optional(),
     recipientEmail: z.string().email("Enter a valid recipient email").optional(),
@@ -50,16 +60,6 @@ export const insertGiftSchema = createInsertSchema(gifts)
         path: ["recipient"],
       });
     }
-  })
-  .omit({
-    id: true,
-    createdAt: true,
-    claimedAt: true,
-    isClaimed: true,
-    publicId: true,
-    reminderCount: true,
-    lastReminderSentAt: true,
-    returnedToSenderAt: true,
   });
 
 export type Gift = typeof gifts.$inferSelect;
