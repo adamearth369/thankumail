@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -111,18 +108,11 @@ const claimLimiter = rateLimit({
 });
 
 /* -------------------- SMS DUPLICATE WINDOW -------------------- */
-/**
- * Blocks accidental "retry spam" (double-click / network retry).
- * Matching rule: same phone + message + amount, unclaimed, created within window.
- *
- * IMPORTANT: We do NOT filter by createdAt in SQL because timestamp typing/casting can be finicky
- * across environments. We filter by createdAt in JS for reliability.
- */
 const SMS_DUPLICATE_WINDOW_SEC = Math.max(10, Number(process.env.SMS_DUPLICATE_WINDOW_SEC || 90));
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-26_003";
+  const VERSION = "routes_v2026-01-26_004";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -196,15 +186,14 @@ export function registerRoutes(app: Express): Server {
           .from(gifts)
           .where(
             and(
-              eq((gifts as any).recipientPhone, recipientPhone),
+              eq(gifts.recipientPhone, recipientPhone),
               eq(gifts.message, message),
               eq(gifts.amount, amount),
               eq(gifts.isClaimed, false),
             ),
           );
 
-        const candidates = Array.isArray(rows) ? rows : [];
-        const recent = candidates
+        const recent = (rows || [])
           .map((r: any) => ({ r, ms: toMs(r?.createdAt) }))
           .filter((x) => x.ms && x.ms >= cutoffMs)
           .sort((a, b) => b.ms - a.ms);
