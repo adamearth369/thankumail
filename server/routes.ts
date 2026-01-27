@@ -6,7 +6,7 @@ import { createServer, type Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { eq, and, gt } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
@@ -72,6 +72,11 @@ function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
+function toMs(d: any) {
+  const t = d instanceof Date ? d.getTime() : new Date(d).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 /* -------------------- VALIDATION -------------------- */
 const CreateGiftSchema = z.object({
   senderEmail: z.string().email().optional().or(z.literal("")),
@@ -107,15 +112,17 @@ const claimLimiter = rateLimit({
 
 /* -------------------- SMS DUPLICATE WINDOW -------------------- */
 /**
- * Blocks accidental "retry spam" (e.g., user double-clicks / network retry).
- * If a matching unclaimed gift (same phone + message + amount) exists within this window,
- * we return the existing claim link and DO NOT resend SMS.
+ * Blocks accidental "retry spam" (double-click / network retry).
+ * Matching rule: same phone + message + amount, unclaimed, created within window.
+ *
+ * IMPORTANT: We do NOT filter by createdAt in SQL because timestamp typing/casting can be finicky
+ * across environments. We filter by createdAt in JS for reliability.
  */
 const SMS_DUPLICATE_WINDOW_SEC = Math.max(10, Number(process.env.SMS_DUPLICATE_WINDOW_SEC || 90));
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-26_002";
+  const VERSION = "routes_v2026-01-26_003";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -148,7 +155,6 @@ export function registerRoutes(app: Express): Server {
     const message = safeStr(parsed.data.message);
     const amount = Number(parsed.data.amount);
 
-    // REQUIRE: at least one delivery target
     if (!recipientEmail && !recipientPhone) {
       return res.status(400).json({
         error: "Provide a recipient email or phone",
@@ -158,7 +164,6 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // If present, phone must be valid
     if (recipientPhone && !isE164(recipientPhone)) {
       return res.status(400).json({
         error: "Phone must be E.164 like +14165551234",
@@ -181,24 +186,30 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // --- SMS duplicate retry protection (only applies if phone is present) ---
+    // --- SMS duplicate retry protection (phone only) ---
     if (recipientPhone) {
-      const cutoff = new Date(Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000);
+      const cutoffMs = Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000;
+
       try {
-        const recent = await db
+        const rows = await db
           .select()
           .from(gifts)
           .where(
             and(
-              eq(gifts.recipientPhone, recipientPhone),
+              eq((gifts as any).recipientPhone, recipientPhone),
               eq(gifts.message, message),
               eq(gifts.amount, amount),
               eq(gifts.isClaimed, false),
-              gt(gifts.createdAt as any, cutoff as any),
             ),
           );
 
-        const existing = recent?.[0];
+        const candidates = Array.isArray(rows) ? rows : [];
+        const recent = candidates
+          .map((r: any) => ({ r, ms: toMs(r?.createdAt) }))
+          .filter((x) => x.ms && x.ms >= cutoffMs)
+          .sort((a, b) => b.ms - a.ms);
+
+        const existing = recent?.[0]?.r;
         if (existing?.publicId) {
           const existingClaimUrl = `${getBaseUrl(req)}/claim/${existing.publicId}`;
 
@@ -208,7 +219,6 @@ export function registerRoutes(app: Express): Server {
             amount,
           });
 
-          // Return existing link and do NOT resend SMS
           return res.json({
             ok: true,
             publicId: existing.publicId,
@@ -222,7 +232,6 @@ export function registerRoutes(app: Express): Server {
           });
         }
       } catch (e: any) {
-        // If duplicate check fails, we still proceed (fail-open)
         logEvent("sms_duplicate_check_error", { err: safeStr(e?.message) });
       }
     }
@@ -253,13 +262,11 @@ export function registerRoutes(app: Express): Server {
         captchaMode: (t as any).mode || "unknown",
       });
 
-      // delivery results
       let deliveryOk = true;
       let deliveryError = "";
       let emailSent = false;
       let smsQueued = false;
 
-      // Email (optional)
       if (recipientEmail) {
         const emailRes = await sendGiftEmail({
           to: recipientEmail,
@@ -280,7 +287,6 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // SMS (optional)
       if (recipientPhone) {
         const smsRes: any = await sendGiftSms({
           to: recipientPhone,
@@ -299,7 +305,6 @@ export function registerRoutes(app: Express): Server {
         } else {
           smsQueued = true;
 
-          // Prefer "sent" if the provider explicitly says so; otherwise treat as queued.
           const providerStatus = safeStr(smsRes?.status).toLowerCase();
           if (providerStatus === "sent" || smsRes?.sent === true) {
             logEvent("sms_sent", { publicId });
@@ -376,7 +381,6 @@ export function registerRoutes(app: Express): Server {
         return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
 
-      // enforce delay BEFORE consuming captcha token
       if (gift.createdAt && minDelaySec > 0) {
         const ageMs = Date.now() - new Date(gift.createdAt).getTime();
         if (ageMs < minDelaySec * 1000) {
