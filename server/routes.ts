@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: FULL REPLACEMENT (paste this entire file)
+
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -69,6 +72,18 @@ function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
+/** Normalize to strict E.164; returns "" if invalid */
+function normalizeE164(input: any) {
+  const raw = typeof input === "string" ? input.trim() : "";
+  if (!raw) return "";
+  const cleaned = raw.replace(/[^\d+]/g, "");
+  if (!cleaned.startsWith("+")) return "";
+  if (!/^\+\d{8,15}$/.test(cleaned)) return "";
+  // also ensure first digit after + is 1-9 (no leading 0)
+  if (!/^\+[1-9]/.test(cleaned)) return "";
+  return cleaned;
+}
+
 /* -------------------- VALIDATION -------------------- */
 const CreateGiftSchema = z.object({
   senderEmail: z.string().email().optional().or(z.literal("")),
@@ -77,6 +92,7 @@ const CreateGiftSchema = z.object({
     .string()
     .optional()
     .or(z.literal(""))
+    .transform((v) => normalizeE164(v))
     .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
   message: z.string().min(1).max(2000),
   amount: z.number().int().min(1000).max(100000),
@@ -104,7 +120,7 @@ const claimLimiter = rateLimit({
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-25_002";
+  const VERSION = "routes_v2026-01-26_001";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -132,25 +148,29 @@ export function registerRoutes(app: Express): Server {
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
     const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
-    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
+    const recipientPhone = safeStr(parsed.data.recipientPhone).trim(); // already normalized to "" or strict E.164
     const message = safeStr(parsed.data.message);
     const amount = Number(parsed.data.amount);
 
     // REQUIRE: at least one delivery target
     if (!recipientEmail && !recipientPhone) {
+      logEvent("gift_rejected_no_recipient", { ip: req.ip });
       return res.status(400).json({
         error: "Provide a recipient email or phone",
         field: "recipient",
+        codes: ["missing_recipient"],
         version: VERSION,
         commit: COMMIT,
       });
     }
 
-    // If present, phone must be valid (already refined, but keep explicit field error)
-    if (recipientPhone && !isE164(recipientPhone)) {
+    // If present, phone must be valid (keep explicit field error)
+    if ((req.body as any)?.recipientPhone && !recipientPhone) {
+      logEvent("gift_rejected_bad_phone", { ip: req.ip, recipientPhone: safeStr((req.body as any)?.recipientPhone) });
       return res.status(400).json({
         error: "Phone must be E.164 like +14165551234",
         field: "recipientPhone",
+        codes: ["invalid_phone"],
         version: VERSION,
         commit: COMMIT,
       });
@@ -199,7 +219,11 @@ export function registerRoutes(app: Express): Server {
       let deliveryOk = true;
       let deliveryError = "";
       let emailSent = false;
+
+      // SMS-specific logs
       let smsQueued = false;
+      let smsSent = false;
+      let smsFailed = false;
 
       // Email (optional)
       if (recipientEmail) {
@@ -222,25 +246,37 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // SMS (optional)
+      // SMS (optional) — compliance + UX safety logging
       if (recipientPhone) {
-        const smsRes = await sendGiftSms({
-          to: recipientPhone,
-          publicId,
-          claimUrl,
-          amountCents: amount,
-          senderEmail: senderEmail || undefined,
-          message,
-        } as any);
-
-        if (!smsRes.ok) {
-          deliveryOk = false;
-          const err = safeStr((smsRes as any).error) || "SMS failed";
-          deliveryError = deliveryError ? `${deliveryError}; ${err}` : err;
-          logEvent("sms_send_failed", { publicId, err });
-        } else {
+        try {
           smsQueued = true;
-          logEvent("sms_send_ok", { publicId });
+          logEvent("sms_queued", { publicId, to: recipientPhone.slice(0, 4) + "…" });
+
+          const smsRes = await sendGiftSms({
+            to: recipientPhone,
+            publicId,
+            claimUrl,
+            amountCents: amount,
+            senderEmail: senderEmail || undefined,
+            message,
+          } as any);
+
+          if (!smsRes.ok) {
+            smsFailed = true;
+            deliveryOk = false;
+            const err = safeStr((smsRes as any).error) || "SMS failed";
+            deliveryError = deliveryError ? `${deliveryError}; ${err}` : err;
+            logEvent("sms_failed", { publicId, err });
+          } else {
+            smsSent = true;
+            logEvent("sms_sent", { publicId });
+          }
+        } catch (e: any) {
+          smsFailed = true;
+          deliveryOk = false;
+          const err = safeStr(e?.message) || "SMS exception";
+          deliveryError = deliveryError ? `${deliveryError}; ${err}` : err;
+          logEvent("sms_failed", { publicId, err });
         }
       }
 
@@ -252,6 +288,8 @@ export function registerRoutes(app: Express): Server {
         deliveryOk,
         emailSent,
         smsQueued,
+        smsSent,
+        smsFailed,
         deliveryError: deliveryOk ? undefined : deliveryError,
         version: VERSION,
         commit: COMMIT,
@@ -297,7 +335,9 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = ClaimSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
