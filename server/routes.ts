@@ -1,12 +1,12 @@
 // WHERE TO PASTE: server/routes.ts
-// ACTION: FULL REPLACEMENT (paste this entire file)
+// ACTION: Full file replacement (paste exactly)
 
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { eq, and } from "drizzle-orm";
+import { eq, and, gt } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
@@ -72,18 +72,6 @@ function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
-/** Normalize to strict E.164; returns "" if invalid */
-function normalizeE164(input: any) {
-  const raw = typeof input === "string" ? input.trim() : "";
-  if (!raw) return "";
-  const cleaned = raw.replace(/[^\d+]/g, "");
-  if (!cleaned.startsWith("+")) return "";
-  if (!/^\+\d{8,15}$/.test(cleaned)) return "";
-  // also ensure first digit after + is 1-9 (no leading 0)
-  if (!/^\+[1-9]/.test(cleaned)) return "";
-  return cleaned;
-}
-
 /* -------------------- VALIDATION -------------------- */
 const CreateGiftSchema = z.object({
   senderEmail: z.string().email().optional().or(z.literal("")),
@@ -92,7 +80,6 @@ const CreateGiftSchema = z.object({
     .string()
     .optional()
     .or(z.literal(""))
-    .transform((v) => normalizeE164(v))
     .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
   message: z.string().min(1).max(2000),
   amount: z.number().int().min(1000).max(100000),
@@ -118,9 +105,17 @@ const claimLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+/* -------------------- SMS DUPLICATE WINDOW -------------------- */
+/**
+ * Blocks accidental "retry spam" (e.g., user double-clicks / network retry).
+ * If a matching unclaimed gift (same phone + message + amount) exists within this window,
+ * we return the existing claim link and DO NOT resend SMS.
+ */
+const SMS_DUPLICATE_WINDOW_SEC = Math.max(10, Number(process.env.SMS_DUPLICATE_WINDOW_SEC || 90));
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-26_001";
+  const VERSION = "routes_v2026-01-26_002";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -132,6 +127,7 @@ export function registerRoutes(app: Express): Server {
       commit: COMMIT,
       env: process.env.NODE_ENV || "",
       minClaimDelaySec: Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60)),
+      smsDuplicateWindowSec: SMS_DUPLICATE_WINDOW_SEC,
     }),
   );
 
@@ -148,29 +144,25 @@ export function registerRoutes(app: Express): Server {
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
     const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
-    const recipientPhone = safeStr(parsed.data.recipientPhone).trim(); // already normalized to "" or strict E.164
+    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
     const message = safeStr(parsed.data.message);
     const amount = Number(parsed.data.amount);
 
     // REQUIRE: at least one delivery target
     if (!recipientEmail && !recipientPhone) {
-      logEvent("gift_rejected_no_recipient", { ip: req.ip });
       return res.status(400).json({
         error: "Provide a recipient email or phone",
         field: "recipient",
-        codes: ["missing_recipient"],
         version: VERSION,
         commit: COMMIT,
       });
     }
 
-    // If present, phone must be valid (keep explicit field error)
-    if ((req.body as any)?.recipientPhone && !recipientPhone) {
-      logEvent("gift_rejected_bad_phone", { ip: req.ip, recipientPhone: safeStr((req.body as any)?.recipientPhone) });
+    // If present, phone must be valid
+    if (recipientPhone && !isE164(recipientPhone)) {
       return res.status(400).json({
         error: "Phone must be E.164 like +14165551234",
         field: "recipientPhone",
-        codes: ["invalid_phone"],
         version: VERSION,
         commit: COMMIT,
       });
@@ -187,6 +179,52 @@ export function registerRoutes(app: Express): Server {
         version: VERSION,
         commit: COMMIT,
       });
+    }
+
+    // --- SMS duplicate retry protection (only applies if phone is present) ---
+    if (recipientPhone) {
+      const cutoff = new Date(Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000);
+      try {
+        const recent = await db
+          .select()
+          .from(gifts)
+          .where(
+            and(
+              eq(gifts.recipientPhone, recipientPhone),
+              eq(gifts.message, message),
+              eq(gifts.amount, amount),
+              eq(gifts.isClaimed, false),
+              gt(gifts.createdAt as any, cutoff as any),
+            ),
+          );
+
+        const existing = recent?.[0];
+        if (existing?.publicId) {
+          const existingClaimUrl = `${getBaseUrl(req)}/claim/${existing.publicId}`;
+
+          logEvent("sms_duplicate_blocked", {
+            matchedPublicId: existing.publicId,
+            windowSec: SMS_DUPLICATE_WINDOW_SEC,
+            amount,
+          });
+
+          // Return existing link and do NOT resend SMS
+          return res.json({
+            ok: true,
+            publicId: existing.publicId,
+            claimUrl: existingClaimUrl,
+            amount,
+            deliveryOk: true,
+            emailSent: false,
+            smsQueued: false,
+            version: VERSION,
+            commit: COMMIT,
+          });
+        }
+      } catch (e: any) {
+        // If duplicate check fails, we still proceed (fail-open)
+        logEvent("sms_duplicate_check_error", { err: safeStr(e?.message) });
+      }
     }
 
     const publicId = newPublicId();
@@ -219,11 +257,7 @@ export function registerRoutes(app: Express): Server {
       let deliveryOk = true;
       let deliveryError = "";
       let emailSent = false;
-
-      // SMS-specific logs
       let smsQueued = false;
-      let smsSent = false;
-      let smsFailed = false;
 
       // Email (optional)
       if (recipientEmail) {
@@ -246,37 +280,32 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // SMS (optional) — compliance + UX safety logging
+      // SMS (optional)
       if (recipientPhone) {
-        try {
-          smsQueued = true;
-          logEvent("sms_queued", { publicId, to: recipientPhone.slice(0, 4) + "…" });
+        const smsRes: any = await sendGiftSms({
+          to: recipientPhone,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: senderEmail || undefined,
+          message,
+        } as any);
 
-          const smsRes = await sendGiftSms({
-            to: recipientPhone,
-            publicId,
-            claimUrl,
-            amountCents: amount,
-            senderEmail: senderEmail || undefined,
-            message,
-          } as any);
-
-          if (!smsRes.ok) {
-            smsFailed = true;
-            deliveryOk = false;
-            const err = safeStr((smsRes as any).error) || "SMS failed";
-            deliveryError = deliveryError ? `${deliveryError}; ${err}` : err;
-            logEvent("sms_failed", { publicId, err });
-          } else {
-            smsSent = true;
-            logEvent("sms_sent", { publicId });
-          }
-        } catch (e: any) {
-          smsFailed = true;
+        if (!smsRes.ok) {
           deliveryOk = false;
-          const err = safeStr(e?.message) || "SMS exception";
+          const err = safeStr(smsRes?.error) || "SMS failed";
           deliveryError = deliveryError ? `${deliveryError}; ${err}` : err;
           logEvent("sms_failed", { publicId, err });
+        } else {
+          smsQueued = true;
+
+          // Prefer "sent" if the provider explicitly says so; otherwise treat as queued.
+          const providerStatus = safeStr(smsRes?.status).toLowerCase();
+          if (providerStatus === "sent" || smsRes?.sent === true) {
+            logEvent("sms_sent", { publicId });
+          } else {
+            logEvent("sms_queued", { publicId });
+          }
         }
       }
 
@@ -288,8 +317,6 @@ export function registerRoutes(app: Express): Server {
         deliveryOk,
         emailSent,
         smsQueued,
-        smsSent,
-        smsFailed,
         deliveryError: deliveryOk ? undefined : deliveryError,
         version: VERSION,
         commit: COMMIT,
@@ -335,9 +362,7 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = ClaimSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
