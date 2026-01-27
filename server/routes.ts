@@ -14,7 +14,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-27_002";
+const VERSION = "routes_v2026-01-27_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
@@ -26,15 +26,6 @@ function safeStr(v: any) {
 }
 
 /* -------------------- CLAIM SITE BASE URL -------------------- */
-/**
- * This prevents claim links from accidentally pointing at your API domain
- * (e.g., thankumail.onrender.com) when you want the public claim site (thankumail.com).
- *
- * Set ONE of these in Render (recommended):
- *   PUBLIC_SITE_URL=https://thankumail.com
- * or:
- *   PUBLIC_CLAIM_BASE_URL=https://thankumail.com
- */
 function getClaimSiteBaseUrl(req: Request) {
   const env = process.env.PUBLIC_SITE_URL || process.env.PUBLIC_CLAIM_BASE_URL || "";
   if (env) return env.replace(/\/+$/, "");
@@ -173,11 +164,6 @@ async function enforceDailyLimit(opts: { kind: "sender" | "phone"; value: string
   return { ok: false as const, count, limit, retryAfterSec };
 }
 
-/**
- * IP daily limit (in-memory best-effort).
- * This gives you a working IP limit without DB schema changes.
- * Resets on deploy/restart.
- */
 type Bucket = { count: number; windowStartMs: number };
 const ipBucket = new Map<string, Bucket>();
 
@@ -207,8 +193,12 @@ function enforceIpDailyLimit(ip: string, limit: number) {
 export function registerRoutes(app: Express): Server {
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
 
-  app.get("/api/version", (_req, res) =>
-    res.json({
+  app.get("/api/version", (_req, res) => {
+    const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
+    const configured = !!(process.env.TURNSTILE_SECRET_KEY || "");
+    const mode = !configured ? "not_configured" : bypass ? "bypass" : "enforced";
+
+    return res.json({
       ok: true,
       version: VERSION,
       commit: COMMIT,
@@ -218,8 +208,11 @@ export function registerRoutes(app: Express): Server {
       dailyLimitIp: DAILY_LIMIT_IP,
       dailyLimitSender: DAILY_LIMIT_SENDER,
       dailyLimitPhone: DAILY_LIMIT_PHONE,
-    }),
-  );
+      turnstileMode: mode,
+      turnstileBypass: bypass,
+      turnstileConfigured: configured,
+    });
+  });
 
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
     const parsed = CreateGiftSchema.safeParse(req.body || {});
@@ -274,8 +267,6 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // --- DAILY LIMITS ---
-    // IP (in-memory)
     const ipLim = enforceIpDailyLimit(ip, DAILY_LIMIT_IP);
     if (!ipLim.ok) {
       logEvent("rate_limit_ip_blocked", { ip, limit: ipLim.limit, count: ipLim.count, retryAfterSec: ipLim.retryAfterSec });
@@ -289,7 +280,6 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // Sender + phone (DB-based)
     try {
       if (senderEmail) {
         const lim = await enforceDailyLimit({ kind: "sender", value: senderEmail, limit: DAILY_LIMIT_SENDER });
@@ -332,10 +322,8 @@ export function registerRoutes(app: Express): Server {
       }
     } catch (e: any) {
       logEvent("rate_limit_check_error", { err: safeStr(e?.message) });
-      // fail open
     }
 
-    // --- Duplicate protection for SMS retries ---
     if (recipientPhone) {
       const cutoffMs = Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000;
 
