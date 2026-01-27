@@ -6,12 +6,16 @@ import { createServer, type Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { eq, and, gte, desc, asc } from "drizzle-orm";
+import { eq, and, gte, asc } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
 import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
+
+/* -------------------- VERSION -------------------- */
+const VERSION = "routes_v2026-01-27_002";
+const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -21,10 +25,19 @@ function safeStr(v: any) {
   return typeof v === "string" ? v : "";
 }
 
-/* -------------------- BASE URL -------------------- */
-function getBaseUrl(req: Request) {
-  const envBase = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "";
-  if (envBase) return envBase.replace(/\/+$/, "");
+/* -------------------- CLAIM SITE BASE URL -------------------- */
+/**
+ * This prevents claim links from accidentally pointing at your API domain
+ * (e.g., thankumail.onrender.com) when you want the public claim site (thankumail.com).
+ *
+ * Set ONE of these in Render (recommended):
+ *   PUBLIC_SITE_URL=https://thankumail.com
+ * or:
+ *   PUBLIC_CLAIM_BASE_URL=https://thankumail.com
+ */
+function getClaimSiteBaseUrl(req: Request) {
+  const env = process.env.PUBLIC_SITE_URL || process.env.PUBLIC_CLAIM_BASE_URL || "";
+  if (env) return env.replace(/\/+$/, "");
 
   const proto = (req.headers["x-forwarded-proto"] || "https").toString();
   const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
@@ -48,9 +61,12 @@ async function verifyTurnstile(token: string, req: Request) {
   const secret = process.env.TURNSTILE_SECRET_KEY || "";
   const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
 
-  if (!secret) return { ok: true, mode: "not_configured" as const };
-  if (bypass) return { ok: true, mode: "bypass" as const };
-  if (!token) return { ok: false, mode: "enforced" as const, codes: ["missing-input-response"] as string[] };
+  if (!secret) return { ok: true, mode: "not_configured" as const, codes: [] as string[] };
+  if (bypass) return { ok: true, mode: "bypass" as const, codes: [] as string[] };
+
+  if (!token) {
+    return { ok: false, mode: "enforced" as const, codes: ["missing-input-response"] as string[] };
+  }
 
   const ip = getClientIp(req);
 
@@ -128,20 +144,12 @@ const DAILY_LIMIT_IP = Math.max(0, Number(process.env.DAILY_LIMIT_IP || 10));
 const DAILY_LIMIT_SENDER = Math.max(0, Number(process.env.DAILY_LIMIT_SENDER || 5));
 const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE || 3));
 
-async function enforceDailyLimit(opts: {
-  kind: "ip" | "sender" | "phone";
-  value: string;
-  limit: number;
-}) {
+async function enforceDailyLimit(opts: { kind: "sender" | "phone"; value: string; limit: number }) {
   const { kind, value, limit } = opts;
 
   if (!limit || limit <= 0) return { ok: true as const };
 
   const cutoff = new Date(Date.now() - DAILY_WINDOW_MS);
-
-  // Note: we only have DB columns for sender/phone/email; IP tracking would require an extra table.
-  // For now, IP limit is best-effort: we treat it as disabled unless you add IP storage.
-  if (kind === "ip") return { ok: true as const };
 
   let col: any = null;
   if (kind === "sender") col = (gifts as any).senderEmail;
@@ -156,26 +164,47 @@ async function enforceDailyLimit(opts: {
     .orderBy(asc(gifts.createdAt));
 
   const count = rows?.length || 0;
-
   if (count < limit) return { ok: true as const, count };
 
   const oldest = rows?.[0]?.createdAt;
   const oldestMs = toMs(oldest);
   const retryAfterSec = oldestMs ? Math.max(1, Math.ceil((oldestMs + DAILY_WINDOW_MS - Date.now()) / 1000)) : 24 * 3600;
 
-  return {
-    ok: false as const,
-    count,
-    limit,
-    retryAfterSec,
-  };
+  return { ok: false as const, count, limit, retryAfterSec };
+}
+
+/**
+ * IP daily limit (in-memory best-effort).
+ * This gives you a working IP limit without DB schema changes.
+ * Resets on deploy/restart.
+ */
+type Bucket = { count: number; windowStartMs: number };
+const ipBucket = new Map<string, Bucket>();
+
+function enforceIpDailyLimit(ip: string, limit: number) {
+  if (!limit || limit <= 0) return { ok: true as const };
+
+  const key = ip || "unknown";
+  const now = Date.now();
+  const b = ipBucket.get(key);
+
+  if (!b || now - b.windowStartMs >= DAILY_WINDOW_MS) {
+    ipBucket.set(key, { count: 1, windowStartMs: now });
+    return { ok: true as const, count: 1 };
+  }
+
+  if (b.count >= limit) {
+    const retryAfterSec = Math.max(1, Math.ceil((b.windowStartMs + DAILY_WINDOW_MS - now) / 1000));
+    return { ok: false as const, count: b.count, limit, retryAfterSec };
+  }
+
+  b.count += 1;
+  ipBucket.set(key, b);
+  return { ok: true as const, count: b.count };
 }
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-27_001";
-  const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
-
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
 
   app.get("/api/version", (_req, res) =>
@@ -203,6 +232,8 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
+    const ip = getClientIp(req);
+
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
     const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
     const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
@@ -229,19 +260,36 @@ export function registerRoutes(app: Express): Server {
 
     const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
     if (!t.ok) {
-      logEvent("captcha_fail", { codes: (t as any).codes || [], mode: (t as any).mode });
+      logEvent("captcha_fail", { codes: t.codes || [], mode: t.mode });
+
+      const codes = t.codes || [];
+      const missing = codes.includes("missing-input-response");
       return res.status(400).json({
-        error: "Missing CAPTCHA token",
+        error: missing ? "Missing CAPTCHA token" : "CAPTCHA failed",
         field: "turnstileToken",
-        codes: (t as any).codes || [],
+        codes,
         code: "TURNSTILE_FAILED",
         version: VERSION,
         commit: COMMIT,
       });
     }
 
-    // --- DAILY LIMITS (sender + phone) ---
-    // NOTE: IP daily limit requires persisting IP; currently skipped (see enforceDailyLimit).
+    // --- DAILY LIMITS ---
+    // IP (in-memory)
+    const ipLim = enforceIpDailyLimit(ip, DAILY_LIMIT_IP);
+    if (!ipLim.ok) {
+      logEvent("rate_limit_ip_blocked", { ip, limit: ipLim.limit, count: ipLim.count, retryAfterSec: ipLim.retryAfterSec });
+      return res.status(429).json({
+        error: "Daily limit reached for IP",
+        code: "DAILY_LIMIT_IP",
+        field: "ip",
+        retryAfterSec: ipLim.retryAfterSec,
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    // Sender + phone (DB-based)
     try {
       if (senderEmail) {
         const lim = await enforceDailyLimit({ kind: "sender", value: senderEmail, limit: DAILY_LIMIT_SENDER });
@@ -284,7 +332,7 @@ export function registerRoutes(app: Express): Server {
       }
     } catch (e: any) {
       logEvent("rate_limit_check_error", { err: safeStr(e?.message) });
-      // fail open (do not block)
+      // fail open
     }
 
     // --- Duplicate protection for SMS retries ---
@@ -331,7 +379,7 @@ export function registerRoutes(app: Express): Server {
 
         const existing = recent?.[0]?.r;
         if (existing?.publicId) {
-          const existingClaimUrl = `${getBaseUrl(req)}/claim/${existing.publicId}`;
+          const existingClaimUrl = `${getClaimSiteBaseUrl(req)}/claim/${existing.publicId}`;
 
           logEvent("sms_duplicate_blocked", {
             matchedPublicId: existing.publicId,
@@ -357,7 +405,7 @@ export function registerRoutes(app: Express): Server {
     }
 
     const publicId = newPublicId();
-    const claimUrl = `${getBaseUrl(req)}/claim/${publicId}`;
+    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
 
     try {
       await db.insert(gifts).values({
@@ -379,7 +427,8 @@ export function registerRoutes(app: Express): Server {
         amount,
         hasEmail: !!recipientEmail,
         hasPhone: !!recipientPhone,
-        captchaMode: (t as any).mode || "unknown",
+        captchaMode: t.mode || "unknown",
+        ip,
       });
 
       let deliveryOk = true;
@@ -521,10 +570,12 @@ export function registerRoutes(app: Express): Server {
 
       const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
       if (!t.ok) {
+        const codes = t.codes || [];
+        const missing = codes.includes("missing-input-response");
         return res.status(400).json({
-          error: "Missing CAPTCHA token",
+          error: missing ? "Missing CAPTCHA token" : "CAPTCHA failed",
           field: "turnstileToken",
-          codes: (t as any).codes || [],
+          codes,
           code: "TURNSTILE_FAILED",
           version: VERSION,
           commit: COMMIT,
