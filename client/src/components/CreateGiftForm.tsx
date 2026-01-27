@@ -20,6 +20,8 @@ type CreateGiftOk = {
   deliveryOk?: boolean;
   emailSent?: boolean;
   smsQueued?: boolean;
+  smsSent?: boolean;
+  smsFailed?: boolean;
   version?: string;
   deliveryError?: string;
 };
@@ -37,6 +39,16 @@ function isEmail(s: string) {
 
 function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
+}
+
+function normalizePhoneInput(input: string) {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  // Keep digits and leading +
+  const cleaned = raw.replace(/[^\d+]/g, "");
+  // If user typed multiple +, collapse to first
+  const plusFixed = cleaned.startsWith("+") ? "+" + cleaned.slice(1).replace(/\+/g, "") : cleaned.replace(/\+/g, "");
+  return plusFixed;
 }
 
 function absoluteLink(maybeRelative: string) {
@@ -76,7 +88,7 @@ function loadTurnstileScript(): Promise<void> {
     if (window.turnstile) return resolve();
 
     const existing = document.querySelector<HTMLScriptElement>(
-      `script[src^="https://challenges.cloudflare.com/turnstile/"]`
+      `script[src^="https://challenges.cloudflare.com/turnstile/"]`,
     );
     if (existing) {
       existing.addEventListener("load", () => resolve(), { once: true });
@@ -111,9 +123,7 @@ export default function CreateGiftForm() {
 
   // ---- Turnstile ----
   const siteKey =
-    (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY ||
-    (import.meta as any).env?.VITE_CF_TURNSTILE_SITE_KEY ||
-    "";
+    (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || (import.meta as any).env?.VITE_CF_TURNSTILE_SITE_KEY || "";
 
   const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
   const turnstileWidgetIdRef = useRef<any>(null);
@@ -130,7 +140,7 @@ export default function CreateGiftForm() {
       "I’m grateful for you. No strings attached.",
       "This is just a small thank you for a big impact.",
     ],
-    []
+    [],
   );
 
   const canUseTurnstile = Boolean(siteKey) && typeof window !== "undefined";
@@ -299,11 +309,9 @@ export default function CreateGiftForm() {
       const ok = data as CreateGiftOk;
       setCreated(ok);
 
-      // Save last link locally for "Last ThanküMail link" card on Home
       const abs = absoluteLink(ok.claimUrl || "");
       if (abs) safeSetLastClaimUrl(abs);
 
-      // Keep sender email (convenience), clear recipient/message/amount for next send
       setRecipientEmail("");
       setRecipientPhone("");
       setAmountDollars(10);
@@ -327,6 +335,17 @@ export default function CreateGiftForm() {
       ? created.deliveryOk
         ? "Delivered/queued successfully."
         : `Delivery did not complete${created.deliveryError ? `: ${created.deliveryError}` : "."}`
+      : "";
+
+  const smsLine =
+    created && (created.smsSent || created.smsFailed || created.smsQueued)
+      ? created.smsSent
+        ? "SMS sent."
+        : created.smsFailed
+          ? "SMS failed."
+          : created.smsQueued
+            ? "SMS queued."
+            : ""
       : "";
 
   async function copyLink() {
@@ -365,6 +384,7 @@ export default function CreateGiftForm() {
             </div>
 
             {deliveryLine ? <div className="mt-2 text-xs opacity-80">{deliveryLine}</div> : null}
+            {smsLine ? <div className="mt-2 text-xs opacity-80">{smsLine}</div> : null}
 
             {claimUrl ? (
               <div className="mt-3 rounded-xl border border-green-200 bg-white px-3 py-3">
@@ -435,11 +455,14 @@ export default function CreateGiftForm() {
               }`}
               placeholder="+14165551234"
               value={recipientPhone}
-              onChange={(e) => setRecipientPhone(e.target.value)}
+              onChange={(e) => setRecipientPhone(normalizePhoneInput(e.target.value))}
               inputMode="tel"
               autoComplete="tel"
             />
             <div className="mt-1 text-xs text-gray-500">{recipientHint()}</div>
+            <div className="mt-2 text-xs text-gray-500">
+              By sending via SMS, you confirm you have permission to contact this recipient.
+            </div>
           </div>
 
           <div>
