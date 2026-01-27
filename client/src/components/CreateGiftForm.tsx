@@ -20,8 +20,6 @@ type CreateGiftOk = {
   deliveryOk?: boolean;
   emailSent?: boolean;
   smsQueued?: boolean;
-  smsSent?: boolean;
-  smsFailed?: boolean;
   version?: string;
   deliveryError?: string;
 };
@@ -39,16 +37,6 @@ function isEmail(s: string) {
 
 function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
-}
-
-function normalizePhoneInput(input: string) {
-  const raw = String(input || "").trim();
-  if (!raw) return "";
-  // Keep digits and leading +
-  const cleaned = raw.replace(/[^\d+]/g, "");
-  // If user typed multiple +, collapse to first
-  const plusFixed = cleaned.startsWith("+") ? "+" + cleaned.slice(1).replace(/\+/g, "") : cleaned.replace(/\+/g, "");
-  return plusFixed;
 }
 
 function absoluteLink(maybeRelative: string) {
@@ -337,32 +325,23 @@ export default function CreateGiftForm() {
         : `Delivery did not complete${created.deliveryError ? `: ${created.deliveryError}` : "."}`
       : "";
 
-  const smsLine =
-    created && (created.smsSent || created.smsFailed || created.smsQueued)
-      ? created.smsSent
-        ? "SMS sent."
-        : created.smsFailed
-          ? "SMS failed."
-          : created.smsQueued
-            ? "SMS queued."
-            : ""
-      : "";
-
   async function copyLink() {
     if (!claimUrl) return;
     try {
       await navigator.clipboard?.writeText(claimUrl);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
   function openClaim() {
     if (!claimUrl) return;
     window.open(claimUrl, "_blank", "noopener,noreferrer");
   }
+
+  const permissionCopy = recipientPhone.trim()
+    ? "By sending via SMS, you confirm you have permission to contact this recipient."
+    : "By sending, you confirm you have permission to contact the recipient.";
 
   return (
     <div className="w-full max-w-xl">
@@ -384,7 +363,6 @@ export default function CreateGiftForm() {
             </div>
 
             {deliveryLine ? <div className="mt-2 text-xs opacity-80">{deliveryLine}</div> : null}
-            {smsLine ? <div className="mt-2 text-xs opacity-80">{smsLine}</div> : null}
 
             {claimUrl ? (
               <div className="mt-3 rounded-xl border border-green-200 bg-white px-3 py-3">
@@ -455,14 +433,11 @@ export default function CreateGiftForm() {
               }`}
               placeholder="+14165551234"
               value={recipientPhone}
-              onChange={(e) => setRecipientPhone(normalizePhoneInput(e.target.value))}
+              onChange={(e) => setRecipientPhone(e.target.value)}
               inputMode="tel"
               autoComplete="tel"
             />
             <div className="mt-1 text-xs text-gray-500">{recipientHint()}</div>
-            <div className="mt-2 text-xs text-gray-500">
-              By sending via SMS, you confirm you have permission to contact this recipient.
-            </div>
           </div>
 
           <div>
@@ -527,7 +502,7 @@ export default function CreateGiftForm() {
             {submitting ? "Sending…" : "Create & Send"}
           </button>
 
-          <div className="text-xs text-gray-500">By sending, you confirm you have permission to contact the recipient.</div>
+          <div className="text-xs text-gray-500">{permissionCopy}</div>
         </div>
       </form>
     </div>
