@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: Full file replacement (paste exactly)
+
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -107,12 +110,12 @@ const claimLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-/* -------------------- SMS DUPLICATE WINDOW -------------------- */
+/* -------------------- DUPLICATE WINDOW -------------------- */
 const SMS_DUPLICATE_WINDOW_SEC = Math.max(10, Number(process.env.SMS_DUPLICATE_WINDOW_SEC || 90));
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-26_004";
+  const VERSION = "routes_v2026-01-26_005";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -176,22 +179,46 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // --- SMS duplicate retry protection (phone only) ---
+    // --- Duplicate protection for SMS retries ---
+    // Primary: match by recipientPhone + message + amount (if DB column exists and is populated)
+    // Fallback: match by senderEmail + message + amount (works even if recipient_phone column doesn't exist in DB yet)
     if (recipientPhone) {
       const cutoffMs = Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000;
 
       try {
-        const rows = await db
-          .select()
-          .from(gifts)
-          .where(
-            and(
-              eq(gifts.recipientPhone, recipientPhone),
-              eq(gifts.message, message),
-              eq(gifts.amount, amount),
-              eq(gifts.isClaimed, false),
-            ),
-          );
+        let rows: any[] = [];
+
+        // Try phone-based match first (may throw if column missing)
+        try {
+          rows = await db
+            .select()
+            .from(gifts)
+            .where(
+              and(
+                eq((gifts as any).recipientPhone, recipientPhone),
+                eq(gifts.message, message),
+                eq(gifts.amount, amount),
+                eq(gifts.isClaimed, false),
+              ),
+            );
+        } catch {
+          rows = [];
+        }
+
+        // If no phone matches, fallback to senderEmail match (requires senderEmail present)
+        if ((!rows || rows.length === 0) && senderEmail) {
+          rows = await db
+            .select()
+            .from(gifts)
+            .where(
+              and(
+                eq((gifts as any).senderEmail, senderEmail),
+                eq(gifts.message, message),
+                eq(gifts.amount, amount),
+                eq(gifts.isClaimed, false),
+              ),
+            );
+        }
 
         const recent = (rows || [])
           .map((r: any) => ({ r, ms: toMs(r?.createdAt) }))
@@ -206,6 +233,8 @@ export function registerRoutes(app: Express): Server {
             matchedPublicId: existing.publicId,
             windowSec: SMS_DUPLICATE_WINDOW_SEC,
             amount,
+            mode: (rows?.length ? "match" : "none") || "match",
+            usedFallback: rows?.length ? false : true,
           });
 
           return res.json({
@@ -356,7 +385,9 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = ClaimSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
