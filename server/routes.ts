@@ -6,7 +6,7 @@ import { createServer, type Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { eq, and } from "drizzle-orm";
+import { eq, and, gte, desc, asc } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
@@ -31,6 +31,18 @@ function getBaseUrl(req: Request) {
   return `${proto}://${host}`.replace(/\/+$/, "");
 }
 
+/* -------------------- IP -------------------- */
+function getClientIp(req: Request) {
+  const cf = safeStr(req.headers["cf-connecting-ip"]);
+  if (cf) return cf;
+
+  const xff = safeStr(req.headers["x-forwarded-for"]);
+  if (xff) return xff.split(",")[0].trim();
+
+  const ra = safeStr((req.socket as any)?.remoteAddress);
+  return ra || "";
+}
+
 /* -------------------- TURNSTILE -------------------- */
 async function verifyTurnstile(token: string, req: Request) {
   const secret = process.env.TURNSTILE_SECRET_KEY || "";
@@ -40,11 +52,7 @@ async function verifyTurnstile(token: string, req: Request) {
   if (bypass) return { ok: true, mode: "bypass" as const };
   if (!token) return { ok: false, mode: "enforced" as const, codes: ["missing-input-response"] as string[] };
 
-  const ip =
-    (req.headers["cf-connecting-ip"] as string) ||
-    (req.headers["x-forwarded-for"] as string) ||
-    (req.socket?.remoteAddress as string) ||
-    "";
+  const ip = getClientIp(req);
 
   const form = new URLSearchParams();
   form.set("secret", secret);
@@ -113,9 +121,59 @@ const claimLimiter = rateLimit({
 /* -------------------- DUPLICATE WINDOW -------------------- */
 const SMS_DUPLICATE_WINDOW_SEC = Math.max(10, Number(process.env.SMS_DUPLICATE_WINDOW_SEC || 90));
 
+/* -------------------- DAILY LIMITS (24h) -------------------- */
+const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const DAILY_LIMIT_IP = Math.max(0, Number(process.env.DAILY_LIMIT_IP || 10));
+const DAILY_LIMIT_SENDER = Math.max(0, Number(process.env.DAILY_LIMIT_SENDER || 5));
+const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE || 3));
+
+async function enforceDailyLimit(opts: {
+  kind: "ip" | "sender" | "phone";
+  value: string;
+  limit: number;
+}) {
+  const { kind, value, limit } = opts;
+
+  if (!limit || limit <= 0) return { ok: true as const };
+
+  const cutoff = new Date(Date.now() - DAILY_WINDOW_MS);
+
+  // Note: we only have DB columns for sender/phone/email; IP tracking would require an extra table.
+  // For now, IP limit is best-effort: we treat it as disabled unless you add IP storage.
+  if (kind === "ip") return { ok: true as const };
+
+  let col: any = null;
+  if (kind === "sender") col = (gifts as any).senderEmail;
+  if (kind === "phone") col = (gifts as any).recipientPhone;
+
+  if (!col) return { ok: true as const };
+
+  const rows = await db
+    .select({ createdAt: gifts.createdAt })
+    .from(gifts)
+    .where(and(eq(col, value), gte(gifts.createdAt, cutoff)))
+    .orderBy(asc(gifts.createdAt));
+
+  const count = rows?.length || 0;
+
+  if (count < limit) return { ok: true as const, count };
+
+  const oldest = rows?.[0]?.createdAt;
+  const oldestMs = toMs(oldest);
+  const retryAfterSec = oldestMs ? Math.max(1, Math.ceil((oldestMs + DAILY_WINDOW_MS - Date.now()) / 1000)) : 24 * 3600;
+
+  return {
+    ok: false as const,
+    count,
+    limit,
+    retryAfterSec,
+  };
+}
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  const VERSION = "routes_v2026-01-26_006";
+  const VERSION = "routes_v2026-01-27_001";
   const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -128,6 +186,9 @@ export function registerRoutes(app: Express): Server {
       env: process.env.NODE_ENV || "",
       minClaimDelaySec: Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60)),
       smsDuplicateWindowSec: SMS_DUPLICATE_WINDOW_SEC,
+      dailyLimitIp: DAILY_LIMIT_IP,
+      dailyLimitSender: DAILY_LIMIT_SENDER,
+      dailyLimitPhone: DAILY_LIMIT_PHONE,
     }),
   );
 
@@ -177,6 +238,53 @@ export function registerRoutes(app: Express): Server {
         version: VERSION,
         commit: COMMIT,
       });
+    }
+
+    // --- DAILY LIMITS (sender + phone) ---
+    // NOTE: IP daily limit requires persisting IP; currently skipped (see enforceDailyLimit).
+    try {
+      if (senderEmail) {
+        const lim = await enforceDailyLimit({ kind: "sender", value: senderEmail, limit: DAILY_LIMIT_SENDER });
+        if (!lim.ok) {
+          logEvent("rate_limit_sender_blocked", {
+            senderEmail,
+            limit: lim.limit,
+            count: lim.count,
+            retryAfterSec: lim.retryAfterSec,
+          });
+          return res.status(429).json({
+            error: "Daily limit reached for sender",
+            code: "DAILY_LIMIT_SENDER",
+            field: "senderEmail",
+            retryAfterSec: lim.retryAfterSec,
+            version: VERSION,
+            commit: COMMIT,
+          });
+        }
+      }
+
+      if (recipientPhone) {
+        const lim = await enforceDailyLimit({ kind: "phone", value: recipientPhone, limit: DAILY_LIMIT_PHONE });
+        if (!lim.ok) {
+          logEvent("rate_limit_recipient_blocked", {
+            recipientPhone,
+            limit: lim.limit,
+            count: lim.count,
+            retryAfterSec: lim.retryAfterSec,
+          });
+          return res.status(429).json({
+            error: "Daily limit reached for recipient phone",
+            code: "DAILY_LIMIT_PHONE",
+            field: "recipientPhone",
+            retryAfterSec: lim.retryAfterSec,
+            version: VERSION,
+            commit: COMMIT,
+          });
+        }
+      }
+    } catch (e: any) {
+      logEvent("rate_limit_check_error", { err: safeStr(e?.message) });
+      // fail open (do not block)
     }
 
     // --- Duplicate protection for SMS retries ---
@@ -392,7 +500,9 @@ export function registerRoutes(app: Express): Server {
       if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
 
       if (gift.isClaimed) {
-        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+        return res
+          .status(409)
+          .json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
 
       if (gift.createdAt && minDelaySec > 0) {
