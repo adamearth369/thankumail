@@ -1,3 +1,4 @@
+// WHERE TO PASTE: server/routes.ts
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -11,7 +12,7 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-28_006";
+const VERSION = "routes_v2026-01-28_007";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- REMINDER SENDING -------------------- */
@@ -276,13 +277,7 @@ export function registerRoutes(app: Express): Server {
         const rows: any[] = await db
           .select()
           .from(gifts)
-          .where(
-            and(
-              eq(gifts.publicId, targetPublicId),
-              eq(gifts.isClaimed, false),
-              isNull((gifts as any).returnedToSenderAt),
-            ),
-          );
+          .where(and(eq(gifts.publicId, targetPublicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
         candidates = rows || [];
       } else {
         const rows: any[] = await db
@@ -346,6 +341,8 @@ export function registerRoutes(app: Express): Server {
           willRemind,
           willReturn,
           sendFailed: 0,
+          skippedNoRecipientEmail: 0,
+          skippedSendingDisabled: REMINDER_SENDING_ENABLED ? 0 : willRemind,
           cutoff: cutoff.toISOString(),
           gapMs,
           reminderMax: REMINDER_MAX,
@@ -358,6 +355,8 @@ export function registerRoutes(app: Express): Server {
       let reminded = 0;
       let returned = 0;
       let sendFailed = 0;
+      let skippedNoRecipientEmail = 0;
+      let skippedSendingDisabled = 0;
 
       // REMINDERS: email recipientEmail (only if valid email exists)
       for (const g of toRemind) {
@@ -369,31 +368,38 @@ export function registerRoutes(app: Express): Server {
         const amount = Number(g?.amount || 0);
         const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
 
-        // If no recipientEmail, skip (phone-only reminders are future)
+        // No recipient email: do NOT increment reminderCount, do NOT return-to-sender early
         if (!isEmail(recipientEmail)) {
-          sendFailed += 1;
-          logEvent("reminder_send_skipped_no_recipient_email", { publicId });
+          skippedNoRecipientEmail += 1;
+          logEvent("reminder_skipped_no_recipient_email", { publicId });
           continue;
         }
 
-        if (REMINDER_SENDING_ENABLED) {
-          const r = await sendReminderEmail({
-            to: recipientEmail,
-            publicId,
-            claimUrl,
-            amountCents: amount,
-            senderEmail: isEmail(senderEmail) ? senderEmail : undefined,
-          });
-
-          if (!r.ok) {
-            sendFailed += 1;
-            logEvent("reminder_send_failed", { publicId, err: safeStr((r as any)?.error) });
-            continue;
-          }
-
-          logEvent("reminder_send_ok", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
+        // Sending disabled: do NOT increment reminderCount (so you can flip it back on later)
+        if (!REMINDER_SENDING_ENABLED) {
+          skippedSendingDisabled += 1;
+          logEvent("reminder_skipped_sending_disabled", { publicId });
+          continue;
         }
 
+        // Attempt send
+        const r = await sendReminderEmail({
+          to: recipientEmail,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: isEmail(senderEmail) ? senderEmail : undefined,
+        });
+
+        if (!r.ok) {
+          sendFailed += 1;
+          logEvent("reminder_send_failed", { publicId, err: safeStr((r as any)?.error) });
+          continue;
+        }
+
+        logEvent("reminder_send_ok", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
+
+        // Mark only after send success
         const nextCount = Number(g?.reminderCount || 0) + 1;
 
         await db
@@ -446,6 +452,8 @@ export function registerRoutes(app: Express): Server {
         reminded,
         returned,
         sendFailed,
+        skippedNoRecipientEmail,
+        skippedSendingDisabled,
         cutoff: cutoff.toISOString(),
         gapMs,
         reminderMax: REMINDER_MAX,
