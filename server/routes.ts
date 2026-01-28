@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -14,7 +11,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-27_003";
+const VERSION = "routes_v2026-01-28_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
@@ -23,6 +20,10 @@ function logEvent(event: string, fields: Record<string, any> = {}) {
 }
 function safeStr(v: any) {
   return typeof v === "string" ? v : "";
+}
+function toMs(d: any) {
+  const t = d instanceof Date ? d.getTime() : new Date(d).getTime();
+  return Number.isFinite(t) ? t : 0;
 }
 
 /* -------------------- CLAIM SITE BASE URL -------------------- */
@@ -87,11 +88,6 @@ function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
-function toMs(d: any) {
-  const t = d instanceof Date ? d.getTime() : new Date(d).getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
 /* -------------------- VALIDATION -------------------- */
 const CreateGiftSchema = z.object({
   senderEmail: z.string().email().optional().or(z.literal("")),
@@ -104,10 +100,18 @@ const CreateGiftSchema = z.object({
   message: z.string().min(1).max(2000),
   amount: z.number().int().min(1000).max(100000),
   turnstileToken: z.string().optional().or(z.literal("")),
+  // debug/testing only: allow skipping DAILY_LIMIT checks for one request (requires secret env)
+  debugBypassLimits: z.string().optional().or(z.literal("")),
 });
 
 const ClaimSchema = z.object({
   turnstileToken: z.string().optional().or(z.literal("")),
+});
+
+const AdminRemindersSchema = z.object({
+  dryRun: z.boolean().optional().default(true),
+  limit: z.number().int().min(1).max(500).optional().default(25),
+  olderThanHours: z.number().int().min(1).max(24 * 365).optional().default(24),
 });
 
 /* -------------------- LIMITERS -------------------- */
@@ -189,6 +193,24 @@ function enforceIpDailyLimit(ip: string, limit: number) {
   return { ok: true as const, count: b.count };
 }
 
+function canBypassLimits(parsedBody: any) {
+  const secret = safeStr(process.env.DEBUG_BYPASS_LIMITS_SECRET || "");
+  if (!secret) return false;
+  const token = safeStr(parsedBody?.debugBypassLimits || "").trim();
+  return token && token === secret;
+}
+
+/* -------------------- ADMIN AUTH -------------------- */
+function requireAdmin(req: Request) {
+  const expected = safeStr(process.env.ADMIN_TOKEN || "");
+  if (!expected) return { ok: false as const, status: 500, error: "ADMIN_TOKEN not configured" };
+
+  const got = safeStr(req.headers["x-admin-token"]).trim();
+  if (!got || got !== expected) return { ok: false as const, status: 401, error: "Unauthorized" };
+
+  return { ok: true as const };
+}
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -211,7 +233,136 @@ export function registerRoutes(app: Express): Server {
       turnstileMode: mode,
       turnstileBypass: bypass,
       turnstileConfigured: configured,
+      debugBypassLimitsConfigured: !!process.env.DEBUG_BYPASS_LIMITS_SECRET,
+      remindersRoute: true,
     });
+  });
+
+  /* -------------------- ADMIN: REMINDERS -------------------- */
+  app.post("/api/admin/reminders/send", async (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+
+    const parsed = AdminRemindersSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    }
+
+    const dryRun = !!parsed.data.dryRun;
+    const limit = Number(parsed.data.limit) || 25;
+    const olderThanHours = Number(parsed.data.olderThanHours) || 24;
+
+    const now = Date.now();
+    const cutoff = new Date(now - olderThanHours * 3600 * 1000);
+
+    // 2 days between reminders
+    const MIN_GAP_MS = 2 * 24 * 3600 * 1000;
+
+    try {
+      // pull candidates: unclaimed, not returned, older than cutoff
+      const rows: any[] = await db
+        .select()
+        .from(gifts)
+        .where(and(eq(gifts.isClaimed, false), eq((gifts as any).returnedToSenderAt, null as any), gte(cutoff, gifts.createdAt as any) as any))
+        .orderBy(asc(gifts.createdAt))
+        .limit(limit);
+
+      // NOTE: drizzle "gte(cutoff, gifts.createdAt)" may not typecheck in some setups.
+      // fallback: filter in memory (safe for small limit).
+      const candidates = (rows || []).filter((g: any) => {
+        const createdMs = toMs(g?.createdAt);
+        return createdMs && createdMs <= cutoff.getTime();
+      });
+
+      let scanned = candidates.length;
+      let eligible = 0;
+      let willRemind = 0;
+      let willReturn = 0;
+
+      const toRemind: any[] = [];
+      const toReturn: any[] = [];
+
+      for (const g of candidates) {
+        const reminderCount = Number(g?.reminderCount || 0);
+        const lastSentMs = toMs(g?.lastReminderSentAt);
+        const gapOk = !lastSentMs || now - lastSentMs >= MIN_GAP_MS;
+
+        if (reminderCount >= 3) {
+          willReturn += 1;
+          toReturn.push(g);
+          continue;
+        }
+
+        if (gapOk) {
+          eligible += 1;
+          willRemind += 1;
+          toRemind.push(g);
+        }
+      }
+
+      if (dryRun) {
+        return res.json({
+          ok: true,
+          dryRun: true,
+          scanned,
+          eligible,
+          willRemind,
+          willReturn,
+          cutoff: cutoff.toISOString(),
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+
+      let reminded = 0;
+      let returned = 0;
+
+      for (const g of toRemind) {
+        const publicId = safeStr(g?.publicId);
+        if (!publicId) continue;
+
+        await db
+          .update(gifts)
+          .set({
+            reminderCount: Number(g?.reminderCount || 0) + 1,
+            lastReminderSentAt: new Date(),
+          } as any)
+          .where(eq(gifts.publicId, publicId));
+
+        reminded += 1;
+        logEvent("reminder_marked", { publicId, reminderCount: Number(g?.reminderCount || 0) + 1 });
+      }
+
+      for (const g of toReturn) {
+        const publicId = safeStr(g?.publicId);
+        if (!publicId) continue;
+
+        await db
+          .update(gifts)
+          .set({
+            returnedToSenderAt: new Date(),
+          } as any)
+          .where(eq(gifts.publicId, publicId));
+
+        returned += 1;
+        logEvent("returned_to_sender_marked", { publicId });
+      }
+
+      return res.json({
+        ok: true,
+        dryRun: false,
+        scanned,
+        eligible,
+        reminded,
+        returned,
+        cutoff: cutoff.toISOString(),
+        version: VERSION,
+        commit: COMMIT,
+      });
+    } catch (e: any) {
+      logEvent("reminders_error", { err: safeStr(e?.message) });
+      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
+    }
   });
 
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
@@ -267,61 +418,58 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    const ipLim = enforceIpDailyLimit(ip, DAILY_LIMIT_IP);
-    if (!ipLim.ok) {
-      logEvent("rate_limit_ip_blocked", { ip, limit: ipLim.limit, count: ipLim.count, retryAfterSec: ipLim.retryAfterSec });
-      return res.status(429).json({
-        error: "Daily limit reached for IP",
-        code: "DAILY_LIMIT_IP",
-        field: "ip",
-        retryAfterSec: ipLim.retryAfterSec,
-        version: VERSION,
-        commit: COMMIT,
-      });
+    const bypassLimits = canBypassLimits(parsed.data);
+    if (bypassLimits) {
+      logEvent("debug_bypass_limits", { ip, senderEmail, hasPhone: !!recipientPhone, hasEmail: !!recipientEmail });
     }
 
-    try {
-      if (senderEmail) {
-        const lim = await enforceDailyLimit({ kind: "sender", value: senderEmail, limit: DAILY_LIMIT_SENDER });
-        if (!lim.ok) {
-          logEvent("rate_limit_sender_blocked", {
-            senderEmail,
-            limit: lim.limit,
-            count: lim.count,
-            retryAfterSec: lim.retryAfterSec,
-          });
-          return res.status(429).json({
-            error: "Daily limit reached for sender",
-            code: "DAILY_LIMIT_SENDER",
-            field: "senderEmail",
-            retryAfterSec: lim.retryAfterSec,
-            version: VERSION,
-            commit: COMMIT,
-          });
-        }
+    if (!bypassLimits) {
+      const ipLim = enforceIpDailyLimit(ip, DAILY_LIMIT_IP);
+      if (!ipLim.ok) {
+        logEvent("rate_limit_ip_blocked", { ip, limit: ipLim.limit, count: ipLim.count, retryAfterSec: ipLim.retryAfterSec });
+        return res.status(429).json({
+          error: "Daily limit reached for IP",
+          code: "DAILY_LIMIT_IP",
+          field: "ip",
+          retryAfterSec: ipLim.retryAfterSec,
+          version: VERSION,
+          commit: COMMIT,
+        });
       }
 
-      if (recipientPhone) {
-        const lim = await enforceDailyLimit({ kind: "phone", value: recipientPhone, limit: DAILY_LIMIT_PHONE });
-        if (!lim.ok) {
-          logEvent("rate_limit_recipient_blocked", {
-            recipientPhone,
-            limit: lim.limit,
-            count: lim.count,
-            retryAfterSec: lim.retryAfterSec,
-          });
-          return res.status(429).json({
-            error: "Daily limit reached for recipient phone",
-            code: "DAILY_LIMIT_PHONE",
-            field: "recipientPhone",
-            retryAfterSec: lim.retryAfterSec,
-            version: VERSION,
-            commit: COMMIT,
-          });
+      try {
+        if (senderEmail) {
+          const lim = await enforceDailyLimit({ kind: "sender", value: senderEmail, limit: DAILY_LIMIT_SENDER });
+          if (!lim.ok) {
+            logEvent("rate_limit_sender_blocked", { senderEmail, limit: lim.limit, count: lim.count, retryAfterSec: lim.retryAfterSec });
+            return res.status(429).json({
+              error: "Daily limit reached for sender",
+              code: "DAILY_LIMIT_SENDER",
+              field: "senderEmail",
+              retryAfterSec: lim.retryAfterSec,
+              version: VERSION,
+              commit: COMMIT,
+            });
+          }
         }
+
+        if (recipientPhone) {
+          const lim = await enforceDailyLimit({ kind: "phone", value: recipientPhone, limit: DAILY_LIMIT_PHONE });
+          if (!lim.ok) {
+            logEvent("rate_limit_recipient_blocked", { recipientPhone, limit: lim.limit, count: lim.count, retryAfterSec: lim.retryAfterSec });
+            return res.status(429).json({
+              error: "Daily limit reached for recipient phone",
+              code: "DAILY_LIMIT_PHONE",
+              field: "recipientPhone",
+              retryAfterSec: lim.retryAfterSec,
+              version: VERSION,
+              commit: COMMIT,
+            });
+          }
+        }
+      } catch (e: any) {
+        logEvent("rate_limit_check_error", { err: safeStr(e?.message) });
       }
-    } catch (e: any) {
-      logEvent("rate_limit_check_error", { err: safeStr(e?.message) });
     }
 
     if (recipientPhone) {
@@ -369,11 +517,7 @@ export function registerRoutes(app: Express): Server {
         if (existing?.publicId) {
           const existingClaimUrl = `${getClaimSiteBaseUrl(req)}/claim/${existing.publicId}`;
 
-          logEvent("sms_duplicate_blocked", {
-            matchedPublicId: existing.publicId,
-            windowSec: SMS_DUPLICATE_WINDOW_SEC,
-            amount,
-          });
+          logEvent("sms_duplicate_blocked", { matchedPublicId: existing.publicId, windowSec: SMS_DUPLICATE_WINDOW_SEC, amount });
 
           return res.json({
             ok: true,
@@ -463,11 +607,8 @@ export function registerRoutes(app: Express): Server {
           smsQueued = true;
 
           const providerStatus = safeStr(smsRes?.status).toLowerCase();
-          if (providerStatus === "sent" || smsRes?.sent === true) {
-            logEvent("sms_sent", { publicId });
-          } else {
-            logEvent("sms_queued", { publicId });
-          }
+          if (providerStatus === "sent" || smsRes?.sent === true) logEvent("sms_sent", { publicId });
+          else logEvent("sms_queued", { publicId });
         }
       }
 
@@ -524,9 +665,7 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = ClaimSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
@@ -537,22 +676,14 @@ export function registerRoutes(app: Express): Server {
       if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
 
       if (gift.isClaimed) {
-        return res
-          .status(409)
-          .json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
 
       if (gift.createdAt && minDelaySec > 0) {
         const ageMs = Date.now() - new Date(gift.createdAt).getTime();
         if (ageMs < minDelaySec * 1000) {
           const retryAfterSec = Math.ceil((minDelaySec * 1000 - ageMs) / 1000);
-          return res.status(429).json({
-            error: "Please wait before claiming",
-            code: "MIN_DELAY",
-            retryAfterSec,
-            version: VERSION,
-            commit: COMMIT,
-          });
+          return res.status(429).json({ error: "Please wait before claiming", code: "MIN_DELAY", retryAfterSec, version: VERSION, commit: COMMIT });
         }
       }
 
