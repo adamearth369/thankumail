@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 declare global {
@@ -49,10 +52,12 @@ export default function Claim() {
   const shouldShowCaptcha = Boolean(siteKey) && !alreadyClaimed && !ok;
   const canAttemptClaim = !alreadyClaimed && !ok;
 
-  const waitingOnDelay = useMemo(
-    () => retryAfterSec !== null && retryAfterSec > 0,
-    [retryAfterSec]
-  );
+  const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
+
+  const amountDollars = useMemo(() => {
+    const cents = Number(gift?.amount || 0);
+    return Number.isFinite(cents) ? (cents / 100).toFixed(2) : "0.00";
+  }, [gift]);
 
   // Load gift
   useEffect(() => {
@@ -146,17 +151,14 @@ export default function Claim() {
       return;
     }
 
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[data-turnstile="1"]'
-    );
+    const existing = document.querySelector<HTMLScriptElement>('script[data-turnstile="1"]');
     if (existing) {
       setTurnstileBooting(false);
       return;
     }
 
     const script = document.createElement("script");
-    script.src =
-      "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
     script.async = true;
     script.defer = true;
     script.setAttribute("data-turnstile", "1");
@@ -299,7 +301,6 @@ export default function Claim() {
     if (!publicId) return;
     if (!canAttemptClaim) return;
 
-    // If waiting, do nothing (auto-claim will happen).
     if (waitingOnDelay) {
       setError("One moment — we’re finalizing your gift.");
       return;
@@ -317,7 +318,6 @@ export default function Claim() {
       const { r, j } = await postClaim();
 
       if (r.status === 429 && j?.retryAfterSec) {
-        // ARM + start countdown; DO NOT require another click/captcha.
         setArmed(true);
         setRetryAfterSec(Number(j.retryAfterSec) || 0);
         setClaiming(false);
@@ -362,12 +362,29 @@ export default function Claim() {
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
   if (error && !gift) return <div style={{ padding: 32, color: "#b00020" }}>{error}</div>;
 
+  // SUCCESS: keep it warm + simple + clear
   if (ok) {
     return (
-      <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
-        <h2>🎉 You’ve received a ThankuMail</h2>
-        <p>This moment was meant just for you.</p>
-        <p style={{ color: "#666" }}>We hope it brought a little light to your day.</p>
+      <div style={{ maxWidth: 520, margin: "40px auto", padding: 24 }}>
+        <div style={{ marginBottom: 14, color: "#666" }}>ThankuMail</div>
+
+        <h1 style={{ margin: "0 0 10px 0" }}>It’s yours.</h1>
+        <div style={{ color: "#666", marginBottom: 18 }}>
+          The note was the heart of it. The gift is the follow-through.
+        </div>
+
+        <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fafafa" }}>
+          <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>Message</div>
+          <div style={{ fontSize: 18, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{gift?.message || "—"}</div>
+        </div>
+
+        <div style={{ marginTop: 14, color: "#666" }}>
+          Gift amount: <strong style={{ color: "#111" }}>${amountDollars}</strong>
+        </div>
+
+        <div style={{ marginTop: 18, fontSize: 13, color: "#777" }}>
+          If you weren’t expecting this, you can ignore it — nothing else is required.
+        </div>
       </div>
     );
   }
@@ -393,12 +410,12 @@ export default function Claim() {
       : "";
 
   return (
-    <div style={{ maxWidth: 480, margin: "40px auto", padding: 24 }}>
-      <h1>You’ve got a ThankuMail</h1>
-      <p>Someone left you a note and a gift. Take a breath — it’s meant for you.</p>
+    <div style={{ maxWidth: 520, margin: "40px auto", padding: 24 }}>
+      <div style={{ marginBottom: 14, color: "#666" }}>ThankuMail</div>
 
-      <div style={{ color: "#666", marginBottom: 12 }}>
-        For safety, there’s a quick verification and a short pause before it finalizes.
+      <h1 style={{ margin: "0 0 10px 0" }}>A note for you.</h1>
+      <div style={{ color: "#666", marginBottom: 18 }}>
+        Read the message first. Claim when you’re ready.
       </div>
 
       {alreadyClaimed ? (
@@ -409,45 +426,51 @@ export default function Claim() {
         <div style={{ color: "#111", marginBottom: 12 }}>{statusLine}</div>
       ) : null}
 
-      {shouldShowCaptcha ? (
-        <div style={{ marginBottom: 12 }}>
-          <div id="turnstile-container" />
-          {turnstileBooting ? (
-            <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div>
-          ) : captchaReady ? (
-            <div style={{ color: "#666", marginTop: 8 }}>Verified ✓</div>
-          ) : null}
-        </div>
-      ) : null}
+      <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fafafa", marginBottom: 14 }}>
+        <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>Message</div>
+        <div style={{ fontSize: 18, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{gift?.message || "—"}</div>
+      </div>
 
-      {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 && (
-        <div style={{ color: "#666", marginBottom: 12 }}>
-          Finalizing your gift… about {retryAfterSec} seconds.
-        </div>
-      )}
-
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
-        <div style={{ marginBottom: 12 }}>
-          <strong>Message</strong>
-          <div>{gift?.message || "—"}</div>
+      <div style={{ border: "1px solid #ddd", borderRadius: 14, padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+          <div style={{ fontWeight: 800, color: "#111" }}>Gift</div>
+          <div style={{ color: "#666", fontSize: 13 }}>
+            Amount: <strong style={{ color: "#111" }}>${amountDollars}</strong>
+          </div>
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <strong>Amount</strong>
-          <div>${(Number(gift?.amount || 0) / 100).toFixed(2)}</div>
+        <div style={{ color: "#666", fontSize: 13, marginBottom: 12 }}>
+          For safety, there’s a quick verification and a short pause before it finalizes.
         </div>
+
+        {shouldShowCaptcha ? (
+          <div style={{ marginBottom: 12 }}>
+            <div id="turnstile-container" />
+            {turnstileBooting ? (
+              <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div>
+            ) : captchaReady ? (
+              <div style={{ color: "#666", marginTop: 8 }}>Verified ✓</div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 && (
+          <div style={{ color: "#666", marginBottom: 12 }}>
+            Finalizing your gift… about {retryAfterSec} seconds.
+          </div>
+        )}
 
         <button
           onClick={handleClaimClick}
           disabled={buttonDisabled}
           style={{
             width: "100%",
-            padding: "10px 14px",
-            borderRadius: 10,
+            padding: "12px 14px",
+            borderRadius: 12,
             border: "none",
             background: "#111",
             color: "#fff",
-            fontWeight: 700,
+            fontWeight: 800,
             cursor: buttonDisabled ? "not-allowed" : "pointer",
             opacity: buttonDisabled ? 0.5 : 1,
           }}
@@ -461,11 +484,15 @@ export default function Claim() {
           </div>
         ) : null}
 
-        {(waitingOnDelay || armed) ? (
+        {waitingOnDelay || armed ? (
           <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
             No second click needed — this completes automatically.
           </div>
-        ) : null}
+        ) : (
+          <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>
+            If you weren’t expecting this, you can ignore it — nothing else is required.
+          </div>
+        )}
       </div>
     </div>
   );

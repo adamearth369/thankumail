@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/sms.ts
+// ACTION: Full file replacement (paste exactly)
+
 import twilio from "twilio";
 
 export type SmsSendResult = { ok: boolean; error?: string | null };
@@ -7,15 +10,20 @@ function safeStr(v: any) {
 }
 
 function normalizeE164(s: string) {
-  const v = safeStr(s).trim();
-  return v;
+  return safeStr(s).trim();
 }
 
 function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(safeStr(s).trim());
 }
 
-export async function sendGiftSms(opts: { to: string; claimUrl: string; publicId: string }): Promise<SmsSendResult> {
+export async function sendGiftSms(opts: {
+  to: string;
+  claimUrl: string;
+  publicId: string;
+  senderEmail?: string;
+  message?: string;
+}): Promise<SmsSendResult> {
   const provider = (process.env.SMS_PROVIDER || "twilio").toLowerCase();
   if (provider !== "twilio") return { ok: false, error: "SMS provider not configured" };
 
@@ -31,8 +39,24 @@ export async function sendGiftSms(opts: { to: string; claimUrl: string; publicId
   try {
     const client = twilio(sid, token);
 
-    // Compliance-safe copy (opt-out + help). Keep it short.
-    const body = `ThankuMail: you received a gift. Open: ${opts.claimUrl} Reply STOP to opt out. HELP for help.`;
+    // ---- COMPLIANCE-SAFE, HUMAN COPY ----
+    // Principles:
+    // - Context first (why they got this)
+    // - No promotional language
+    // - Clear action
+    // - STOP / HELP included
+    // - Avoid spammy words (“free”, “urgent”, emojis, etc.)
+
+    const shortMessage =
+      "You were sent a ThankuMail gift.";
+
+    const body = [
+      shortMessage,
+      "Open securely:",
+      opts.claimUrl,
+      "No signup required.",
+      "Reply STOP to opt out. HELP for help.",
+    ].join(" ");
 
     await client.messages.create({
       from,
