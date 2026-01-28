@@ -11,8 +11,11 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-28_005";
+const VERSION = "routes_v2026-01-28_006";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
+
+/* -------------------- REMINDER SENDING -------------------- */
+const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -30,6 +33,11 @@ function toMs(d: any) {
 function getClaimSiteBaseUrl(req: Request) {
   const env = process.env.PUBLIC_SITE_URL || process.env.PUBLIC_CLAIM_BASE_URL || "";
   if (env) return env.replace(/\/+$/, "");
+
+  // hard fallback to the real public site (prevents api.thankumail.com/claim links)
+  const hard = "https://thankumail.com";
+  if (hard) return hard.replace(/\/+$/, "");
+
   const proto = (req.headers["x-forwarded-proto"] || "https").toString();
   const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
   return `${proto}://${host}`.replace(/\/+$/, "");
@@ -78,6 +86,9 @@ function newPublicId() {
 }
 function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
+}
+function isEmail(s: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
 }
 
 /* -------------------- VALIDATION -------------------- */
@@ -214,7 +225,6 @@ export function registerRoutes(app: Express): Server {
     const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
     const configured = !!(process.env.TURNSTILE_SECRET_KEY || "");
     const mode = !configured ? "not_configured" : bypass ? "bypass" : "enforced";
-
     const gapMs = getReminderGapMs();
 
     return res.json({
@@ -236,11 +246,11 @@ export function registerRoutes(app: Express): Server {
       reminderGapConfigured: !!process.env.REMINDER_INTERVAL_MS,
       reminderMax: REMINDER_MAX,
       getGiftRoute: true,
-      reminderSendingEnabled: true,
+      reminderSendingEnabled: REMINDER_SENDING_ENABLED,
     });
   });
 
-  /* -------------------- ADMIN: REMINDERS (SEND + MARK) -------------------- */
+  /* -------------------- ADMIN: REMINDERS (TARGETABLE) -------------------- */
   app.post("/api/admin/reminders/send", async (req, res) => {
     const auth = requireAdmin(req);
     if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
@@ -263,7 +273,7 @@ export function registerRoutes(app: Express): Server {
       let candidates: any[] = [];
 
       if (targetPublicId) {
-        candidates = await db
+        const rows: any[] = await db
           .select()
           .from(gifts)
           .where(
@@ -273,19 +283,15 @@ export function registerRoutes(app: Express): Server {
               isNull((gifts as any).returnedToSenderAt),
             ),
           );
+        candidates = rows || [];
       } else {
-        candidates = await db
+        const rows: any[] = await db
           .select()
           .from(gifts)
-          .where(
-            and(
-              eq(gifts.isClaimed, false),
-              isNull((gifts as any).returnedToSenderAt),
-              lte(gifts.createdAt, cutoff),
-            ),
-          )
+          .where(and(eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt), lte(gifts.createdAt, cutoff)))
           .orderBy(asc(gifts.createdAt))
           .limit(limit);
+        candidates = rows || [];
       }
 
       const scanned = candidates.length;
@@ -328,6 +334,7 @@ export function registerRoutes(app: Express): Server {
         cutoff: cutoff.toISOString(),
         gapMs,
         targetPublicId: targetPublicId || undefined,
+        sendingEnabled: REMINDER_SENDING_ENABLED,
       });
 
       if (dryRun) {
@@ -338,6 +345,7 @@ export function registerRoutes(app: Express): Server {
           eligible,
           willRemind,
           willReturn,
+          sendFailed: 0,
           cutoff: cutoff.toISOString(),
           gapMs,
           reminderMax: REMINDER_MAX,
@@ -351,68 +359,59 @@ export function registerRoutes(app: Express): Server {
       let returned = 0;
       let sendFailed = 0;
 
-      // SEND reminder + mark
+      // REMINDERS: email recipientEmail (only if valid email exists)
       for (const g of toRemind) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
 
+        const recipientEmail = safeStr(g?.recipientEmail).trim();
+        const senderEmail = safeStr(g?.senderEmail).trim();
+        const amount = Number(g?.amount || 0);
         const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
-        const amountCents = Number(g?.amount || 0);
-        const recipientEmail = safeStr(g?.recipientEmail || "").trim();
-        const senderEmail = safeStr(g?.senderEmail || "").trim() || undefined;
 
-        let deliveryOk = true;
+        // If no recipientEmail, skip (phone-only reminders are future)
+        if (!isEmail(recipientEmail)) {
+          sendFailed += 1;
+          logEvent("reminder_send_skipped_no_recipient_email", { publicId });
+          continue;
+        }
 
-        if (recipientEmail) {
+        if (REMINDER_SENDING_ENABLED) {
           const r = await sendReminderEmail({
             to: recipientEmail,
             publicId,
             claimUrl,
-            amountCents,
-            senderEmail,
-          } as any);
+            amountCents: amount,
+            senderEmail: isEmail(senderEmail) ? senderEmail : undefined,
+          });
 
           if (!r.ok) {
-            deliveryOk = false;
             sendFailed += 1;
-            logEvent("reminder_send_email_failed", { publicId, err: safeStr((r as any).error) });
-          } else {
-            logEvent("reminder_send_email_ok", { publicId });
+            logEvent("reminder_send_failed", { publicId, err: safeStr((r as any)?.error) });
+            continue;
           }
-        } else {
-          // no email to send to; still mark as reminder attempt (policy decision)
-          logEvent("reminder_send_skipped_no_email", { publicId });
-        }
 
-        if (!deliveryOk && recipientEmail) {
-          // if email exists but send failed, don't consume reminderCount
-          continue;
+          logEvent("reminder_send_ok", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
         }
 
         const nextCount = Number(g?.reminderCount || 0) + 1;
 
         await db
           .update(gifts)
-          .set({
-            reminderCount: nextCount,
-            lastReminderSentAt: new Date(),
-          } as any)
-          .where(
-            and(
-              eq(gifts.publicId, publicId),
-              eq(gifts.isClaimed, false),
-              isNull((gifts as any).returnedToSenderAt),
-            ),
-          );
+          .set({ reminderCount: nextCount, lastReminderSentAt: new Date() } as any)
+          .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
 
         reminded += 1;
         logEvent("reminder_marked", { publicId, reminderCount: nextCount });
       }
 
-      // RETURN TO SENDER + notify sender (if email)
+      // RETURNS: mark return; email senderEmail if present
       for (const g of toReturn) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
+
+        const senderEmail = safeStr(g?.senderEmail).trim();
+        const amount = Number(g?.amount || 0);
 
         await db
           .update(gifts)
@@ -422,23 +421,20 @@ export function registerRoutes(app: Express): Server {
         returned += 1;
         logEvent("returned_to_sender_marked", { publicId });
 
-        const senderEmail = safeStr(g?.senderEmail || "").trim();
-        if (senderEmail) {
+        if (REMINDER_SENDING_ENABLED && isEmail(senderEmail)) {
           const r = await sendReturnToSenderEmail({
             to: senderEmail,
             publicId,
-            amountCents: Number(g?.amount || 0),
-            reason: "Unclaimed after reminders",
-          } as any);
+            amountCents: amount,
+            reason: "Unclaimed after 3 reminders",
+          });
 
           if (!r.ok) {
             sendFailed += 1;
-            logEvent("return_to_sender_email_failed", { publicId, err: safeStr((r as any).error) });
+            logEvent("return_to_sender_email_failed", { publicId, err: safeStr((r as any)?.error) });
           } else {
-            logEvent("return_to_sender_email_ok", { publicId });
+            logEvent("return_to_sender_email_ok", { publicId, toDomain: senderEmail.split("@")[1] || "" });
           }
-        } else {
-          logEvent("return_to_sender_email_skipped_no_sender", { publicId });
         }
       }
 
@@ -584,7 +580,17 @@ export function registerRoutes(app: Express): Server {
         const existing = recent?.[0]?.r;
         if (existing?.publicId) {
           const existingClaimUrl = `${getClaimSiteBaseUrl(req)}/claim/${existing.publicId}`;
-          return res.json({ ok: true, publicId: existing.publicId, claimUrl: existingClaimUrl, amount, deliveryOk: true, emailSent: false, smsQueued: false, version: VERSION, commit: COMMIT });
+          return res.json({
+            ok: true,
+            publicId: existing.publicId,
+            claimUrl: existingClaimUrl,
+            amount,
+            deliveryOk: true,
+            emailSent: false,
+            smsQueued: false,
+            version: VERSION,
+            commit: COMMIT,
+          });
         }
       } catch (e: any) {
         logEvent("sms_duplicate_check_error", { err: safeStr(e?.message) });
@@ -615,7 +621,15 @@ export function registerRoutes(app: Express): Server {
       let smsQueued = false;
 
       if (recipientEmail) {
-        const emailRes = await sendGiftEmail({ to: recipientEmail, publicId, claimUrl, amountCents: amount, senderEmail: senderEmail || undefined, message } as any);
+        const emailRes = await sendGiftEmail({
+          to: recipientEmail,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: senderEmail || undefined,
+          message,
+        } as any);
+
         if (!emailRes.ok) {
           deliveryOk = false;
           deliveryError = safeStr((emailRes as any).error) || "Email failed";
@@ -625,7 +639,15 @@ export function registerRoutes(app: Express): Server {
       }
 
       if (recipientPhone) {
-        const smsRes: any = await sendGiftSms({ to: recipientPhone, publicId, claimUrl, amountCents: amount, senderEmail: senderEmail || undefined, message } as any);
+        const smsRes: any = await sendGiftSms({
+          to: recipientPhone,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: senderEmail || undefined,
+          message,
+        } as any);
+
         if (!smsRes.ok) {
           deliveryOk = false;
           const err = safeStr(smsRes?.error) || "SMS failed";
@@ -635,7 +657,18 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      return res.json({ ok: true, publicId, claimUrl, amount, deliveryOk, emailSent, smsQueued, deliveryError: deliveryOk ? undefined : deliveryError, version: VERSION, commit: COMMIT });
+      return res.json({
+        ok: true,
+        publicId,
+        claimUrl,
+        amount,
+        deliveryOk,
+        emailSent,
+        smsQueued,
+        deliveryError: deliveryOk ? undefined : deliveryError,
+        version: VERSION,
+        commit: COMMIT,
+      });
     } catch (e: any) {
       logEvent("gift_create_error", { err: safeStr(e?.message) });
       return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
