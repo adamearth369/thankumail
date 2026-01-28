@@ -7,11 +7,11 @@ import { eq, and, gte, asc, lte, isNull } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
-import { sendGiftEmail } from "./email";
+import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-28_004";
+const VERSION = "routes_v2026-01-28_005";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
@@ -236,10 +236,11 @@ export function registerRoutes(app: Express): Server {
       reminderGapConfigured: !!process.env.REMINDER_INTERVAL_MS,
       reminderMax: REMINDER_MAX,
       getGiftRoute: true,
+      reminderSendingEnabled: true,
     });
   });
 
-  /* -------------------- ADMIN: REMINDERS (TARGETABLE) -------------------- */
+  /* -------------------- ADMIN: REMINDERS (SEND + MARK) -------------------- */
   app.post("/api/admin/reminders/send", async (req, res) => {
     const auth = requireAdmin(req);
     if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
@@ -262,7 +263,7 @@ export function registerRoutes(app: Express): Server {
       let candidates: any[] = [];
 
       if (targetPublicId) {
-        const rows: any[] = await db
+        candidates = await db
           .select()
           .from(gifts)
           .where(
@@ -272,10 +273,8 @@ export function registerRoutes(app: Express): Server {
               isNull((gifts as any).returnedToSenderAt),
             ),
           );
-
-        candidates = rows || [];
       } else {
-        const rows: any[] = await db
+        candidates = await db
           .select()
           .from(gifts)
           .where(
@@ -287,8 +286,6 @@ export function registerRoutes(app: Express): Server {
           )
           .orderBy(asc(gifts.createdAt))
           .limit(limit);
-
-        candidates = rows || [];
       }
 
       const scanned = candidates.length;
@@ -352,10 +349,45 @@ export function registerRoutes(app: Express): Server {
 
       let reminded = 0;
       let returned = 0;
+      let sendFailed = 0;
 
+      // SEND reminder + mark
       for (const g of toRemind) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
+
+        const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
+        const amountCents = Number(g?.amount || 0);
+        const recipientEmail = safeStr(g?.recipientEmail || "").trim();
+        const senderEmail = safeStr(g?.senderEmail || "").trim() || undefined;
+
+        let deliveryOk = true;
+
+        if (recipientEmail) {
+          const r = await sendReminderEmail({
+            to: recipientEmail,
+            publicId,
+            claimUrl,
+            amountCents,
+            senderEmail,
+          } as any);
+
+          if (!r.ok) {
+            deliveryOk = false;
+            sendFailed += 1;
+            logEvent("reminder_send_email_failed", { publicId, err: safeStr((r as any).error) });
+          } else {
+            logEvent("reminder_send_email_ok", { publicId });
+          }
+        } else {
+          // no email to send to; still mark as reminder attempt (policy decision)
+          logEvent("reminder_send_skipped_no_email", { publicId });
+        }
+
+        if (!deliveryOk && recipientEmail) {
+          // if email exists but send failed, don't consume reminderCount
+          continue;
+        }
 
         const nextCount = Number(g?.reminderCount || 0) + 1;
 
@@ -377,6 +409,7 @@ export function registerRoutes(app: Express): Server {
         logEvent("reminder_marked", { publicId, reminderCount: nextCount });
       }
 
+      // RETURN TO SENDER + notify sender (if email)
       for (const g of toReturn) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
@@ -388,6 +421,25 @@ export function registerRoutes(app: Express): Server {
 
         returned += 1;
         logEvent("returned_to_sender_marked", { publicId });
+
+        const senderEmail = safeStr(g?.senderEmail || "").trim();
+        if (senderEmail) {
+          const r = await sendReturnToSenderEmail({
+            to: senderEmail,
+            publicId,
+            amountCents: Number(g?.amount || 0),
+            reason: "Unclaimed after reminders",
+          } as any);
+
+          if (!r.ok) {
+            sendFailed += 1;
+            logEvent("return_to_sender_email_failed", { publicId, err: safeStr((r as any).error) });
+          } else {
+            logEvent("return_to_sender_email_ok", { publicId });
+          }
+        } else {
+          logEvent("return_to_sender_email_skipped_no_sender", { publicId });
+        }
       }
 
       return res.json({
@@ -397,6 +449,7 @@ export function registerRoutes(app: Express): Server {
         eligible,
         reminded,
         returned,
+        sendFailed,
         cutoff: cutoff.toISOString(),
         gapMs,
         reminderMax: REMINDER_MAX,
