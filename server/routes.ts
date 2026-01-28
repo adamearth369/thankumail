@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import crypto from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { eq, and, gte, asc } from "drizzle-orm";
+import { eq, and, gte, asc, lte, isNull } from "drizzle-orm";
 
 import { db } from "./db";
 import { gifts } from "@shared/schema";
@@ -11,7 +11,7 @@ import { sendGiftEmail } from "./email";
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-28_001";
+const VERSION = "routes_v2026-01-28_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
@@ -211,6 +211,15 @@ function requireAdmin(req: Request) {
   return { ok: true as const };
 }
 
+/* -------------------- REMINDERS POLICY -------------------- */
+const DEFAULT_REMINDER_GAP_MS = 2 * 24 * 60 * 60 * 1000; // 48h
+const REMINDER_MAX = 3;
+
+function getReminderGapMs() {
+  const raw = Number(process.env.REMINDER_INTERVAL_MS || 0);
+  return raw > 0 ? raw : DEFAULT_REMINDER_GAP_MS;
+}
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
@@ -219,6 +228,8 @@ export function registerRoutes(app: Express): Server {
     const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
     const configured = !!(process.env.TURNSTILE_SECRET_KEY || "");
     const mode = !configured ? "not_configured" : bypass ? "bypass" : "enforced";
+
+    const gapMs = getReminderGapMs();
 
     return res.json({
       ok: true,
@@ -235,6 +246,9 @@ export function registerRoutes(app: Express): Server {
       turnstileConfigured: configured,
       debugBypassLimitsConfigured: !!process.env.DEBUG_BYPASS_LIMITS_SECRET,
       remindersRoute: true,
+      reminderGapMs: gapMs,
+      reminderGapConfigured: !!process.env.REMINDER_INTERVAL_MS,
+      reminderMax: REMINDER_MAX,
     });
   });
 
@@ -255,24 +269,24 @@ export function registerRoutes(app: Express): Server {
     const now = Date.now();
     const cutoff = new Date(now - olderThanHours * 3600 * 1000);
 
-    // 2 days between reminders
-    const MIN_GAP_MS = 2 * 24 * 3600 * 1000;
+    const gapMs = getReminderGapMs();
 
     try {
-      // pull candidates: unclaimed, not returned, older than cutoff
+      // Candidates: unclaimed, not returned, created before cutoff
       const rows: any[] = await db
         .select()
         .from(gifts)
-        .where(and(eq(gifts.isClaimed, false), eq((gifts as any).returnedToSenderAt, null as any), gte(cutoff, gifts.createdAt as any) as any))
+        .where(
+          and(
+            eq(gifts.isClaimed, false),
+            isNull((gifts as any).returnedToSenderAt),
+            lte(gifts.createdAt, cutoff),
+          ),
+        )
         .orderBy(asc(gifts.createdAt))
         .limit(limit);
 
-      // NOTE: drizzle "gte(cutoff, gifts.createdAt)" may not typecheck in some setups.
-      // fallback: filter in memory (safe for small limit).
-      const candidates = (rows || []).filter((g: any) => {
-        const createdMs = toMs(g?.createdAt);
-        return createdMs && createdMs <= cutoff.getTime();
-      });
+      const candidates = rows || [];
 
       let scanned = candidates.length;
       let eligible = 0;
@@ -283,11 +297,14 @@ export function registerRoutes(app: Express): Server {
       const toReturn: any[] = [];
 
       for (const g of candidates) {
+        const publicId = safeStr(g?.publicId);
+        if (!publicId) continue;
+
         const reminderCount = Number(g?.reminderCount || 0);
         const lastSentMs = toMs(g?.lastReminderSentAt);
-        const gapOk = !lastSentMs || now - lastSentMs >= MIN_GAP_MS;
+        const gapOk = !lastSentMs || now - lastSentMs >= gapMs;
 
-        if (reminderCount >= 3) {
+        if (reminderCount >= REMINDER_MAX) {
           willReturn += 1;
           toReturn.push(g);
           continue;
@@ -300,6 +317,17 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
+      logEvent("reminders_scan", {
+        dryRun,
+        scanned,
+        eligible,
+        willRemind,
+        willReturn,
+        olderThanHours,
+        cutoff: cutoff.toISOString(),
+        gapMs,
+      });
+
       if (dryRun) {
         return res.json({
           ok: true,
@@ -309,6 +337,8 @@ export function registerRoutes(app: Express): Server {
           willRemind,
           willReturn,
           cutoff: cutoff.toISOString(),
+          gapMs,
+          reminderMax: REMINDER_MAX,
           version: VERSION,
           commit: COMMIT,
         });
@@ -317,32 +347,40 @@ export function registerRoutes(app: Express): Server {
       let reminded = 0;
       let returned = 0;
 
+      // Mark reminders (idempotent-ish: only if still unclaimed + not returned)
       for (const g of toRemind) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
 
+        const nextCount = Number(g?.reminderCount || 0) + 1;
+
         await db
           .update(gifts)
           .set({
-            reminderCount: Number(g?.reminderCount || 0) + 1,
+            reminderCount: nextCount,
             lastReminderSentAt: new Date(),
           } as any)
-          .where(eq(gifts.publicId, publicId));
+          .where(
+            and(
+              eq(gifts.publicId, publicId),
+              eq(gifts.isClaimed, false),
+              isNull((gifts as any).returnedToSenderAt),
+            ),
+          );
 
         reminded += 1;
-        logEvent("reminder_marked", { publicId, reminderCount: Number(g?.reminderCount || 0) + 1 });
+        logEvent("reminder_marked", { publicId, reminderCount: nextCount });
       }
 
+      // Mark returns
       for (const g of toReturn) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
 
         await db
           .update(gifts)
-          .set({
-            returnedToSenderAt: new Date(),
-          } as any)
-          .where(eq(gifts.publicId, publicId));
+          .set({ returnedToSenderAt: new Date() } as any)
+          .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
 
         returned += 1;
         logEvent("returned_to_sender_marked", { publicId });
@@ -356,6 +394,8 @@ export function registerRoutes(app: Express): Server {
         reminded,
         returned,
         cutoff: cutoff.toISOString(),
+        gapMs,
+        reminderMax: REMINDER_MAX,
         version: VERSION,
         commit: COMMIT,
       });
