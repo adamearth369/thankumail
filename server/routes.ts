@@ -12,7 +12,7 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-28_007";
+const VERSION = "routes_v2026-01-28_008";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- REMINDER SENDING -------------------- */
@@ -116,6 +116,23 @@ const AdminRemindersSchema = z.object({
   limit: z.number().int().min(1).max(500).optional().default(25),
   olderThanHours: z.number().int().min(1).max(24 * 365).optional().default(24),
   publicId: z.string().optional(),
+});
+
+const AdminGiftResetSchema = z.object({
+  publicId: z.string().min(1),
+});
+
+const AdminGiftSeedSchema = z.object({
+  senderEmail: z.string().email().optional().or(z.literal("")),
+  recipientEmail: z.string().email().optional().or(z.literal("")),
+  recipientPhone: z
+    .string()
+    .optional()
+    .or(z.literal(""))
+    .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
+  message: z.string().min(1).max(2000),
+  amount: z.number().int().min(1000).max(100000),
+  markClaimed: z.boolean().optional().default(false),
 });
 
 /* -------------------- LIMITERS -------------------- */
@@ -249,6 +266,106 @@ export function registerRoutes(app: Express): Server {
       getGiftRoute: true,
       reminderSendingEnabled: REMINDER_SENDING_ENABLED,
     });
+  });
+
+  /* -------------------- ADMIN: GIFTS RESET (FAST TESTING) -------------------- */
+  app.post("/api/admin/gifts/reset", async (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+
+    const parsed = AdminGiftResetSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    }
+
+    const publicId = safeStr(parsed.data.publicId).trim();
+    try {
+      const rows: any[] = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
+      const gift = rows?.[0];
+      if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
+
+      await db
+        .update(gifts)
+        .set({
+          isClaimed: false,
+          claimedAt: null,
+          reminderCount: 0,
+          lastReminderSentAt: null,
+          returnedToSenderAt: null,
+        } as any)
+        .where(eq(gifts.publicId, publicId));
+
+      logEvent("admin_gift_reset", { publicId });
+
+      return res.json({ ok: true, publicId, version: VERSION, commit: COMMIT });
+    } catch (e: any) {
+      logEvent("admin_gift_reset_error", { publicId, err: safeStr(e?.message) });
+      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
+    }
+  });
+
+  /* -------------------- ADMIN: GIFTS SEED (FAST TESTING, NO TURNSTILE) -------------------- */
+  app.post("/api/admin/gifts/seed", async (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+
+    const parsed = AdminGiftSeedSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    }
+
+    const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
+    const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
+    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
+    const message = safeStr(parsed.data.message);
+    const amount = Number(parsed.data.amount);
+    const markClaimed = !!parsed.data.markClaimed;
+
+    if (!recipientEmail && !recipientPhone) {
+      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+    }
+    if (recipientPhone && !isE164(recipientPhone)) {
+      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+    }
+    if (recipientEmail && !isEmail(recipientEmail)) {
+      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+    }
+
+    const publicId = newPublicId();
+    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
+    const now = new Date();
+
+    try {
+      await db.insert(gifts).values({
+        publicId,
+        senderEmail,
+        recipientEmail: recipientEmail || null,
+        recipientPhone: recipientPhone || null,
+        message,
+        amount,
+        isClaimed: markClaimed,
+        reminderCount: 0,
+        lastReminderSentAt: null,
+        returnedToSenderAt: null,
+        claimedAt: markClaimed ? now : null,
+      } as any);
+
+      logEvent("admin_gift_seeded", { publicId, markClaimed });
+
+      return res.json({
+        ok: true,
+        publicId,
+        claimUrl,
+        amount,
+        seeded: true,
+        markClaimed,
+        version: VERSION,
+        commit: COMMIT,
+      });
+    } catch (e: any) {
+      logEvent("admin_gift_seed_error", { err: safeStr(e?.message) });
+      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
+    }
   });
 
   /* -------------------- ADMIN: REMINDERS (TARGETABLE) -------------------- */
