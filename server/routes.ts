@@ -12,8 +12,11 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-28_008";
+const VERSION = "routes_v2026-01-29_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
+
+/* -------------------- ROUTES MARKER -------------------- */
+const ROUTES_MARKER = "has_olderThanMinutes_gapMinutes_v1";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -114,7 +117,15 @@ const ClaimSchema = z.object({
 const AdminRemindersSchema = z.object({
   dryRun: z.boolean().optional().default(true),
   limit: z.number().int().min(1).max(500).optional().default(25),
-  olderThanHours: z.number().int().min(1).max(24 * 365).optional().default(24),
+
+  // Allow fast testing:
+  // - olderThanMinutes OR olderThanHours can be 0 to include "just created" gifts.
+  olderThanMinutes: z.number().int().min(0).max(24 * 365 * 60).optional(),
+  olderThanHours: z.number().int().min(0).max(24 * 365).optional().default(24),
+
+  // One-off override of the reminder gap for THIS admin run (testing), e.g. 1 = 1 minute.
+  gapMinutes: z.number().int().min(0).max(24 * 365 * 60).optional(),
+
   publicId: z.string().optional(),
 });
 
@@ -265,6 +276,7 @@ export function registerRoutes(app: Express): Server {
       reminderMax: REMINDER_MAX,
       getGiftRoute: true,
       reminderSendingEnabled: REMINDER_SENDING_ENABLED,
+      routesMarker: ROUTES_MARKER,
     });
   });
 
@@ -380,12 +392,21 @@ export function registerRoutes(app: Express): Server {
 
     const dryRun = !!parsed.data.dryRun;
     const limit = Number(parsed.data.limit) || 25;
-    const olderThanHours = Number(parsed.data.olderThanHours) || 24;
+
+    const olderThanMinutesRaw = typeof parsed.data.olderThanMinutes === "number" ? Number(parsed.data.olderThanMinutes) : null;
+    const olderThanHoursRaw = typeof parsed.data.olderThanHours === "number" ? Number(parsed.data.olderThanHours) : 24;
+
+    const olderThanMs =
+      olderThanMinutesRaw !== null ? Math.max(0, olderThanMinutesRaw) * 60_000 : Math.max(0, olderThanHoursRaw) * 3600_000;
+
     const targetPublicId = safeStr(parsed.data.publicId).trim();
 
     const now = Date.now();
-    const cutoff = new Date(now - olderThanHours * 3600 * 1000);
-    const gapMs = getReminderGapMs();
+    const cutoff = new Date(now - olderThanMs);
+
+    const defaultGapMs = getReminderGapMs();
+    const gapMinutes = typeof parsed.data.gapMinutes === "number" ? Number(parsed.data.gapMinutes) : null;
+    const gapMs = gapMinutes !== null ? Math.max(0, gapMinutes) * 60_000 : defaultGapMs;
 
     try {
       let candidates: any[] = [];
@@ -442,9 +463,12 @@ export function registerRoutes(app: Express): Server {
         eligible,
         willRemind,
         willReturn,
-        olderThanHours,
         cutoff: cutoff.toISOString(),
+        olderThanMs,
         gapMs,
+        gapOverrideMinutes: gapMinutes !== null ? gapMinutes : undefined,
+        olderThanMinutes: olderThanMinutesRaw !== null ? olderThanMinutesRaw : undefined,
+        olderThanHours: olderThanMinutesRaw === null ? olderThanHoursRaw : undefined,
         targetPublicId: targetPublicId || undefined,
         sendingEnabled: REMINDER_SENDING_ENABLED,
       });
@@ -461,7 +485,9 @@ export function registerRoutes(app: Express): Server {
           skippedNoRecipientEmail: 0,
           skippedSendingDisabled: REMINDER_SENDING_ENABLED ? 0 : willRemind,
           cutoff: cutoff.toISOString(),
+          olderThanMs,
           gapMs,
+          gapOverrideMinutes: gapMinutes !== null ? gapMinutes : undefined,
           reminderMax: REMINDER_MAX,
           targetPublicId: targetPublicId || undefined,
           version: VERSION,
@@ -526,6 +552,33 @@ export function registerRoutes(app: Express): Server {
 
         reminded += 1;
         logEvent("reminder_marked", { publicId, reminderCount: nextCount });
+
+        // If this was the 3rd reminder, return-to-sender immediately (no 4th run required)
+        if (nextCount >= REMINDER_MAX) {
+          await db
+            .update(gifts)
+            .set({ returnedToSenderAt: new Date() } as any)
+            .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
+
+          returned += 1;
+          logEvent("returned_to_sender_marked_after_final_reminder", { publicId });
+
+          if (isEmail(senderEmail)) {
+            const rr = await sendReturnToSenderEmail({
+              to: senderEmail,
+              publicId,
+              amountCents: amount,
+              reason: "Unclaimed after 3 reminders",
+            });
+
+            if (!rr.ok) {
+              sendFailed += 1;
+              logEvent("return_to_sender_email_failed", { publicId, err: safeStr((rr as any)?.error) });
+            } else {
+              logEvent("return_to_sender_email_ok", { publicId, toDomain: senderEmail.split("@")[1] || "" });
+            }
+          }
+        }
       }
 
       // RETURNS: mark return; email senderEmail if present
@@ -572,7 +625,9 @@ export function registerRoutes(app: Express): Server {
         skippedNoRecipientEmail,
         skippedSendingDisabled,
         cutoff: cutoff.toISOString(),
+        olderThanMs,
         gapMs,
+        gapOverrideMinutes: gapMinutes !== null ? gapMinutes : undefined,
         reminderMax: REMINDER_MAX,
         targetPublicId: targetPublicId || undefined,
         version: VERSION,
@@ -678,14 +733,7 @@ export function registerRoutes(app: Express): Server {
           rows = await db
             .select()
             .from(gifts)
-            .where(
-              and(
-                eq((gifts as any).recipientPhone, recipientPhone),
-                eq(gifts.message, message),
-                eq(gifts.amount, amount),
-                eq(gifts.isClaimed, false),
-              ),
-            );
+            .where(and(eq((gifts as any).recipientPhone, recipientPhone), eq(gifts.message, message), eq(gifts.amount, amount), eq(gifts.isClaimed, false)));
         } catch {
           rows = [];
         }
