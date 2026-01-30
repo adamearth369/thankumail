@@ -1,4 +1,5 @@
 // WHERE TO PASTE: server/email.ts
+// ACTION: Full file replacement (paste exactly)
 
 type SendEmailResult = { ok: true; messageId: string } | { ok: false; error: string };
 
@@ -115,7 +116,8 @@ function getBrevoApiKey():
 function buildReplyTo(senderEmail?: string) {
   // Replies should NEVER go to @thankumail.com; use the original sender when present.
   const s = (senderEmail || "").trim();
-  if (s && isEmail(s)) return { email: s, name: "" };
+  // Brevo requires replyTo.name when replyTo.email is present.
+  if (s && isEmail(s)) return { email: s, name: s };
   return null; // no Reply-To if we don't have a valid sender
 }
 
@@ -173,7 +175,7 @@ async function sendBrevoEmail(params: {
     };
 
     if (replyTo?.email) {
-      payload.replyTo = { email: replyTo.email, name: replyTo.name || "" };
+      payload.replyTo = { email: replyTo.email, name: replyTo.name };
     }
 
     const resp = await fetch(endpoint, {
