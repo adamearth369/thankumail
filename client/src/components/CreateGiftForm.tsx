@@ -133,6 +133,15 @@ export default function CreateGiftForm() {
 
   const canUseTurnstile = Boolean(siteKey) && typeof window !== "undefined";
 
+  function clearFormInputs() {
+    // Hard reset all user-entered fields so nothing personal stays in the form after sending
+    setSenderEmail("");
+    setRecipientEmail("");
+    setRecipientPhone("");
+    setAmountDollars(10);
+    setMessage("");
+  }
+
   function resetTurnstile() {
     try {
       const wid = turnstileWidgetIdRef.current;
@@ -300,11 +309,10 @@ export default function CreateGiftForm() {
       const abs = absoluteLink(ok.claimUrl || "");
       if (abs) safeSetLastClaimUrl(abs);
 
-      setRecipientEmail("");
-      setRecipientPhone("");
-      setAmountDollars(10);
-      setMessage("");
+      // ✅ IMPORTANT: clear all fields after success (including sender + recipient)
+      clearFormInputs();
 
+      // ✅ reset captcha so token can't be reused/duplicated
       resetTurnstile();
       await renderTurnstile(true);
     } catch {
