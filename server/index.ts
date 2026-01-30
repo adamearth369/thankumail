@@ -4,7 +4,7 @@ import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-01-29_004";
+const INDEX_VERSION = "api_index_v2026-01-30_005";
 
 /* -------------------- APP -------------------- */
 const app: Express = express();
@@ -23,15 +23,13 @@ app.get("/health", (_req, res) => {
 const httpServer = registerRoutes(app);
 
 /* -------------------- STATIC + SPA FALLBACK -------------------- */
-// IMPORTANT: do NOT use import.meta.url / fileURLToPath (breaks under CJS bundles)
-// Use process.cwd() so it works on Render.
 const publicDir = path.join(process.cwd(), "dist", "public");
 const indexHtml = path.join(publicDir, "index.html");
 
 if (fs.existsSync(publicDir)) {
   app.use(
     express.static(publicDir, {
-      index: false, // we control SPA fallback below
+      index: false,
       maxAge: "1h",
       etag: true,
     }),
