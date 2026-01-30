@@ -1,4 +1,3 @@
-// script/build.ts
 import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
@@ -16,7 +15,7 @@ async function main() {
   // 1) Build client
   run("npx vite build");
 
-  // 2) Bundle server from server/index.ts -> dist/index.cjs (CJS)
+  // 2) Bundle server -> dist/index.cjs (CJS) to match Render start command
   const root = process.cwd();
   const outDir = path.resolve(root, "dist");
   ensureDir(outDir);
