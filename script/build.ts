@@ -1,3 +1,4 @@
+// script/build.ts
 import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
@@ -15,17 +16,17 @@ async function main() {
   // 1) Build client
   run("npx vite build");
 
-  // 2) Bundle server from server/index.ts -> dist/index.mjs (ESM)
+  // 2) Bundle server from server/index.ts -> dist/index.cjs (CJS)
   const root = process.cwd();
   const outDir = path.resolve(root, "dist");
   ensureDir(outDir);
 
   await esbuild.build({
     entryPoints: [path.resolve(root, "server", "index.ts")],
-    outfile: path.resolve(outDir, "index.mjs"),
+    outfile: path.resolve(outDir, "index.cjs"),
     bundle: true,
     platform: "node",
-    format: "esm",
+    format: "cjs",
     target: "node22",
     sourcemap: false,
     logLevel: "info",
