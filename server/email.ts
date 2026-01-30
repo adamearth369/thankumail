@@ -1,3 +1,5 @@
+// WHERE TO PASTE: server/email.ts
+
 type SendEmailResult = { ok: true; messageId: string } | { ok: false; error: string };
 
 type SendGiftEmailArgs = {
@@ -109,6 +111,14 @@ function getBrevoApiKey():
   return { ok: false, error: "Missing BREVO_API_KEY", note: "no_brevo_keys_present" };
 }
 
+/* -------------------- REPLY-TO POLICY -------------------- */
+function buildReplyTo(senderEmail?: string) {
+  // Replies should NEVER go to @thankumail.com; use the original sender when present.
+  const s = (senderEmail || "").trim();
+  if (s && isEmail(s)) return { email: s, name: "" };
+  return null; // no Reply-To if we don't have a valid sender
+}
+
 /* -------------------- BREVO SEND -------------------- */
 async function sendBrevoEmail(params: {
   to: string;
@@ -116,6 +126,7 @@ async function sendBrevoEmail(params: {
   textContent: string;
   htmlContent: string;
   headers?: Record<string, string>;
+  senderEmailForReplyTo?: string;
 }): Promise<SendEmailResult> {
   const started = Date.now();
 
@@ -124,15 +135,20 @@ async function sendBrevoEmail(params: {
     if (!isEmail(to)) return { ok: false, error: `Invalid recipient email: "${to}"` };
 
     const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
-    const fromEmail = env("FROM_EMAIL", "noreply@thankumail.com");
+
+    // IMPORTANT: This is the actual email "From" header (Brevo sender).
+    // It should be your verified sender/domain in Brevo.
+    const fromEmail = env("FROM_EMAIL", "no-reply@thankumail.com");
     const fromName = env("FROM_NAME", "ThankuMail");
 
+    const replyTo = buildReplyTo(params.senderEmailForReplyTo);
     const keyInfo = getBrevoApiKey();
 
     logEmail("email_api_send_start", {
       toDomain: emailDomain(to),
       endpoint,
       fromDomain: emailDomain(fromEmail),
+      replyToDomain: replyTo?.email ? emailDomain(replyTo.email) : "",
       keyNote: keyInfo.note,
       keyPreview: keyInfo.ok ? keyInfo.preview : "",
     });
@@ -147,6 +163,19 @@ async function sendBrevoEmail(params: {
       return { ok: false, error: keyInfo.error };
     }
 
+    const payload: any = {
+      sender: { email: fromEmail, name: fromName },
+      to: [{ email: to }],
+      subject: params.subject,
+      textContent: params.textContent,
+      htmlContent: params.htmlContent,
+      headers: params.headers || {},
+    };
+
+    if (replyTo?.email) {
+      payload.replyTo = { email: replyTo.email, name: replyTo.name || "" };
+    }
+
     const resp = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -154,14 +183,7 @@ async function sendBrevoEmail(params: {
         "api-key": keyInfo.key,
         Accept: "application/json",
       },
-      body: JSON.stringify({
-        sender: { email: fromEmail, name: fromName },
-        to: [{ email: to }],
-        subject: params.subject,
-        textContent: params.textContent,
-        htmlContent: params.htmlContent,
-        headers: params.headers || {},
-      }),
+      body: JSON.stringify(payload),
     });
 
     const bodyText = await resp.text().catch(() => "");
@@ -173,9 +195,7 @@ async function sendBrevoEmail(params: {
     }
 
     if (!resp.ok) {
-      const bodyPreview = (bodyJson ? JSON.stringify(bodyJson) : bodyText || "")
-        .toString()
-        .slice(0, 800);
+      const bodyPreview = (bodyJson ? JSON.stringify(bodyJson) : bodyText || "").toString().slice(0, 800);
 
       logEmail("email_api_send_failed", {
         toDomain: emailDomain(to),
@@ -244,6 +264,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
     subject,
     textContent,
     htmlContent,
+    senderEmailForReplyTo: args.senderEmail,
     headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "gift" },
   });
 
@@ -283,6 +304,7 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
     subject,
     textContent,
     htmlContent,
+    senderEmailForReplyTo: args.senderEmail,
     headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "reminder" },
   });
 

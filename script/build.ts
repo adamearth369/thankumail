@@ -12,25 +12,24 @@ function ensureDir(p: string) {
 }
 
 async function main() {
-  // 1) Build client (uses your existing vite config)
+  // 1) Build client
   run("npx vite build");
 
-  // 2) Bundle server explicitly from server/index.ts -> dist/index.cjs
+  // 2) Bundle server from server/index.ts -> dist/index.mjs (ESM)
   const root = process.cwd();
   const outDir = path.resolve(root, "dist");
   ensureDir(outDir);
 
   await esbuild.build({
     entryPoints: [path.resolve(root, "server", "index.ts")],
-    outfile: path.resolve(outDir, "index.cjs"),
+    outfile: path.resolve(outDir, "index.mjs"),
     bundle: true,
     platform: "node",
-    format: "cjs",
+    format: "esm",
     target: "node22",
     sourcemap: false,
     logLevel: "info",
     external: [
-      // keep node_modules as externals (faster, smaller)
       "pg",
       "pg-native",
       "drizzle-orm",
