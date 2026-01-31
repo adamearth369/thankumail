@@ -70,6 +70,13 @@ declare global {
 
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
+/**
+ * IMPORTANT:
+ * Always hit the production API domain (not relative /api/* on thankumail.com),
+ * otherwise you may reach the wrong service and get mismatched limits/behavior.
+ */
+const API_BASE = "https://api.thankumail.com";
+
 function loadTurnstileScript(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (typeof window === "undefined") return resolve();
@@ -285,7 +292,7 @@ export default function CreateGiftForm() {
 
       Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
-      const res = await fetch("/api/gifts", {
+      const res = await fetch(`${API_BASE}/api/gifts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
