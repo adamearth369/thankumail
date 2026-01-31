@@ -1,4 +1,6 @@
 // WHERE TO PASTE: server/routes.ts
+// ACTION: Full file replacement (paste exactly)
+
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -12,7 +14,7 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-29_002";
+const VERSION = "routes_v2026-01-31_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -246,8 +248,36 @@ function getReminderGapMs() {
   return raw > 0 ? raw : DEFAULT_REMINDER_GAP_MS;
 }
 
+/* -------------------- CORS (thankumail.com -> api.thankumail.com) -------------------- */
+function isAllowedOrigin(origin: string) {
+  if (!origin) return false;
+  if (origin === "https://thankumail.com") return true;
+  if (origin === "https://www.thankumail.com") return true;
+  if (/^https?:\/\/localhost:\d+$/.test(origin)) return true;
+  if (/^https?:\/\/127\.0\.0\.1:\d+$/.test(origin)) return true;
+  return false;
+}
+
+function corsForApi(req: Request, res: any) {
+  const origin = safeStr(req.headers.origin);
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-admin-token");
+    res.setHeader("Access-Control-Max-Age", "600");
+  }
+}
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
+  // CORS for all /api/* routes + preflight
+  app.use("/api", (req: Request, res: any, next: any) => {
+    corsForApi(req, res);
+    if (req.method === "OPTIONS") return res.status(204).end();
+    return next();
+  });
+
   app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
 
   app.get("/api/version", (_req, res) => {
@@ -287,7 +317,9 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminGiftResetSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const publicId = safeStr(parsed.data.publicId).trim();
@@ -323,7 +355,9 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminGiftSeedSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
@@ -334,13 +368,23 @@ export function registerRoutes(app: Express): Server {
     const markClaimed = !!parsed.data.markClaimed;
 
     if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        ok: false,
+        error: "Phone must be E.164 like +14165551234",
+        field: "recipientPhone",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
-      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
 
     const publicId = newPublicId();
@@ -387,7 +431,9 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminRemindersSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const dryRun = !!parsed.data.dryRun;
