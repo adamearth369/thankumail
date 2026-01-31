@@ -4,13 +4,34 @@ import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-01-30_005";
+const INDEX_VERSION = "api_index_v2026-01-31_006";
 
 /* -------------------- APP -------------------- */
 const app: Express = express();
 
 // Trust proxy so x-forwarded-* works behind Render/Cloudflare
 app.set("trust proxy", 1);
+
+/* -------------------- CORS (THANKUMAIL.COM -> API) -------------------- */
+const ALLOWED_ORIGINS = new Set<string>(["https://thankumail.com", "https://www.thankumail.com"]);
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-admin-token");
+  }
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
+  next();
+});
+
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
