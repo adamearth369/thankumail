@@ -8,7 +8,7 @@ type SendGiftEmailArgs = {
   publicId: string;
   claimUrl: string;
   amountCents: number;
-  senderEmail?: string;
+  senderEmail?: string; // intentionally NOT used (anonymous)
   message?: string;
 };
 
@@ -17,7 +17,7 @@ type SendReminderEmailArgs = {
   publicId: string;
   claimUrl: string;
   amountCents: number;
-  senderEmail?: string;
+  senderEmail?: string; // intentionally NOT used (anonymous)
 };
 
 type SendReturnToSenderEmailArgs = {
@@ -26,6 +26,8 @@ type SendReturnToSenderEmailArgs = {
   amountCents: number;
   reason?: string;
 };
+
+const EMAIL_VERSION = "email_v2026-01-31_001";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -61,7 +63,7 @@ function escapeHtml(input: string) {
 }
 
 function logEmail(event: string, fields: Record<string, any> = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+  console.log(JSON.stringify({ ts: new Date().toISOString(), event, emailVersion: EMAIL_VERSION, ...fields }));
 }
 
 function emailDomain(to: string) {
@@ -112,15 +114,6 @@ function getBrevoApiKey():
   return { ok: false, error: "Missing BREVO_API_KEY", note: "no_brevo_keys_present" };
 }
 
-/* -------------------- REPLY-TO POLICY -------------------- */
-function buildReplyTo(senderEmail?: string) {
-  // Replies should NEVER go to @thankumail.com; use the original sender when present.
-  const s = (senderEmail || "").trim();
-  // Brevo requires replyTo.name when replyTo.email is present.
-  if (s && isEmail(s)) return { email: s, name: s };
-  return null; // no Reply-To if we don't have a valid sender
-}
-
 /* -------------------- BREVO SEND -------------------- */
 async function sendBrevoEmail(params: {
   to: string;
@@ -128,7 +121,6 @@ async function sendBrevoEmail(params: {
   textContent: string;
   htmlContent: string;
   headers?: Record<string, string>;
-  senderEmailForReplyTo?: string;
 }): Promise<SendEmailResult> {
   const started = Date.now();
 
@@ -138,19 +130,22 @@ async function sendBrevoEmail(params: {
 
     const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
 
-    // IMPORTANT: This is the actual email "From" header (Brevo sender).
-    // It should be your verified sender/domain in Brevo.
+    // IMPORTANT: these must match a VERIFIED sender in Brevo
     const fromEmail = env("FROM_EMAIL", "no-reply@thankumail.com");
     const fromName = env("FROM_NAME", "ThankuMail");
 
-    const replyTo = buildReplyTo(params.senderEmailForReplyTo);
+    // CRITICAL ANONYMITY:
+    // Always force Reply-To to the same no-reply identity so Brevo/account defaults can’t leak a real address.
+    const replyToEmail = env("REPLY_TO_EMAIL", fromEmail);
+    const replyToName = env("REPLY_TO_NAME", fromName);
+
     const keyInfo = getBrevoApiKey();
 
     logEmail("email_api_send_start", {
       toDomain: emailDomain(to),
       endpoint,
       fromDomain: emailDomain(fromEmail),
-      replyToDomain: replyTo?.email ? emailDomain(replyTo.email) : "",
+      replyToDomain: emailDomain(replyToEmail),
       keyNote: keyInfo.note,
       keyPreview: keyInfo.ok ? keyInfo.preview : "",
     });
@@ -167,16 +162,13 @@ async function sendBrevoEmail(params: {
 
     const payload: any = {
       sender: { email: fromEmail, name: fromName },
+      replyTo: { email: replyToEmail, name: replyToName },
       to: [{ email: to }],
       subject: params.subject,
       textContent: params.textContent,
       htmlContent: params.htmlContent,
       headers: params.headers || {},
     };
-
-    if (replyTo?.email) {
-      payload.replyTo = { email: replyTo.email, name: replyTo.name };
-    }
 
     const resp = await fetch(endpoint, {
       method: "POST",
@@ -230,11 +222,11 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
   const claimUrl = toAbsoluteLink(args.claimUrl);
   const subject = `You received a ThankuMail`;
 
+  // ANONYMITY: do NOT include senderEmail anywhere in the email.
   const textContent = [
     `You received a ThankuMail`,
     ``,
     `Amount: ${money(args.amountCents)}`,
-    args.senderEmail ? `From: ${args.senderEmail}` : "",
     args.message ? `Message: ${args.message}` : "",
     ``,
     `Claim: ${claimUrl}`,
@@ -246,7 +238,6 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
     <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
       <h2 style="margin:0 0 12px">You received a ThankuMail 🎁</h2>
       <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
-      ${args.senderEmail ? `<p style="margin:0 0 8px"><b>From:</b> ${escapeHtml(args.senderEmail)}</p>` : ""}
       ${
         args.message
           ? `<p style="margin:0 0 8px"><b>Message:</b></p>
@@ -258,6 +249,9 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
           Claim your ThankuMail →
         </a>
       </p>
+      <p style="margin:0; font-size:12px; color:#666">
+        This message was sent anonymously.
+      </p>
     </div>
   `;
 
@@ -266,7 +260,6 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
     subject,
     textContent,
     htmlContent,
-    senderEmailForReplyTo: args.senderEmail,
     headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "gift" },
   });
 
@@ -277,14 +270,8 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
   const claimUrl = toAbsoluteLink(args.claimUrl);
   const subject = `Reminder: your ThankuMail is waiting`;
 
-  const textContent = [
-    `Your ThankuMail is still waiting.`,
-    ``,
-    `Amount: ${money(args.amountCents)}`,
-    args.senderEmail ? `From: ${args.senderEmail}` : "",
-    ``,
-    `Claim: ${claimUrl}`,
-  ]
+  // ANONYMITY: do NOT include senderEmail anywhere in the email.
+  const textContent = [`Your ThankuMail is still waiting.`, ``, `Amount: ${money(args.amountCents)}`, ``, `Claim: ${claimUrl}`]
     .filter(Boolean)
     .join("\n");
 
@@ -292,11 +279,13 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
     <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
       <h2 style="margin:0 0 12px">Your ThankuMail is still waiting 💛</h2>
       <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
-      ${args.senderEmail ? `<p style="margin:0 0 8px"><b>From:</b> ${escapeHtml(args.senderEmail)}</p>` : ""}
       <p style="margin:0 0 16px">
         <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#111; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
           Claim now →
         </a>
+      </p>
+      <p style="margin:0; font-size:12px; color:#666">
+        This message was sent anonymously.
       </p>
     </div>
   `;
@@ -306,7 +295,6 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
     subject,
     textContent,
     htmlContent,
-    senderEmailForReplyTo: args.senderEmail,
     headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "reminder" },
   });
 
