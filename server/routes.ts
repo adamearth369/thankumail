@@ -14,14 +14,17 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-02_002";
+const VERSION = "routes_v2026-02-02_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_gap_no_override_v1";
+const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
+
+/* -------------------- TESTING ADMIN TOOLS -------------------- */
+const ENABLE_TESTING_ADMIN_TOOLS = (process.env.ENABLE_TESTING_ADMIN_TOOLS || "").toLowerCase() === "true";
 
 /* -------------------- STRUCTURED LOGGING -------------------- */
 function logEvent(event: string, fields: Record<string, any> = {}) {
@@ -120,13 +123,11 @@ const AdminRemindersSchema = z.object({
   dryRun: z.boolean().optional().default(true),
   limit: z.number().int().min(1).max(500).optional().default(25),
 
-  // Locked-down in production:
-  // - no gap overrides
-  // - no "include just-created" shortcuts
+  // locked behavior: >= 1 minute only
   olderThanMinutes: z.number().int().min(1).max(24 * 365 * 60).optional(),
-  olderThanHours: z.number().int().min(1).max(24 * 365).optional().default(24),
+  olderThanHours: z.number().int().min(0).max(24 * 365).optional().default(24),
 
-  // Optional targeting (safe; admin-token protected)
+  // NOTE: gap override intentionally removed/ignored in this locked version
   publicId: z.string().optional(),
 });
 
@@ -145,6 +146,10 @@ const AdminGiftSeedSchema = z.object({
   message: z.string().min(1).max(2000),
   amount: z.number().int().min(1000).max(100000),
   markClaimed: z.boolean().optional().default(false),
+});
+
+const AdminAdvanceReminderTimeSchema = z.object({
+  publicId: z.string().min(1),
 });
 
 /* -------------------- LIMITERS -------------------- */
@@ -397,6 +402,7 @@ export function registerRoutes(app: Express): Server {
       getGiftRoute: true,
       reminderSendingEnabled: REMINDER_SENDING_ENABLED,
       routesMarker: ROUTES_MARKER,
+      testingAdminToolsEnabled: ENABLE_TESTING_ADMIN_TOOLS,
     });
   });
 
@@ -434,6 +440,84 @@ export function registerRoutes(app: Express): Server {
       return res.json({ ok: true, publicId, version: VERSION, commit: COMMIT });
     } catch (e: any) {
       logEvent("admin_gift_reset_error", { publicId, err: safeStr(e?.message) });
+      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
+    }
+  });
+
+  /* -------------------- ADMIN: ADVANCE lastReminderSentAt BACKWARDS (SAFE TESTING-ONLY) -------------------- */
+  app.post("/api/admin/gifts/advance-reminder-time", async (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+
+    if (!ENABLE_TESTING_ADMIN_TOOLS) {
+      return res.status(403).json({
+        ok: false,
+        error: "Testing admin tools disabled",
+        code: "TESTING_TOOLS_DISABLED",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    const parsed = AdminAdvanceReminderTimeSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    }
+
+    const publicId = safeStr(parsed.data.publicId).trim();
+    try {
+      const rows: any[] = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
+      const gift = rows?.[0];
+      if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
+
+      if (gift.isClaimed) {
+        return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+      }
+      if (gift.returnedToSenderAt) {
+        return res.status(409).json({
+          ok: false,
+          error: "Already returned to sender",
+          code: "ALREADY_RETURNED",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+      const reminderCount = Number(gift.reminderCount || 0);
+      if (reminderCount >= REMINDER_MAX) {
+        return res.status(409).json({
+          ok: false,
+          error: "Reminder max already reached",
+          code: "REMINDER_MAX_REACHED",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+
+      // Move lastReminderSentAt far enough into the past so the NEXT reminder is eligible immediately,
+      // without changing/overriding the configured gap.
+      const gapMs = getReminderGapMs();
+      const newLast = new Date(Date.now() - gapMs - 2_000);
+
+      await db
+        .update(gifts)
+        .set({ lastReminderSentAt: newLast } as any)
+        .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
+
+      logEvent("admin_advance_reminder_time", { publicId, reminderCount, newLast: newLast.toISOString(), gapMs });
+
+      return res.json({
+        ok: true,
+        publicId,
+        reminderCount,
+        lastReminderSentAt: newLast.toISOString(),
+        gapMs,
+        version: VERSION,
+        commit: COMMIT,
+      });
+    } catch (e: any) {
+      logEvent("admin_advance_reminder_time_error", { publicId, err: safeStr(e?.message) });
       return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
@@ -509,12 +593,12 @@ export function registerRoutes(app: Express): Server {
         commit: COMMIT,
       });
     } catch (e: any) {
-      logEvent("admin_gift_seed_error", { err: safeStr(e?.message) });
+      logEvent("gift_seed_error", { err: safeStr(e?.message) });
       return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
 
-  /* -------------------- ADMIN: REMINDERS (TARGETABLE, NO OVERRIDES) -------------------- */
+  /* -------------------- ADMIN: REMINDERS (TARGETABLE) -------------------- */
   app.post("/api/admin/reminders/send", async (req, res) => {
     const auth = requireAdmin(req);
     if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
@@ -533,7 +617,7 @@ export function registerRoutes(app: Express): Server {
     const olderThanHoursRaw = typeof parsed.data.olderThanHours === "number" ? Number(parsed.data.olderThanHours) : 24;
 
     const olderThanMs =
-      olderThanMinutesRaw !== null ? Math.max(60_000, olderThanMinutesRaw * 60_000) : Math.max(60_000, olderThanHoursRaw * 3600_000);
+      olderThanMinutesRaw !== null ? Math.max(0, olderThanMinutesRaw) * 60_000 : Math.max(0, olderThanHoursRaw) * 3600_000;
 
     const targetPublicId = safeStr(parsed.data.publicId).trim();
 
