@@ -14,11 +14,11 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-02_003";
+const VERSION = "routes_v2026-02-02_004";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp";
+const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -473,7 +473,9 @@ export function registerRoutes(app: Express): Server {
       if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
 
       if (gift.isClaimed) {
-        return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+        return res
+          .status(409)
+          .json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
       if (gift.returnedToSenderAt) {
         return res.status(409).json({
@@ -495,8 +497,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Move lastReminderSentAt far enough into the past so the NEXT reminder is eligible immediately,
-      // without changing/overriding the configured gap.
       const gapMs = getReminderGapMs();
       const newLast = new Date(Date.now() - gapMs - 2_000);
 
@@ -941,7 +941,14 @@ export function registerRoutes(app: Express): Server {
           rows = await db
             .select()
             .from(gifts)
-            .where(and(eq((gifts as any).recipientPhone, recipientPhone), eq(gifts.message, message), eq(gifts.amount, amount), eq(gifts.isClaimed, false)));
+            .where(
+              and(
+                eq((gifts as any).recipientPhone, recipientPhone),
+                eq(gifts.message, message),
+                eq(gifts.amount, amount),
+                eq(gifts.isClaimed, false),
+              ),
+            );
         } catch {
           rows = [];
         }
@@ -1064,7 +1071,9 @@ export function registerRoutes(app: Express): Server {
     if (!publicId) return res.status(400).json({ error: "Invalid id", version: VERSION, commit: COMMIT });
 
     const parsed = ClaimSchema.safeParse(req.body || {});
-    if (!parsed.success) return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    }
 
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
 
@@ -1073,7 +1082,20 @@ export function registerRoutes(app: Express): Server {
       const gift = rows?.[0];
       if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
 
-      if (gift.isClaimed) return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+      // HARD BLOCK: once returned-to-sender is set, it can never be claimed
+      if (gift.returnedToSenderAt) {
+        return res.status(410).json({
+          error: "This ThankuMail was returned to sender and can no longer be claimed",
+          code: "RETURNED_TO_SENDER",
+          returnedToSenderAt: gift.returnedToSenderAt,
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+
+      if (gift.isClaimed) {
+        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+      }
 
       if (gift.createdAt && minDelaySec > 0) {
         const ageMs = Date.now() - new Date(gift.createdAt).getTime();
@@ -1097,7 +1119,11 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      await db.update(gifts).set({ isClaimed: true, claimedAt: new Date() }).where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
+      await db
+        .update(gifts)
+        .set({ isClaimed: true, claimedAt: new Date() })
+        .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
+
       return res.json({ ok: true, version: VERSION, commit: COMMIT });
     } catch (e: any) {
       logEvent("claim_error", { publicId, err: safeStr(e?.message) });
