@@ -14,11 +14,11 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-01-31_003";
+const VERSION = "routes_v2026-02-02_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "has_olderThanMinutes_gapMinutes_v1";
+const ROUTES_MARKER = "locked_gap_no_override_v1";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -120,14 +120,13 @@ const AdminRemindersSchema = z.object({
   dryRun: z.boolean().optional().default(true),
   limit: z.number().int().min(1).max(500).optional().default(25),
 
-  // Allow fast testing:
-  // - olderThanMinutes OR olderThanHours can be 0 to include "just created" gifts.
-  olderThanMinutes: z.number().int().min(0).max(24 * 365 * 60).optional(),
-  olderThanHours: z.number().int().min(0).max(24 * 365).optional().default(24),
+  // Locked-down in production:
+  // - no gap overrides
+  // - no "include just-created" shortcuts
+  olderThanMinutes: z.number().int().min(1).max(24 * 365 * 60).optional(),
+  olderThanHours: z.number().int().min(1).max(24 * 365).optional().default(24),
 
-  // One-off override of the reminder gap for THIS admin run (testing), e.g. 1 = 1 minute.
-  gapMinutes: z.number().int().min(0).max(24 * 365 * 60).optional(),
-
+  // Optional targeting (safe; admin-token protected)
   publicId: z.string().optional(),
 });
 
@@ -269,9 +268,100 @@ function corsForApi(req: Request, res: any) {
   }
 }
 
+/* -------------------- BACKGROUND DELIVERY -------------------- */
+function queueGiftDelivery(opts: {
+  req: Request;
+  publicId: string;
+  claimUrl: string;
+  amount: number;
+  senderEmail: string | null;
+  recipientEmail: string;
+  recipientPhone: string;
+  message: string;
+}) {
+  const { req, publicId, claimUrl, amount, senderEmail, recipientEmail, recipientPhone, message } = opts;
+
+  void (async () => {
+    const start = Date.now();
+    logEvent("gift_delivery_start", {
+      publicId,
+      hasEmail: !!recipientEmail,
+      hasPhone: !!recipientPhone,
+      toEmailDomain: recipientEmail ? recipientEmail.split("@")[1] || "" : "",
+      toPhone: recipientPhone ? recipientPhone.slice(0, 4) + "…" : "",
+    });
+
+    let emailOk: boolean | null = null;
+    let smsOk: boolean | null = null;
+    let emailErr = "";
+    let smsErr = "";
+
+    if (recipientEmail) {
+      try {
+        const emailRes = await sendGiftEmail({
+          to: recipientEmail,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: senderEmail || undefined,
+          message,
+        } as any);
+
+        if (!emailRes.ok) {
+          emailOk = false;
+          emailErr = safeStr((emailRes as any).error) || "Email failed";
+          logEvent("gift_email_send_failed", { publicId, err: emailErr });
+        } else {
+          emailOk = true;
+          logEvent("gift_email_send_ok", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
+        }
+      } catch (e: any) {
+        emailOk = false;
+        emailErr = safeStr(e?.message) || "Email failed";
+        logEvent("gift_email_send_error", { publicId, err: emailErr });
+      }
+    }
+
+    if (recipientPhone) {
+      try {
+        const smsRes: any = await sendGiftSms({
+          to: recipientPhone,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail: senderEmail || undefined,
+          message,
+        } as any);
+
+        if (!smsRes.ok) {
+          smsOk = false;
+          smsErr = safeStr(smsRes?.error) || "SMS failed";
+          logEvent("gift_sms_send_failed", { publicId, err: smsErr });
+        } else {
+          smsOk = true;
+          logEvent("gift_sms_send_ok", { publicId });
+        }
+      } catch (e: any) {
+        smsOk = false;
+        smsErr = safeStr(e?.message) || "SMS failed";
+        logEvent("gift_sms_send_error", { publicId, err: smsErr });
+      }
+    }
+
+    logEvent("gift_delivery_done", {
+      publicId,
+      emailOk,
+      smsOk,
+      tookMs: Date.now() - start,
+      origin: safeStr(req.headers.origin),
+    });
+  })().catch((e: any) => {
+    logEvent("gift_delivery_fatal", { publicId, err: safeStr(e?.message) });
+  });
+}
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  // CORS for all /api/* routes + preflight
   app.use("/api", (req: Request, res: any, next: any) => {
     corsForApi(req, res);
     if (req.method === "OPTIONS") return res.status(204).end();
@@ -424,7 +514,7 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  /* -------------------- ADMIN: REMINDERS (TARGETABLE) -------------------- */
+  /* -------------------- ADMIN: REMINDERS (TARGETABLE, NO OVERRIDES) -------------------- */
   app.post("/api/admin/reminders/send", async (req, res) => {
     const auth = requireAdmin(req);
     if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
@@ -443,16 +533,14 @@ export function registerRoutes(app: Express): Server {
     const olderThanHoursRaw = typeof parsed.data.olderThanHours === "number" ? Number(parsed.data.olderThanHours) : 24;
 
     const olderThanMs =
-      olderThanMinutesRaw !== null ? Math.max(0, olderThanMinutesRaw) * 60_000 : Math.max(0, olderThanHoursRaw) * 3600_000;
+      olderThanMinutesRaw !== null ? Math.max(60_000, olderThanMinutesRaw * 60_000) : Math.max(60_000, olderThanHoursRaw * 3600_000);
 
     const targetPublicId = safeStr(parsed.data.publicId).trim();
 
     const now = Date.now();
     const cutoff = new Date(now - olderThanMs);
 
-    const defaultGapMs = getReminderGapMs();
-    const gapMinutes = typeof parsed.data.gapMinutes === "number" ? Number(parsed.data.gapMinutes) : null;
-    const gapMs = gapMinutes !== null ? Math.max(0, gapMinutes) * 60_000 : defaultGapMs;
+    const gapMs = getReminderGapMs();
 
     try {
       let candidates: any[] = [];
@@ -512,7 +600,6 @@ export function registerRoutes(app: Express): Server {
         cutoff: cutoff.toISOString(),
         olderThanMs,
         gapMs,
-        gapOverrideMinutes: gapMinutes !== null ? gapMinutes : undefined,
         olderThanMinutes: olderThanMinutesRaw !== null ? olderThanMinutesRaw : undefined,
         olderThanHours: olderThanMinutesRaw === null ? olderThanHoursRaw : undefined,
         targetPublicId: targetPublicId || undefined,
@@ -533,7 +620,6 @@ export function registerRoutes(app: Express): Server {
           cutoff: cutoff.toISOString(),
           olderThanMs,
           gapMs,
-          gapOverrideMinutes: gapMinutes !== null ? gapMinutes : undefined,
           reminderMax: REMINDER_MAX,
           targetPublicId: targetPublicId || undefined,
           version: VERSION,
@@ -547,7 +633,6 @@ export function registerRoutes(app: Express): Server {
       let skippedNoRecipientEmail = 0;
       let skippedSendingDisabled = 0;
 
-      // REMINDERS: email recipientEmail (only if valid email exists)
       for (const g of toRemind) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
@@ -557,21 +642,18 @@ export function registerRoutes(app: Express): Server {
         const amount = Number(g?.amount || 0);
         const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
 
-        // No recipient email: do NOT increment reminderCount, do NOT return-to-sender early
         if (!isEmail(recipientEmail)) {
           skippedNoRecipientEmail += 1;
           logEvent("reminder_skipped_no_recipient_email", { publicId });
           continue;
         }
 
-        // Sending disabled: do NOT increment reminderCount (so you can flip it back on later)
         if (!REMINDER_SENDING_ENABLED) {
           skippedSendingDisabled += 1;
           logEvent("reminder_skipped_sending_disabled", { publicId });
           continue;
         }
 
-        // Attempt send
         const r = await sendReminderEmail({
           to: recipientEmail,
           publicId,
@@ -588,7 +670,6 @@ export function registerRoutes(app: Express): Server {
 
         logEvent("reminder_send_ok", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
 
-        // Mark only after send success
         const nextCount = Number(g?.reminderCount || 0) + 1;
 
         await db
@@ -599,7 +680,6 @@ export function registerRoutes(app: Express): Server {
         reminded += 1;
         logEvent("reminder_marked", { publicId, reminderCount: nextCount });
 
-        // If this was the 3rd reminder, return-to-sender immediately (no 4th run required)
         if (nextCount >= REMINDER_MAX) {
           await db
             .update(gifts)
@@ -627,7 +707,6 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // RETURNS: mark return; email senderEmail if present
       for (const g of toReturn) {
         const publicId = safeStr(g?.publicId);
         if (!publicId) continue;
@@ -673,7 +752,6 @@ export function registerRoutes(app: Express): Server {
         cutoff: cutoff.toISOString(),
         olderThanMs,
         gapMs,
-        gapOverrideMinutes: gapMinutes !== null ? gapMinutes : undefined,
         reminderMax: REMINDER_MAX,
         targetPublicId: targetPublicId || undefined,
         version: VERSION,
@@ -834,47 +912,20 @@ export function registerRoutes(app: Express): Server {
         claimedAt: null,
       } as any);
 
-      let deliveryOk = true;
-      let deliveryError = "";
-      let emailSent = false;
-      let smsQueued = false;
+      const deliveryOk = true;
+      const emailSent = !!recipientEmail;
+      const smsQueued = !!recipientPhone;
 
-      if (recipientEmail) {
-        const emailRes = await sendGiftEmail({
-          to: recipientEmail,
-          publicId,
-          claimUrl,
-          amountCents: amount,
-          senderEmail: senderEmail || undefined,
-          message,
-        } as any);
-
-        if (!emailRes.ok) {
-          deliveryOk = false;
-          deliveryError = safeStr((emailRes as any).error) || "Email failed";
-        } else {
-          emailSent = true;
-        }
-      }
-
-      if (recipientPhone) {
-        const smsRes: any = await sendGiftSms({
-          to: recipientPhone,
-          publicId,
-          claimUrl,
-          amountCents: amount,
-          senderEmail: senderEmail || undefined,
-          message,
-        } as any);
-
-        if (!smsRes.ok) {
-          deliveryOk = false;
-          const err = safeStr(smsRes?.error) || "SMS failed";
-          deliveryError = deliveryError ? `${deliveryError}; ${err}` : err;
-        } else {
-          smsQueued = true;
-        }
-      }
+      queueGiftDelivery({
+        req,
+        publicId,
+        claimUrl,
+        amount,
+        senderEmail,
+        recipientEmail,
+        recipientPhone,
+        message,
+      });
 
       return res.json({
         ok: true,
@@ -884,7 +935,6 @@ export function registerRoutes(app: Express): Server {
         deliveryOk,
         emailSent,
         smsQueued,
-        deliveryError: deliveryOk ? undefined : deliveryError,
         version: VERSION,
         commit: COMMIT,
       });
