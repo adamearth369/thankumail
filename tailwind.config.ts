@@ -1,3 +1,6 @@
+// WHERE TO PASTE: tailwind.config.ts
+// ACTION: Full file replacement (paste exactly)
+
 import type { Config } from "tailwindcss";
 
 export default {
@@ -13,26 +16,29 @@ export default {
   theme: {
     extend: {
       colors: {
-        // ThankuMail Palette (Warm Gratitude)
+        // ThankuMail Palette (Warm + Sacred)
         tm: {
-          forest: "#1F3D2B",
+          forest: "#173726",    // deeper grounding
           cream: "#F6F1E8",
-          gold: "#C9A227",
+          amber: "#B88A2A",     // burnished gratitude
+          honey: "#E6C27A",     // soft glow highlight
           charcoal: "#2A2A2A",
         },
 
-        // Semantic mapping (use these in UI)
+        // Semantic mapping
         background: "#F6F1E8",
         foreground: "#2A2A2A",
 
+        // Primary actions = sacred gratitude (amber)
         primary: {
-          DEFAULT: "#1F3D2B",
-          foreground: "#F6F1E8",
+          DEFAULT: "#B88A2A",
+          foreground: "#1A1A1A",
         },
 
+        // Accent = grounding forest (used for quiet emphasis)
         accent: {
-          DEFAULT: "#C9A227",
-          foreground: "#1F3D2B",
+          DEFAULT: "#173726",
+          foreground: "#F6F1E8",
         },
 
         muted: {
@@ -46,7 +52,7 @@ export default {
         },
 
         border: "#E5D9C8",
-        ring: "#C9A227",
+        ring: "#E6C27A",
       },
 
       borderRadius: {
