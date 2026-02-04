@@ -9,6 +9,8 @@ declare global {
   }
 }
 
+const API_BASE = "https://api.thankumail.com";
+
 function getPublicIdFromPath() {
   const parts = window.location.pathname.split("/").filter(Boolean);
   return parts[parts.length - 1] || "";
@@ -22,7 +24,21 @@ function friendlyError(msg: string) {
   }
   if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — we’re finalizing your gift.";
   if (/already claimed/i.test(m)) return "This ThankuMail has already been claimed.";
+  if (/not found/i.test(m)) return "This ThankuMail link is invalid or expired.";
   return m;
+}
+
+async function safeJson(res: Response) {
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  const text = await res.text().catch(() => "");
+  if (!ct.includes("application/json")) {
+    return { __notJson: true, __status: res.status, __contentType: ct, __text: text };
+  }
+  try {
+    return JSON.parse(text || "{}");
+  } catch {
+    return { __badJson: true, __status: res.status, __contentType: ct, __text: text };
+  }
 }
 
 export default function Claim() {
@@ -59,18 +75,23 @@ export default function Claim() {
     return Number.isFinite(cents) ? (cents / 100).toFixed(2) : "0.00";
   }, [gift]);
 
-  // Load gift
+  // Load gift (ALWAYS from production API)
   useEffect(() => {
     async function loadGift() {
       try {
-        const r = await fetch(`/api/gifts/${publicId}`);
-        const j = await r.json();
+        const r = await fetch(`${API_BASE}/api/gifts/${publicId}`, { method: "GET" });
+        const j: any = await safeJson(r);
+
+        if (j?.__notJson || j?.__badJson) {
+          throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
+        }
+
         if (!r.ok) throw new Error(j?.error || "Failed to load gift");
 
         setGift(j);
         setAlreadyClaimed(Boolean(j?.isClaimed));
       } catch (e: any) {
-        setError(e?.message || "Failed to load gift");
+        setError(friendlyError(e?.message || "Failed to load gift"));
       } finally {
         setLoading(false);
       }
@@ -236,13 +257,13 @@ export default function Claim() {
   }, [siteKey, shouldShowCaptcha]);
 
   async function postClaim() {
-    const r = await fetch(`/api/gifts/${publicId}/claim`, {
+    const r = await fetch(`${API_BASE}/api/gifts/${publicId}/claim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ turnstileToken: tokenRef.current || "" }),
     });
 
-    const j = await r.json().catch(() => ({} as any));
+    const j: any = await safeJson(r);
     return { r, j };
   }
 
@@ -259,6 +280,10 @@ export default function Claim() {
 
       try {
         const { r, j } = await postClaim();
+
+        if (j?.__notJson || j?.__badJson) {
+          throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
+        }
 
         if (!r.ok) {
           const code = String(j?.code || "");
@@ -284,9 +309,9 @@ export default function Claim() {
         setAlreadyClaimed(true);
 
         try {
-          const rr = await fetch(`/api/gifts/${publicId}`);
-          const jj = await rr.json();
-          if (rr.ok) setGift(jj);
+          const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
+          const jj: any = await safeJson(rr);
+          if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
         } catch {}
       } catch (e: any) {
         setError(friendlyError(e?.message || "Claim failed"));
@@ -316,6 +341,10 @@ export default function Claim() {
 
     try {
       const { r, j } = await postClaim();
+
+      if (j?.__notJson || j?.__badJson) {
+        throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
+      }
 
       if (r.status === 429 && j?.retryAfterSec) {
         setArmed(true);
@@ -348,9 +377,9 @@ export default function Claim() {
       setAlreadyClaimed(true);
 
       try {
-        const rr = await fetch(`/api/gifts/${publicId}`);
-        const jj = await rr.json();
-        if (rr.ok) setGift(jj);
+        const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
+        const jj: any = await safeJson(rr);
+        if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
       } catch {}
     } catch (e: any) {
       setError(friendlyError(e?.message || "Claim failed"));
@@ -414,9 +443,7 @@ export default function Claim() {
       <div style={{ marginBottom: 14, color: "#666" }}>ThankuMail</div>
 
       <h1 style={{ margin: "0 0 10px 0" }}>A note for you.</h1>
-      <div style={{ color: "#666", marginBottom: 18 }}>
-        Read the message first. Claim when you’re ready.
-      </div>
+      <div style={{ color: "#666", marginBottom: 18 }}>Read the message first. Claim when you’re ready.</div>
 
       {alreadyClaimed ? (
         <div style={{ color: "#b00020", marginBottom: 12 }}>{statusLine}</div>
@@ -455,9 +482,7 @@ export default function Claim() {
         ) : null}
 
         {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 && (
-          <div style={{ color: "#666", marginBottom: 12 }}>
-            Finalizing your gift… about {retryAfterSec} seconds.
-          </div>
+          <div style={{ color: "#666", marginBottom: 12 }}>Finalizing your gift… about {retryAfterSec} seconds.</div>
         )}
 
         <button
@@ -485,9 +510,7 @@ export default function Claim() {
         ) : null}
 
         {waitingOnDelay || armed ? (
-          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-            No second click needed — this completes automatically.
-          </div>
+          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>No second click needed — this completes automatically.</div>
         ) : (
           <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>
             If you weren’t expecting this, you can ignore it — nothing else is required.
