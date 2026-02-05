@@ -1,7 +1,7 @@
 // WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
 // ACTION: Full file replacement (paste exactly)
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type ApiError = {
   error: string;
@@ -11,6 +11,7 @@ type ApiError = {
   issues?: any[];
   retryAfterSec?: number;
   version?: string;
+  commit?: string;
 };
 
 type CreateGiftOk = {
@@ -37,6 +38,34 @@ function isEmail(s: string) {
 
 function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
+}
+
+/**
+ * Normalize common phone inputs into E.164.
+ * - "6043691517" => "+16043691517"
+ * - "1 (604) 369-1517" => "+16043691517"
+ * - "+1 604 369 1517" => "+16043691517"
+ * - "0016043691517" => "+16043691517"
+ */
+function normalizePhoneToE164(input: string): string {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  if (raw.startsWith("00")) {
+    const d2 = raw.slice(2).replace(/[^\d]/g, "");
+    return d2 ? `+${d2}` : "";
+  }
+
+  const hasPlus = raw.startsWith("+");
+  const digits = raw.replace(/[^\d]/g, "");
+  if (!digits) return "";
+
+  if (hasPlus) return `+${digits}`;
+
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+
+  return `+${digits}`;
 }
 
 function absoluteLink(maybeRelative: string) {
@@ -68,7 +97,14 @@ declare global {
   }
 }
 
+// Auto-render script
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+
+// Use env (Vite will inline the value at build time)
+const TURNSTILE_SITE_KEY =
+  String(
+    (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || (import.meta as any).env?.VITE_CF_TURNSTILE_SITE_KEY || "",
+  ).trim();
 
 /**
  * IMPORTANT:
@@ -77,28 +113,23 @@ const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api
  */
 const API_BASE = "https://api.thankumail.com";
 
-function loadTurnstileScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === "undefined") return resolve();
-    if (window.turnstile) return resolve();
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
+}
 
-    const existing = document.querySelector<HTMLScriptElement>(
-      `script[src^="https://challenges.cloudflare.com/turnstile/"]`,
-    );
-    if (existing) {
-      existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener("error", () => reject(new Error("Failed to load Turnstile script")), { once: true });
-      return;
-    }
-
-    const s = document.createElement("script");
-    s.src = TURNSTILE_SCRIPT_SRC;
-    s.async = true;
-    s.defer = true;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("Failed to load Turnstile script"));
-    document.head.appendChild(s);
+function toSearchParams(payload: Record<string, any>) {
+  const p = new URLSearchParams();
+  Object.entries(payload).forEach(([k, v]) => {
+    if (v === undefined || v === null) return;
+    p.set(k, String(v));
   });
+  return p;
+}
+
+function getTurnstileTokenFromDom(): string {
+  if (typeof document === "undefined") return "";
+  const input = document.querySelector<HTMLInputElement>('input[name="cf-turnstile-response"]');
+  return (input?.value || "").trim();
 }
 
 export default function CreateGiftForm() {
@@ -117,14 +148,9 @@ export default function CreateGiftForm() {
   const [copied, setCopied] = useState(false);
 
   // ---- Turnstile ----
-  const siteKey =
-    (import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || (import.meta as any).env?.VITE_CF_TURNSTILE_SITE_KEY || "";
-
-  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
-  const turnstileWidgetIdRef = useRef<any>(null);
-  const [turnstileToken, setTurnstileToken] = useState("");
-  const [turnstileReady, setTurnstileReady] = useState(false);
-  const [turnstileRenderError, setTurnstileRenderError] = useState<string>("");
+  const canUseTurnstile = typeof window !== "undefined" && !!TURNSTILE_SITE_KEY;
+  const [turnstileTokenLen, setTurnstileTokenLen] = useState(0);
+  const [turnstileLoadError, setTurnstileLoadError] = useState<string>("");
 
   const presets = useMemo(
     () => [
@@ -138,10 +164,7 @@ export default function CreateGiftForm() {
     [],
   );
 
-  const canUseTurnstile = Boolean(siteKey) && typeof window !== "undefined";
-
   function clearFormInputs() {
-    // Hard reset all user-entered fields so nothing personal stays in the form after sending
     setSenderEmail("");
     setRecipientEmail("");
     setRecipientPhone("");
@@ -149,87 +172,78 @@ export default function CreateGiftForm() {
     setMessage("");
   }
 
-  function resetTurnstile() {
+  function tryResetTurnstile() {
     try {
-      const wid = turnstileWidgetIdRef.current;
-      if (wid != null && window.turnstile?.reset) {
-        window.turnstile.reset(wid);
-      }
-    } catch {}
-    setTurnstileToken("");
-  }
-
-  async function renderTurnstile(force = false) {
-    if (!canUseTurnstile) return;
-
-    try {
-      setTurnstileRenderError("");
-      await loadTurnstileScript();
-      if (!turnstileContainerRef.current) return;
-
-      if (!force && turnstileWidgetIdRef.current != null && window.turnstile?.getResponse) {
-        setTurnstileReady(true);
-        return;
-      }
-
-      turnstileContainerRef.current.innerHTML = "";
-
-      const wid = window.turnstile.render(turnstileContainerRef.current, {
-        sitekey: siteKey,
-        theme: "auto",
-        callback: (token: string) => {
-          setTurnstileToken(token || "");
-          setApiError("");
-          setApiField("");
-        },
-        "error-callback": () => {
-          setTurnstileToken("");
-          setApiError("CAPTCHA failed. Please try again.");
-          setApiField("turnstileToken");
-        },
-        "expired-callback": () => {
-          setTurnstileToken("");
-          setApiError("CAPTCHA expired. Please complete it again.");
-          setApiField("turnstileToken");
-        },
-      });
-
-      turnstileWidgetIdRef.current = wid;
-      setTurnstileReady(true);
+      if (window.turnstile?.reset) window.turnstile.reset();
     } catch {
-      setTurnstileReady(false);
-      setTurnstileRenderError("Unable to load CAPTCHA. Please refresh and try again.");
-      setApiError("Unable to load CAPTCHA. Please refresh and try again.");
-      setApiField("turnstileToken");
+      // ignore
     }
   }
 
+  // Load Turnstile script once (auto-render)
   useEffect(() => {
-    renderTurnstile(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [siteKey]);
+    if (!canUseTurnstile) return;
+
+    const existing = document.querySelector<HTMLScriptElement>(
+      `script[src^="https://challenges.cloudflare.com/turnstile/"]`,
+    );
+    if (existing) return;
+
+    const s = document.createElement("script");
+    s.src = TURNSTILE_SCRIPT_SRC;
+    s.async = true;
+    s.defer = true;
+    s.onload = () => setTurnstileLoadError("");
+    s.onerror = () => setTurnstileLoadError("Unable to load CAPTCHA. Please refresh and try again.");
+    document.head.appendChild(s);
+  }, [canUseTurnstile]);
+
+  // Poll hidden response token
+  useEffect(() => {
+    if (!canUseTurnstile) return;
+
+    let alive = true;
+    const tick = () => {
+      if (!alive) return;
+      const t = getTurnstileTokenFromDom();
+      setTurnstileTokenLen(t.length);
+    };
+
+    tick();
+    const id = window.setInterval(tick, 350);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [canUseTurnstile]);
 
   // ---- validation ----
   const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
-
   const senderOk = useMemo(() => isEmail(senderEmail.trim()), [senderEmail]);
 
-  const recipientEmailOk = useMemo(() => (recipientEmail.trim() ? isEmail(recipientEmail) : false), [recipientEmail]);
-  const recipientPhoneOk = useMemo(() => (recipientPhone.trim() ? isE164(recipientPhone) : false), [recipientPhone]);
+  const recipientEmailOk = useMemo(
+    () => (recipientEmail.trim() ? isEmail(recipientEmail) : false),
+    [recipientEmail],
+  );
+
+  const normalizedRecipientPhone = useMemo(() => normalizePhoneToE164(recipientPhone), [recipientPhone]);
+  const recipientPhoneOk = useMemo(
+    () => (recipientPhone.trim() ? isE164(normalizedRecipientPhone) : false),
+    [recipientPhone, normalizedRecipientPhone],
+  );
 
   const recipientOk = useMemo(() => recipientEmailOk || recipientPhoneOk, [recipientEmailOk, recipientPhoneOk]);
-
   const messageOk = useMemo(() => message.trim().length >= 2, [message]);
 
   const formOk = useMemo(() => {
     const minOk = amountCents >= 1000;
-    const captchaOk = !canUseTurnstile || (!!turnstileToken && turnstileToken.length > 10);
+    const captchaOk = !canUseTurnstile || turnstileTokenLen > 10;
     return senderOk && recipientOk && messageOk && minOk && captchaOk && !submitting;
-  }, [senderOk, recipientOk, messageOk, amountCents, canUseTurnstile, turnstileToken, submitting]);
+  }, [senderOk, recipientOk, messageOk, amountCents, canUseTurnstile, turnstileTokenLen, submitting]);
 
   function recipientHint() {
     if (recipientEmail.trim() && !recipientEmailOk) return "Email looks invalid.";
-    if (recipientPhone.trim() && !recipientPhoneOk) return "Phone must be E.164 like +14165551234.";
+    if (recipientPhone.trim() && !recipientPhoneOk) return "Enter a phone like 6043691517 (we’ll format it).";
     if (!recipientEmail.trim() && !recipientPhone.trim()) return "Add an email or a phone number (at least one).";
     return "";
   }
@@ -250,7 +264,7 @@ export default function CreateGiftForm() {
       return;
     }
     if (!recipientOk) {
-      setApiError("Please provide a valid recipient email or phone (+14165551234).");
+      setApiError("Please provide a valid recipient email or phone.");
       setApiField("recipient");
       return;
     }
@@ -265,17 +279,26 @@ export default function CreateGiftForm() {
       return;
     }
 
+    let turnstileToken = "";
     if (canUseTurnstile) {
-      if (!turnstileReady || turnstileRenderError) {
-        setApiError("CAPTCHA isn’t ready yet. Please refresh and try again.");
+      if (turnstileLoadError) {
+        setApiError(turnstileLoadError);
         setApiField("turnstileToken");
         return;
       }
+      turnstileToken = getTurnstileTokenFromDom();
       if (!turnstileToken) {
         setApiError("Please complete the CAPTCHA.");
         setApiField("turnstileToken");
         return;
       }
+    }
+
+    const phoneToSend = recipientPhone.trim() ? normalizePhoneToE164(recipientPhone) : "";
+    if (recipientPhone.trim() && !isE164(phoneToSend)) {
+      setApiError("Phone looks invalid. Try 6043691517 (we’ll format it).");
+      setApiField("recipientPhone");
+      return;
     }
 
     setSubmitting(true);
@@ -284,7 +307,7 @@ export default function CreateGiftForm() {
       const payload: any = {
         senderEmail: senderEmail.trim(),
         recipientEmail: recipientEmail.trim() || undefined,
-        recipientPhone: recipientPhone.trim() || undefined,
+        recipientPhone: phoneToSend || undefined,
         message: message.trim(),
         amount: amountCents,
         turnstileToken: canUseTurnstile ? turnstileToken : undefined,
@@ -292,10 +315,11 @@ export default function CreateGiftForm() {
 
       Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
+      const body = toSearchParams(payload);
+
       const res = await fetch(`${API_BASE}/api/gifts`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body,
       });
 
       const data = (await res.json().catch(() => ({}))) as CreateGiftResponse;
@@ -304,9 +328,7 @@ export default function CreateGiftForm() {
         const msg = (data as any)?.error || `Request failed (${res.status})`;
         setApiError(msg);
         setApiField((data as any)?.field || "");
-
-        resetTurnstile();
-        await renderTurnstile(true);
+        tryResetTurnstile();
         return;
       }
 
@@ -316,17 +338,12 @@ export default function CreateGiftForm() {
       const abs = absoluteLink(ok.claimUrl || "");
       if (abs) safeSetLastClaimUrl(abs);
 
-      // ✅ IMPORTANT: clear all fields after success (including sender + recipient)
       clearFormInputs();
-
-      // ✅ reset captcha so token can't be reused/duplicated
-      resetTurnstile();
-      await renderTurnstile(true);
+      tryResetTurnstile();
     } catch {
       setApiError("Network error. Please try again.");
       setApiField("");
-      resetTurnstile();
-      await renderTurnstile(true);
+      tryResetTurnstile();
     } finally {
       setSubmitting(false);
     }
@@ -358,8 +375,32 @@ export default function CreateGiftForm() {
     ? "By sending via SMS, you confirm you have permission to contact this recipient."
     : "By sending, you confirm you have permission to contact the recipient.";
 
+  const Input = (props: React.InputHTMLAttributes<HTMLInputElement> & { err?: boolean }) => (
+    <input
+      {...props}
+      className={cx(
+        "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
+        "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+        props.err ? "border-red-300" : "",
+        props.className,
+      )}
+    />
+  );
+
+  const Textarea = (props: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { err?: boolean }) => (
+    <textarea
+      {...props}
+      className={cx(
+        "min-h-[140px] w-full box-border resize-y rounded-xl border bg-white px-3 py-2 text-sm outline-none",
+        "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+        props.err ? "border-red-300" : "",
+        props.className,
+      )}
+    />
+  );
+
   return (
-    <div className="w-full max-w-xl">
+    <div className="w-full max-w-xl px-4 sm:px-0">
       <form onSubmit={onSubmit} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-gray-900">Send a ThankuMail</h2>
@@ -371,7 +412,7 @@ export default function CreateGiftForm() {
         ) : null}
 
         {created ? (
-          <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 px-4 py-4 text-sm text-green-950">
+          <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 px-4 py-4 text-sm text-green-900">
             <div className="text-base font-semibold">Sent.</div>
             <div className="mt-1 text-sm opacity-90">
               Your message is on its way. The gift can be claimed after a quick verification (and a short safety pause).
@@ -381,14 +422,14 @@ export default function CreateGiftForm() {
 
             {claimUrl ? (
               <div className="mt-3 rounded-xl border border-green-200 bg-white px-3 py-3">
-                <div className="text-xs font-semibold text-gray-700">Claim link</div>
-                <div className="mt-1 break-all text-xs text-gray-800">{claimUrl}</div>
+                <div className="text-xs font-semibold text-gray-600">Claim link</div>
+                <div className="mt-1 break-all text-xs text-gray-900">{claimUrl}</div>
 
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={openClaim}
-                    className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white"
+                    className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-95 active:opacity-90"
                   >
                     Open claim page →
                   </button>
@@ -396,14 +437,14 @@ export default function CreateGiftForm() {
                   <button
                     type="button"
                     onClick={copyLink}
-                    className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900"
+                    className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 hover:bg-gray-50"
                   >
                     {copied ? "Copied" : "Copy link"}
                   </button>
                 </div>
 
-                <div className="mt-2 text-xs text-gray-500">
-                  Tip: This link is also saved on the home page as your “Last ThanküMail link” (on this device).
+                <div className="mt-2 text-xs text-gray-600">
+                  Tip: This link is saved on the home page as your “Last ThankuMail link” (on this device).
                 </div>
               </div>
             ) : null}
@@ -412,26 +453,22 @@ export default function CreateGiftForm() {
 
         <div className="grid gap-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">Sender email</label>
-            <input
-              className={`w-full rounded-xl border px-3 py-2 text-sm outline-none ${
-                apiField === "senderEmail" ? "border-red-300" : "border-gray-200"
-              }`}
+            <label className="mb-1 block text-sm font-medium text-gray-900">Your email</label>
+            <Input
+              err={apiField === "senderEmail"}
               placeholder="you@example.com"
               value={senderEmail}
               onChange={(e) => setSenderEmail(e.target.value)}
               inputMode="email"
               autoComplete="email"
             />
-            <div className="mt-1 text-xs text-gray-500">Required.</div>
+            <div className="mt-1 text-xs text-gray-600">Required.</div>
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">Recipient email (optional)</label>
-            <input
-              className={`w-full rounded-xl border px-3 py-2 text-sm outline-none ${
-                apiField === "recipientEmail" || apiField === "recipient" ? "border-red-300" : "border-gray-200"
-              }`}
+            <label className="mb-1 block text-sm font-medium text-gray-900">Recipient email (optional)</label>
+            <Input
+              err={apiField === "recipientEmail" || apiField === "recipient"}
               placeholder="friend@example.com"
               value={recipientEmail}
               onChange={(e) => setRecipientEmail(e.target.value)}
@@ -441,41 +478,39 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">Recipient phone (optional)</label>
-            <input
-              className={`w-full rounded-xl border px-3 py-2 text-sm outline-none ${
-                apiField === "recipientPhone" || apiField === "recipient" ? "border-red-300" : "border-gray-200"
-              }`}
-              placeholder="+14165551234"
+            <label className="mb-1 block text-sm font-medium text-gray-900">Recipient phone (optional)</label>
+            <Input
+              err={apiField === "recipientPhone" || apiField === "recipient"}
+              placeholder="6043691517"
               value={recipientPhone}
               onChange={(e) => setRecipientPhone(e.target.value)}
+              onBlur={() => {
+                const n = normalizePhoneToE164(recipientPhone);
+                if (n) setRecipientPhone(n);
+              }}
               inputMode="tel"
               autoComplete="tel"
             />
-            <div className="mt-1 text-xs text-gray-500">{recipientHint()}</div>
+            <div className="mt-1 text-xs text-gray-600">{recipientHint()}</div>
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">Amount (CAD)</label>
-            <input
-              className={`w-full rounded-xl border px-3 py-2 text-sm outline-none ${
-                apiField === "amount" ? "border-red-300" : "border-gray-200"
-              }`}
+            <label className="mb-1 block text-sm font-medium text-gray-900">Gift amount (CAD)</label>
+            <Input
+              err={apiField === "amount"}
               type="number"
               min={10}
               step={1}
               value={Number.isFinite(amountDollars) ? amountDollars : 10}
               onChange={(e) => setAmountDollars(Number(e.target.value))}
             />
-            <div className="mt-1 text-xs text-gray-500">Minimum $10.00</div>
+            <div className="mt-1 text-xs text-gray-600">Minimum $10.00</div>
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">Message</label>
-            <textarea
-              className={`min-h-[120px] w-full resize-y rounded-xl border px-3 py-2 text-sm outline-none ${
-                apiField === "message" ? "border-red-300" : "border-gray-200"
-              }`}
+            <label className="mb-1 block text-sm font-medium text-gray-900">Your message</label>
+            <Textarea
+              err={apiField === "message"}
               placeholder="Write something real…"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
@@ -486,7 +521,7 @@ export default function CreateGiftForm() {
                 <button
                   key={p}
                   type="button"
-                  className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+                  className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-900 hover:opacity-90"
                   onClick={() => setMessage(p)}
                 >
                   Use preset
@@ -497,27 +532,30 @@ export default function CreateGiftForm() {
 
           {canUseTurnstile ? (
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-800">CAPTCHA</label>
+              <label className="mb-2 block text-sm font-medium text-gray-900">CAPTCHA</label>
+
               <div
-                className={`inline-block rounded-xl border bg-white p-3 ${
-                  apiField === "turnstileToken" ? "border-red-300" : "border-gray-200"
-                }`}
+                className={cx(
+                  "inline-block rounded-xl border bg-white p-3",
+                  apiField === "turnstileToken" ? "border-red-300" : "border-gray-200",
+                )}
               >
-                <div ref={turnstileContainerRef} />
+                <div className="cf-turnstile" data-sitekey={TURNSTILE_SITE_KEY} data-theme="auto" />
               </div>
-              {turnstileRenderError ? <div className="mt-2 text-xs text-red-700">{turnstileRenderError}</div> : null}
+
+              {turnstileLoadError ? <div className="mt-2 text-xs text-red-700">{turnstileLoadError}</div> : null}
             </div>
           ) : null}
 
           <button
             type="submit"
             disabled={!formOk}
-            className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {submitting ? "Sending…" : "Create & Send"}
+            {submitting ? "Sending…" : "Send ThankuMail"}
           </button>
 
-          <div className="text-xs text-gray-500">{permissionCopy}</div>
+          <div className="text-xs text-gray-600">{permissionCopy}</div>
         </div>
       </form>
     </div>
