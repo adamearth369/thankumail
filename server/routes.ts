@@ -14,11 +14,11 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-05_001";
+const VERSION = "routes_v2026-02-05_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1_plus_admin_test_create_v1";
+const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1_plus_admin_test_create_v2";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -43,7 +43,6 @@ function getClaimSiteBaseUrl(req: Request) {
   const env = process.env.PUBLIC_SITE_URL || process.env.PUBLIC_CLAIM_BASE_URL || "";
   if (env) return env.replace(/\/+$/, "");
 
-  // hard fallback to the real public site (prevents api.thankumail.com/claim links)
   const hard = "https://thankumail.com";
   if (hard) return hard.replace(/\/+$/, "");
 
@@ -122,12 +121,8 @@ const ClaimSchema = z.object({
 const AdminRemindersSchema = z.object({
   dryRun: z.boolean().optional().default(true),
   limit: z.number().int().min(1).max(500).optional().default(25),
-
-  // locked behavior: >= 1 minute only
   olderThanMinutes: z.number().int().min(1).max(24 * 365 * 60).optional(),
   olderThanHours: z.number().int().min(0).max(24 * 365).optional().default(24),
-
-  // NOTE: gap override intentionally removed/ignored in this locked version
   publicId: z.string().optional(),
 });
 
@@ -163,7 +158,7 @@ const AdminTestCreateGiftSchema = z.object({
     .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
   message: z.string().min(1).max(2000),
   amount: z.number().int().min(1000).max(100000),
-  deliver: z.boolean().optional().default(false), // default: no email/sms during admin testing
+  deliver: z.boolean().optional().default(false),
 });
 
 /* -------------------- LIMITERS -------------------- */
@@ -266,7 +261,7 @@ function getReminderGapMs() {
   return raw > 0 ? raw : DEFAULT_REMINDER_GAP_MS;
 }
 
-/* -------------------- CORS (thankumail.com -> api.thankumail.com) -------------------- */
+/* -------------------- CORS -------------------- */
 function isAllowedOrigin(origin: string) {
   if (!origin) return false;
   if (origin === "https://thankumail.com") return true;
@@ -375,7 +370,7 @@ function queueGiftDelivery(opts: {
       origin: safeStr(req.headers.origin),
     });
   })().catch((e: any) => {
-    logEvent("gift_delivery_fatal", { publicId, err: safeStr(e?.message) });
+    logEvent("gift_delivery_fatal", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
   });
 }
 
@@ -440,31 +435,13 @@ export function registerRoutes(app: Express): Server {
     const deliver = !!parsed.data.deliver;
 
     if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({
-        ok: false,
-        error: "Provide a recipient email or phone",
-        field: "recipient",
-        version: VERSION,
-        commit: COMMIT,
-      });
+      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Phone must be E.164 like +14165551234",
-        field: "recipientPhone",
-        version: VERSION,
-        commit: COMMIT,
-      });
+      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid recipient email",
-        field: "recipientEmail",
-        version: VERSION,
-        commit: COMMIT,
-      });
+      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
 
     const publicId = newPublicId();
@@ -488,30 +465,15 @@ export function registerRoutes(app: Express): Server {
       logEvent("admin_test_create_gift_ok", { publicId, deliver });
 
       if (deliver) {
-        queueGiftDelivery({
-          req,
-          publicId,
-          claimUrl,
-          amount,
-          senderEmail,
-          recipientEmail,
-          recipientPhone,
-          message,
-        });
+        queueGiftDelivery({ req, publicId, claimUrl, amount, senderEmail, recipientEmail, recipientPhone, message });
       }
 
-      return res.json({
-        ok: true,
-        publicId,
-        claimUrl,
-        amount,
-        deliver,
-        version: VERSION,
-        commit: COMMIT,
-      });
+      return res.json({ ok: true, publicId, claimUrl, amount, deliver, version: VERSION, commit: COMMIT });
     } catch (e: any) {
-      logEvent("admin_test_create_gift_error", { err: safeStr(e?.message) });
-      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
+      const detail = safeStr(e?.message) || "unknown";
+      const stack = safeStr(e?.stack) || "";
+      logEvent("admin_test_create_gift_error", { err: detail, stack });
+      return res.status(500).json({ ok: false, error: "Server error", detail, version: VERSION, commit: COMMIT });
     }
   });
 
@@ -548,7 +510,7 @@ export function registerRoutes(app: Express): Server {
 
       return res.json({ ok: true, publicId, version: VERSION, commit: COMMIT });
     } catch (e: any) {
-      logEvent("admin_gift_reset_error", { publicId, err: safeStr(e?.message) });
+      logEvent("admin_gift_reset_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
@@ -582,28 +544,14 @@ export function registerRoutes(app: Express): Server {
       if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
 
       if (gift.isClaimed) {
-        return res
-          .status(409)
-          .json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+        return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
       if (gift.returnedToSenderAt) {
-        return res.status(409).json({
-          ok: false,
-          error: "Already returned to sender",
-          code: "ALREADY_RETURNED",
-          version: VERSION,
-          commit: COMMIT,
-        });
+        return res.status(409).json({ ok: false, error: "Already returned to sender", code: "ALREADY_RETURNED", version: VERSION, commit: COMMIT });
       }
       const reminderCount = Number(gift.reminderCount || 0);
       if (reminderCount >= REMINDER_MAX) {
-        return res.status(409).json({
-          ok: false,
-          error: "Reminder max already reached",
-          code: "REMINDER_MAX_REACHED",
-          version: VERSION,
-          commit: COMMIT,
-        });
+        return res.status(409).json({ ok: false, error: "Reminder max already reached", code: "REMINDER_MAX_REACHED", version: VERSION, commit: COMMIT });
       }
 
       const gapMs = getReminderGapMs();
@@ -616,17 +564,9 @@ export function registerRoutes(app: Express): Server {
 
       logEvent("admin_advance_reminder_time", { publicId, reminderCount, newLast: newLast.toISOString(), gapMs });
 
-      return res.json({
-        ok: true,
-        publicId,
-        reminderCount,
-        lastReminderSentAt: newLast.toISOString(),
-        gapMs,
-        version: VERSION,
-        commit: COMMIT,
-      });
+      return res.json({ ok: true, publicId, reminderCount, lastReminderSentAt: newLast.toISOString(), gapMs, version: VERSION, commit: COMMIT });
     } catch (e: any) {
-      logEvent("admin_advance_reminder_time_error", { publicId, err: safeStr(e?.message) });
+      logEvent("admin_advance_reminder_time_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
@@ -651,23 +591,13 @@ export function registerRoutes(app: Express): Server {
     const markClaimed = !!parsed.data.markClaimed;
 
     if (!recipientEmail && !recipientPhone) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Phone must be E.164 like +14165551234",
-        field: "recipientPhone",
-        version: VERSION,
-        commit: COMMIT,
-      });
+      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
 
     const publicId = newPublicId();
@@ -691,18 +621,9 @@ export function registerRoutes(app: Express): Server {
 
       logEvent("admin_gift_seeded", { publicId, markClaimed });
 
-      return res.json({
-        ok: true,
-        publicId,
-        claimUrl,
-        amount,
-        seeded: true,
-        markClaimed,
-        version: VERSION,
-        commit: COMMIT,
-      });
+      return res.json({ ok: true, publicId, claimUrl, amount, seeded: true, markClaimed, version: VERSION, commit: COMMIT });
     } catch (e: any) {
-      logEvent("gift_seed_error", { err: safeStr(e?.message) });
+      logEvent("gift_seed_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
@@ -714,9 +635,7 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminRemindersSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const dryRun = !!parsed.data.dryRun;
@@ -951,7 +870,7 @@ export function registerRoutes(app: Express): Server {
         commit: COMMIT,
       });
     } catch (e: any) {
-      logEvent("reminders_error", { err: safeStr(e?.message) });
+      logEvent("reminders_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
@@ -1036,7 +955,7 @@ export function registerRoutes(app: Express): Server {
           }
         }
       } catch (e: any) {
-        logEvent("rate_limit_check_error", { err: safeStr(e?.message) });
+        logEvent("rate_limit_check_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
       }
     }
 
@@ -1090,7 +1009,7 @@ export function registerRoutes(app: Express): Server {
           });
         }
       } catch (e: any) {
-        logEvent("sms_duplicate_check_error", { err: safeStr(e?.message) });
+        logEvent("sms_duplicate_check_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
       }
     }
 
@@ -1112,34 +1031,21 @@ export function registerRoutes(app: Express): Server {
         claimedAt: null,
       } as any);
 
-      const deliveryOk = true;
-      const emailSent = !!recipientEmail;
-      const smsQueued = !!recipientPhone;
-
-      queueGiftDelivery({
-        req,
-        publicId,
-        claimUrl,
-        amount,
-        senderEmail,
-        recipientEmail,
-        recipientPhone,
-        message,
-      });
+      queueGiftDelivery({ req, publicId, claimUrl, amount, senderEmail, recipientEmail, recipientPhone, message });
 
       return res.json({
         ok: true,
         publicId,
         claimUrl,
         amount,
-        deliveryOk,
-        emailSent,
-        smsQueued,
+        deliveryOk: true,
+        emailSent: !!recipientEmail,
+        smsQueued: !!recipientPhone,
         version: VERSION,
         commit: COMMIT,
       });
     } catch (e: any) {
-      logEvent("gift_create_error", { err: safeStr(e?.message) });
+      logEvent("gift_create_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
@@ -1169,7 +1075,7 @@ export function registerRoutes(app: Express): Server {
         commit: COMMIT,
       });
     } catch (e: any) {
-      logEvent("gift_get_error", { publicId, err: safeStr(e?.message) });
+      logEvent("gift_get_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
@@ -1191,7 +1097,6 @@ export function registerRoutes(app: Express): Server {
       const gift = rows?.[0];
       if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
 
-      // HARD BLOCK: once returned-to-sender is set, it can never be claimed
       if (gift.returnedToSenderAt) {
         return res.status(410).json({
           error: "This ThankuMail was returned to sender and can no longer be claimed",
@@ -1228,14 +1133,11 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      await db
-        .update(gifts)
-        .set({ isClaimed: true, claimedAt: new Date() })
-        .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
+      await db.update(gifts).set({ isClaimed: true, claimedAt: new Date() }).where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
 
       return res.json({ ok: true, version: VERSION, commit: COMMIT });
     } catch (e: any) {
-      logEvent("claim_error", { publicId, err: safeStr(e?.message) });
+      logEvent("claim_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
     }
   });
