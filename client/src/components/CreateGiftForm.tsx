@@ -1,7 +1,7 @@
 // WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
 // ACTION: Full file replacement (paste exactly)
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 
 type ApiError = {
   error: string;
@@ -43,13 +43,16 @@ function isE164(s: string) {
 function normalizePhoneToE164(input: string): string {
   const raw = String(input || "").trim();
   if (!raw) return "";
+
   if (raw.startsWith("00")) {
     const d2 = raw.slice(2).replace(/[^\d]/g, "");
     return d2 ? `+${d2}` : "";
   }
+
   const hasPlus = raw.startsWith("+");
   const digits = raw.replace(/[^\d]/g, "");
   if (!digits) return "";
+
   if (hasPlus) return `+${digits}`;
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
@@ -64,23 +67,11 @@ function absoluteLink(maybeRelative: string) {
   return `${origin}${path}`;
 }
 
-function lastLinkKey() {
-  return "thankumail:lastClaimUrl";
-}
-function lastLinkTsKey() {
-  return "thankumail:lastClaimUrlTs";
-}
 function safeSetLastClaimUrl(url: string) {
   try {
-    localStorage.setItem(lastLinkKey(), url);
-    localStorage.setItem(lastLinkTsKey(), String(Date.now()));
+    localStorage.setItem("thankumail:lastClaimUrl", url);
+    localStorage.setItem("thankumail:lastClaimUrlTs", String(Date.now()));
   } catch {}
-}
-
-const API_BASE = "https://api.thankumail.com";
-
-function cx(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
 }
 
 function toSearchParams(payload: Record<string, any>) {
@@ -92,13 +83,18 @@ function toSearchParams(payload: Record<string, any>) {
   return p;
 }
 
+const API_BASE = "https://api.thankumail.com";
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
+}
+
 export default function CreateGiftForm() {
-  // UNCONTROLLED INPUTS (fixes “1 char at a time” by avoiding React-controlled rerenders)
-  const senderEmailRef = useRef<HTMLInputElement | null>(null);
-  const recipientEmailRef = useRef<HTMLInputElement | null>(null);
-  const recipientPhoneRef = useRef<HTMLInputElement | null>(null);
-  const amountRef = useRef<HTMLInputElement | null>(null);
-  const messageRef = useRef<HTMLTextAreaElement | null>(null);
+  const [senderEmail, setSenderEmail] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
+  const [amountDollars, setAmountDollars] = useState<number>(10);
+  const [message, setMessage] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string>("");
@@ -118,25 +114,41 @@ export default function CreateGiftForm() {
     [],
   );
 
-  function readForm() {
-    const senderEmail = (senderEmailRef.current?.value || "").trim();
-    const recipientEmail = (recipientEmailRef.current?.value || "").trim();
-    const recipientPhoneRaw = (recipientPhoneRef.current?.value || "").trim();
-    const amountDollars = Number((amountRef.current?.value || "10").trim());
-    const message = (messageRef.current?.value || "").trim();
+  const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
+  const senderOk = useMemo(() => isEmail(senderEmail.trim()), [senderEmail]);
 
-    const amountCents = moneyToCents(amountDollars);
-    const recipientPhone = recipientPhoneRaw ? normalizePhoneToE164(recipientPhoneRaw) : "";
+  const recipientEmailOk = useMemo(
+    () => (recipientEmail.trim() ? isEmail(recipientEmail) : false),
+    [recipientEmail],
+  );
 
-    return { senderEmail, recipientEmail, recipientPhoneRaw, recipientPhone, amountDollars, amountCents, message };
+  const normalizedPhone = useMemo(() => (recipientPhone.trim() ? normalizePhoneToE164(recipientPhone) : ""), [recipientPhone]);
+  const recipientPhoneOk = useMemo(
+    () => (recipientPhone.trim() ? isE164(normalizedPhone) : false),
+    [recipientPhone, normalizedPhone],
+  );
+
+  const recipientOk = useMemo(() => recipientEmailOk || recipientPhoneOk, [recipientEmailOk, recipientPhoneOk]);
+  const messageOk = useMemo(() => message.trim().length >= 2, [message]);
+
+  const formOk = useMemo(() => {
+    const minOk = amountCents >= 1000;
+    return senderOk && recipientOk && messageOk && minOk && !submitting;
+  }, [senderOk, recipientOk, messageOk, amountCents, submitting]);
+
+  function recipientHint() {
+    if (recipientEmail.trim() && !recipientEmailOk) return "Email looks invalid.";
+    if (recipientPhone.trim() && !recipientPhoneOk) return "Phone must be like 6043691517 or +16043691517.";
+    if (!recipientEmail.trim() && !recipientPhone.trim()) return "Add an email or a phone number (at least one).";
+    return "";
   }
 
-  function clearForm() {
-    if (senderEmailRef.current) senderEmailRef.current.value = "";
-    if (recipientEmailRef.current) recipientEmailRef.current.value = "";
-    if (recipientPhoneRef.current) recipientPhoneRef.current.value = "";
-    if (amountRef.current) amountRef.current.value = "10";
-    if (messageRef.current) messageRef.current.value = "";
+  function clearFormInputs() {
+    setSenderEmail("");
+    setRecipientEmail("");
+    setRecipientPhone("");
+    setAmountDollars(10);
+    setMessage("");
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -147,14 +159,6 @@ export default function CreateGiftForm() {
     setApiField("");
     setCreated(null);
     setCopied(false);
-
-    const { senderEmail, recipientEmail, recipientPhoneRaw, recipientPhone, amountCents, message } = readForm();
-
-    const senderOk = isEmail(senderEmail);
-    const recipientEmailOk = recipientEmail ? isEmail(recipientEmail) : false;
-    const recipientPhoneOk = recipientPhoneRaw ? isE164(recipientPhone) : false;
-    const recipientOk = recipientEmailOk || recipientPhoneOk;
-    const messageOk = message.length >= 2;
 
     if (!senderOk) {
       setApiError("Sender email is required and must be valid.");
@@ -176,7 +180,9 @@ export default function CreateGiftForm() {
       setApiField("amount");
       return;
     }
-    if (recipientPhoneRaw && !recipientPhoneOk) {
+
+    const phoneToSend = recipientPhone.trim() ? normalizePhoneToE164(recipientPhone) : "";
+    if (recipientPhone.trim() && !isE164(phoneToSend)) {
       setApiError("Phone looks invalid. Try 6043691517 or +16043691517.");
       setApiField("recipientPhone");
       return;
@@ -186,10 +192,10 @@ export default function CreateGiftForm() {
 
     try {
       const payload: any = {
-        senderEmail,
-        recipientEmail: recipientEmail || undefined,
-        recipientPhone: recipientPhone || undefined,
-        message,
+        senderEmail: senderEmail.trim(),
+        recipientEmail: recipientEmail.trim() || undefined,
+        recipientPhone: phoneToSend || undefined,
+        message: message.trim(),
         amount: amountCents,
       };
 
@@ -205,7 +211,8 @@ export default function CreateGiftForm() {
       const data = (await res.json().catch(() => ({}))) as CreateGiftResponse;
 
       if (!res.ok) {
-        setApiError((data as any)?.error || `Request failed (${res.status})`);
+        const msg = (data as any)?.error || `Request failed (${res.status})`;
+        setApiError(msg);
         setApiField((data as any)?.field || "");
         return;
       }
@@ -216,7 +223,7 @@ export default function CreateGiftForm() {
       const abs = absoluteLink(ok.claimUrl || "");
       if (abs) safeSetLastClaimUrl(abs);
 
-      clearForm();
+      clearFormInputs();
     } catch {
       setApiError("Network error. Please try again.");
       setApiField("");
@@ -241,36 +248,16 @@ export default function CreateGiftForm() {
     window.open(claimUrl, "_blank", "noopener,noreferrer");
   }
 
-  const Input = (props: React.InputHTMLAttributes<HTMLInputElement> & { err?: boolean }) => (
-    <input
-      {...props}
-      className={cx(
-        "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
-        "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
-        props.err ? "border-red-300" : "",
-        props.className,
-      )}
-    />
-  );
-
-  const Textarea = (props: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { err?: boolean }) => (
-    <textarea
-      {...props}
-      className={cx(
-        "min-h-[140px] w-full box-border resize-y rounded-xl border bg-white px-3 py-2 text-sm outline-none",
-        "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
-        props.err ? "border-red-300" : "",
-        props.className,
-      )}
-    />
-  );
+  const permissionCopy = recipientPhone.trim()
+    ? "By sending via SMS, you confirm you have permission to contact this recipient."
+    : "By sending, you confirm you have permission to contact the recipient.";
 
   return (
     <div className="w-full max-w-xl px-4 sm:px-0">
       <form onSubmit={onSubmit} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-gray-900">Send a ThankuMail</h2>
-          <p className="mt-1 text-sm text-gray-600">Email, phone, or both.</p>
+          <p className="mt-1 text-sm text-gray-600">Send by email, phone, or both.</p>
         </div>
 
         {apiError ? (
@@ -311,11 +298,15 @@ export default function CreateGiftForm() {
         <div className="grid gap-4">
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-900">Your email</label>
-            <Input
-              ref={senderEmailRef as any}
-              err={apiField === "senderEmail"}
+            <input
+              className={cx(
+                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
+                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+                apiField === "senderEmail" ? "border-red-300" : "",
+              )}
               placeholder="you@example.com"
-              defaultValue=""
+              value={senderEmail}
+              onChange={(e) => setSenderEmail(e.target.value)}
               inputMode="email"
               autoComplete="email"
             />
@@ -324,11 +315,15 @@ export default function CreateGiftForm() {
 
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-900">Recipient email (optional)</label>
-            <Input
-              ref={recipientEmailRef as any}
-              err={apiField === "recipientEmail" || apiField === "recipient"}
+            <input
+              className={cx(
+                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
+                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+                apiField === "recipientEmail" || apiField === "recipient" ? "border-red-300" : "",
+              )}
               placeholder="friend@example.com"
-              defaultValue=""
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
               inputMode="email"
               autoComplete="email"
             />
@@ -336,40 +331,49 @@ export default function CreateGiftForm() {
 
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-900">Recipient phone (optional)</label>
-            <Input
-              ref={recipientPhoneRef as any}
-              err={apiField === "recipientPhone" || apiField === "recipient"}
+            <input
+              className={cx(
+                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
+                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+                apiField === "recipientPhone" || apiField === "recipient" ? "border-red-300" : "",
+              )}
               placeholder="6043691517 or +16043691517"
-              defaultValue=""
+              value={recipientPhone}
+              onChange={(e) => setRecipientPhone(e.target.value)}
               inputMode="tel"
               autoComplete="tel"
             />
-            <div className="mt-1 text-xs text-gray-600">
-              Add an email or phone (at least one).
-            </div>
+            <div className="mt-1 text-xs text-gray-600">{recipientHint()}</div>
           </div>
 
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-900">Gift amount (CAD)</label>
-            <Input
-              ref={amountRef as any}
-              err={apiField === "amount"}
+            <input
+              className={cx(
+                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
+                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+                apiField === "amount" ? "border-red-300" : "",
+              )}
               type="number"
               min={10}
               step={1}
-              defaultValue="10"
-              inputMode="numeric"
+              value={Number.isFinite(amountDollars) ? amountDollars : 10}
+              onChange={(e) => setAmountDollars(Number(e.target.value))}
             />
             <div className="mt-1 text-xs text-gray-600">Minimum $10.00</div>
           </div>
 
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-900">Your message</label>
-            <Textarea
-              ref={messageRef as any}
-              err={apiField === "message"}
+            <textarea
+              className={cx(
+                "min-h-[140px] w-full box-border resize-y rounded-xl border bg-white px-3 py-2 text-sm outline-none",
+                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+                apiField === "message" ? "border-red-300" : "",
+              )}
               placeholder="Write something real…"
-              defaultValue=""
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
               maxLength={2000}
             />
             <div className="mt-2 flex flex-wrap gap-2">
@@ -378,9 +382,7 @@ export default function CreateGiftForm() {
                   key={p}
                   type="button"
                   className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-900 hover:opacity-90"
-                  onClick={() => {
-                    if (messageRef.current) messageRef.current.value = p;
-                  }}
+                  onClick={() => setMessage(p)}
                 >
                   Use preset
                 </button>
@@ -396,9 +398,7 @@ export default function CreateGiftForm() {
             {submitting ? "Sending…" : "Send ThankuMail"}
           </button>
 
-          <div className="text-xs text-gray-600">
-            By sending, you confirm you have permission to contact the recipient.
-          </div>
+          <div className="text-xs text-gray-600">{permissionCopy}</div>
         </div>
       </form>
     </div>
