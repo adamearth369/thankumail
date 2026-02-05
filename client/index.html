@@ -1,13 +1,11 @@
 <!doctype html>
-<html lang="en" class="notranslate">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <!-- Disable Google Translate / auto-translation -->
     <meta name="google" content="notranslate" />
 
-    <!-- Google Fonts (stable approach; avoid CSS @import in build) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -17,8 +15,10 @@
 
     <title>ThankuMail</title>
   </head>
-  <body class="notranslate">
+  <body>
     <div id="root"></div>
+
+    <!-- Force a single, stable mount -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
