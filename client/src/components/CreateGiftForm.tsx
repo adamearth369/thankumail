@@ -1,7 +1,7 @@
 // WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
 // ACTION: Full file replacement (paste exactly)
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type ApiError = {
   error: string;
@@ -43,16 +43,13 @@ function isE164(s: string) {
 function normalizePhoneToE164(input: string): string {
   const raw = String(input || "").trim();
   if (!raw) return "";
-
   if (raw.startsWith("00")) {
     const d2 = raw.slice(2).replace(/[^\d]/g, "");
     return d2 ? `+${d2}` : "";
   }
-
   const hasPlus = raw.startsWith("+");
   const digits = raw.replace(/[^\d]/g, "");
   if (!digits) return "";
-
   if (hasPlus) return `+${digits}`;
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
@@ -83,7 +80,18 @@ function toSearchParams(payload: Record<string, any>) {
   return p;
 }
 
+declare global {
+  interface Window {
+    turnstile?: any;
+  }
+}
+
 const API_BASE = "https://api.thankumail.com";
+
+const TURNSTILE_SITE_KEY =
+  String((import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || (import.meta as any).env?.VITE_CF_TURNSTILE_SITE_KEY || "").trim();
+
+const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -101,6 +109,12 @@ export default function CreateGiftForm() {
   const [apiField, setApiField] = useState<string>("");
   const [created, setCreated] = useState<CreateGiftOk | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Turnstile (explicit render)
+  const canUseTurnstile = typeof window !== "undefined" && !!TURNSTILE_SITE_KEY;
+  const [turnstileLoadError, setTurnstileLoadError] = useState<string>("");
+  const widgetIdRef = React.useRef<string | null>(null);
+  const [tokenLen, setTokenLen] = useState(0);
 
   const presets = useMemo(
     () => [
@@ -133,8 +147,9 @@ export default function CreateGiftForm() {
 
   const formOk = useMemo(() => {
     const minOk = amountCents >= 1000;
-    return senderOk && recipientOk && messageOk && minOk && !submitting;
-  }, [senderOk, recipientOk, messageOk, amountCents, submitting]);
+    const captchaOk = !canUseTurnstile || tokenLen > 10;
+    return senderOk && recipientOk && messageOk && minOk && captchaOk && !submitting;
+  }, [senderOk, recipientOk, messageOk, amountCents, canUseTurnstile, tokenLen, submitting]);
 
   function recipientHint() {
     if (recipientEmail.trim() && !recipientEmailOk) return "Email looks invalid.";
@@ -150,6 +165,90 @@ export default function CreateGiftForm() {
     setAmountDollars(10);
     setMessage("");
   }
+
+  function getHiddenToken(): string {
+    if (typeof document === "undefined") return "";
+    const input = document.querySelector<HTMLInputElement>('input[name="cf-turnstile-response"]');
+    return (input?.value || "").trim();
+  }
+
+  function tryResetTurnstile() {
+    try {
+      if (window.turnstile?.reset && widgetIdRef.current) window.turnstile.reset(widgetIdRef.current);
+    } catch {}
+    setTokenLen(0);
+  }
+
+  // Load script + explicit render widget
+  useEffect(() => {
+    if (!canUseTurnstile) return;
+
+    const ensureScript = () =>
+      new Promise<void>((resolve, reject) => {
+        const existing = document.querySelector<HTMLScriptElement>(`script[src^="https://challenges.cloudflare.com/turnstile/"]`);
+        if (existing) {
+          // might already be loaded
+          if ((window as any).turnstile) return resolve();
+          existing.addEventListener("load", () => resolve(), { once: true });
+          existing.addEventListener("error", () => reject(new Error("script load error")), { once: true });
+          return;
+        }
+
+        const s = document.createElement("script");
+        s.src = TURNSTILE_SCRIPT_SRC;
+        s.async = true;
+        s.defer = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error("script load error"));
+        document.head.appendChild(s);
+      });
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await ensureScript();
+        if (cancelled) return;
+
+        setTurnstileLoadError("");
+
+        const container = document.getElementById("tm-turnstile");
+        if (!container) return;
+
+        if (!window.turnstile?.render) {
+          setTurnstileLoadError("Unable to load CAPTCHA. Please refresh and try again.");
+          return;
+        }
+
+        // Render once
+        if (!widgetIdRef.current) {
+          const wid = window.turnstile.render(container, {
+            sitekey: TURNSTILE_SITE_KEY,
+            theme: "auto",
+            callback: () => setTokenLen(getHiddenToken().length),
+            "expired-callback": () => setTokenLen(0),
+            "error-callback": () => setTokenLen(0),
+          });
+          widgetIdRef.current = String(wid);
+        }
+
+        // Poll token (backup)
+        const tick = () => {
+          if (cancelled) return;
+          setTokenLen(getHiddenToken().length);
+          window.setTimeout(tick, 350);
+        };
+        tick();
+      } catch {
+        if (cancelled) return;
+        setTurnstileLoadError("Unable to load CAPTCHA. Please refresh and try again.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseTurnstile]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -188,6 +287,21 @@ export default function CreateGiftForm() {
       return;
     }
 
+    let turnstileToken = "";
+    if (canUseTurnstile) {
+      if (turnstileLoadError) {
+        setApiError(turnstileLoadError);
+        setApiField("turnstileToken");
+        return;
+      }
+      turnstileToken = getHiddenToken();
+      if (!turnstileToken) {
+        setApiError("Please complete the CAPTCHA.");
+        setApiField("turnstileToken");
+        return;
+      }
+    }
+
     setSubmitting(true);
 
     try {
@@ -197,6 +311,7 @@ export default function CreateGiftForm() {
         recipientPhone: phoneToSend || undefined,
         message: message.trim(),
         amount: amountCents,
+        turnstileToken: canUseTurnstile ? turnstileToken : undefined,
       };
 
       Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
@@ -214,6 +329,7 @@ export default function CreateGiftForm() {
         const msg = (data as any)?.error || `Request failed (${res.status})`;
         setApiError(msg);
         setApiField((data as any)?.field || "");
+        tryResetTurnstile();
         return;
       }
 
@@ -224,9 +340,11 @@ export default function CreateGiftForm() {
       if (abs) safeSetLastClaimUrl(abs);
 
       clearFormInputs();
+      tryResetTurnstile();
     } catch {
       setApiError("Network error. Please try again.");
       setApiField("");
+      tryResetTurnstile();
     } finally {
       setSubmitting(false);
     }
@@ -389,6 +507,28 @@ export default function CreateGiftForm() {
               ))}
             </div>
           </div>
+
+          {canUseTurnstile ? (
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-900">CAPTCHA</label>
+
+              <div
+                className={cx(
+                  "inline-block rounded-xl border bg-white p-3",
+                  apiField === "turnstileToken" ? "border-red-300" : "border-gray-200",
+                )}
+              >
+                <div id="tm-turnstile" />
+              </div>
+
+              {turnstileLoadError ? <div className="mt-2 text-xs text-red-700">{turnstileLoadError}</div> : null}
+              {!turnstileLoadError ? <div className="mt-2 text-[11px] text-gray-500">tokenLen: {tokenLen}</div> : null}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              CAPTCHA site key not configured in the frontend build.
+            </div>
+          )}
 
           <button
             type="submit"
