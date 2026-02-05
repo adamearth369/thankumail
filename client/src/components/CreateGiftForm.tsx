@@ -335,9 +335,7 @@ export default function CreateGiftForm() {
     <div className="w-full max-w-xl mx-auto">
       <form onSubmit={onSubmit} className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft">
         <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a ThankuMail</h2>
-        <p className="text-sm text-tm-charcoal/70 mb-5">
-          Write something real. Add a small gift. Let it land.
-        </p>
+        <p className="text-sm text-tm-charcoal/70 mb-5">Write something real. Add a small gift. Let it land.</p>
 
         <div className="space-y-4">
           <div>
@@ -440,9 +438,7 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
-          {error ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
-          ) : null}
+          {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
 
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
@@ -462,17 +458,13 @@ export default function CreateGiftForm() {
             disabled={!canSubmit}
             className={classNames(
               "w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
-              canSubmit
-                ? "bg-tm-amber text-tm-charcoal hover:opacity-95"
-                : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
+              canSubmit ? "bg-tm-amber text-tm-charcoal hover:opacity-95" : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
             )}
           >
             {submitting ? "Sending…" : "Send ThankuMail"}
           </button>
 
-          <div className="text-xs text-tm-charcoal/60">
-            Tip: You can provide either email or phone (or both).
-          </div>
+          <div className="text-xs text-tm-charcoal/60">Tip: You can provide either email or phone (or both).</div>
         </div>
       </form>
     </div>
