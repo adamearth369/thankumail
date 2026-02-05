@@ -14,11 +14,11 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-02_004";
+const VERSION = "routes_v2026-02-05_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1";
+const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1_plus_admin_test_create_v1";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -150,6 +150,20 @@ const AdminGiftSeedSchema = z.object({
 
 const AdminAdvanceReminderTimeSchema = z.object({
   publicId: z.string().min(1),
+});
+
+/* -------------------- ADMIN: TEST CREATE (NO TURNSTILE) -------------------- */
+const AdminTestCreateGiftSchema = z.object({
+  senderEmail: z.string().email().optional().or(z.literal("")),
+  recipientEmail: z.string().email().optional().or(z.literal("")),
+  recipientPhone: z
+    .string()
+    .optional()
+    .or(z.literal(""))
+    .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
+  message: z.string().min(1).max(2000),
+  amount: z.number().int().min(1000).max(100000),
+  deliver: z.boolean().optional().default(false), // default: no email/sms during admin testing
 });
 
 /* -------------------- LIMITERS -------------------- */
@@ -404,6 +418,101 @@ export function registerRoutes(app: Express): Server {
       routesMarker: ROUTES_MARKER,
       testingAdminToolsEnabled: ENABLE_TESTING_ADMIN_TOOLS,
     });
+  });
+
+  /* -------------------- ADMIN: TEST CREATE (NO TURNSTILE) -------------------- */
+  app.post("/api/admin/test/create-gift", async (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+
+    const parsed = AdminTestCreateGiftSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    }
+
+    const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
+    const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
+    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
+    const message = safeStr(parsed.data.message);
+    const amount = Number(parsed.data.amount);
+    const deliver = !!parsed.data.deliver;
+
+    if (!recipientEmail && !recipientPhone) {
+      return res.status(400).json({
+        ok: false,
+        error: "Provide a recipient email or phone",
+        field: "recipient",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+    if (recipientPhone && !isE164(recipientPhone)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Phone must be E.164 like +14165551234",
+        field: "recipientPhone",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+    if (recipientEmail && !isEmail(recipientEmail)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid recipient email",
+        field: "recipientEmail",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    const publicId = newPublicId();
+    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
+
+    try {
+      await db.insert(gifts).values({
+        publicId,
+        senderEmail,
+        recipientEmail: recipientEmail || null,
+        recipientPhone: recipientPhone || null,
+        message,
+        amount,
+        isClaimed: false,
+        reminderCount: 0,
+        lastReminderSentAt: null,
+        returnedToSenderAt: null,
+        claimedAt: null,
+      } as any);
+
+      logEvent("admin_test_create_gift_ok", { publicId, deliver });
+
+      if (deliver) {
+        queueGiftDelivery({
+          req,
+          publicId,
+          claimUrl,
+          amount,
+          senderEmail,
+          recipientEmail,
+          recipientPhone,
+          message,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        publicId,
+        claimUrl,
+        amount,
+        deliver,
+        version: VERSION,
+        commit: COMMIT,
+      });
+    } catch (e: any) {
+      logEvent("admin_test_create_gift_error", { err: safeStr(e?.message) });
+      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
+    }
   });
 
   /* -------------------- ADMIN: GIFTS RESET (FAST TESTING) -------------------- */
