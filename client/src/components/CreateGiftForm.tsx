@@ -1,7 +1,7 @@
 // WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
 // ACTION: Full file replacement (paste exactly)
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type ApiError = {
   error: string;
@@ -11,7 +11,6 @@ type ApiError = {
   issues?: any[];
   retryAfterSec?: number;
   version?: string;
-  commit?: string;
 };
 
 type CreateGiftOk = {
@@ -27,6 +26,37 @@ type CreateGiftOk = {
 
 type CreateGiftResponse = CreateGiftOk | ApiError;
 
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (
+        el: HTMLElement | string,
+        opts: {
+          sitekey: string;
+          theme?: "light" | "dark" | "auto";
+          callback?: (token: string) => void;
+          "error-callback"?: () => void;
+          "expired-callback"?: () => void;
+          "timeout-callback"?: () => void;
+          "response-field"?: boolean;
+          "refresh-expired"?: "auto" | "manual";
+          "refresh-timeout"?: "auto" | "manual";
+          size?: "normal" | "compact";
+        }
+      ) => string;
+      reset: (widgetId?: string) => void;
+      remove: (widgetId?: string) => void;
+      getResponse: (widgetId?: string) => string;
+    };
+  }
+}
+
+const API_BASE = "https://api.thankumail.com";
+
+// This is NOT secret. It’s the public Turnstile Site Key used by the frontend build.
+const TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
+const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+
 function moneyToCents(dollars: number) {
   const cents = Math.round((Number(dollars) || 0) * 100);
   return Number.isFinite(cents) ? cents : 0;
@@ -36,509 +66,413 @@ function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
 }
 
-function isE164(s: string) {
+function isE164Phone(s: string) {
+  // E.164 basic: + and 8-15 digits
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
-function normalizePhoneToE164(input: string): string {
-  const raw = String(input || "").trim();
-  if (!raw) return "";
-  if (raw.startsWith("00")) {
-    const d2 = raw.slice(2).replace(/[^\d]/g, "");
-    return d2 ? `+${d2}` : "";
-  }
-  const hasPlus = raw.startsWith("+");
-  const digits = raw.replace(/[^\d]/g, "");
-  if (!digits) return "";
-  if (hasPlus) return `+${digits}`;
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return `+${digits}`;
+function classNames(...xs: Array<string | false | undefined | null>) {
+  return xs.filter(Boolean).join(" ");
 }
 
-function absoluteLink(maybeRelative: string) {
-  if (!maybeRelative) return maybeRelative;
-  if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const path = maybeRelative.startsWith("/") ? maybeRelative : `/${maybeRelative}`;
-  return `${origin}${path}`;
-}
-
-function safeSetLastClaimUrl(url: string) {
-  try {
-    localStorage.setItem("thankumail:lastClaimUrl", url);
-    localStorage.setItem("thankumail:lastClaimUrlTs", String(Date.now()));
-  } catch {}
-}
-
-function toSearchParams(payload: Record<string, any>) {
-  const p = new URLSearchParams();
-  Object.entries(payload).forEach(([k, v]) => {
-    if (v === undefined || v === null) return;
-    p.set(k, String(v));
-  });
-  return p;
-}
-
-declare global {
-  interface Window {
-    turnstile?: any;
-  }
-}
-
-const API_BASE = "https://api.thankumail.com";
-
-const TURNSTILE_SITE_KEY =
-  String((import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || (import.meta as any).env?.VITE_CF_TURNSTILE_SITE_KEY || "").trim();
-
-const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
-
-function cx(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
+function parseApiError(e: any): ApiError {
+  if (!e) return { error: "Unknown error" };
+  if (typeof e === "string") return { error: e };
+  if (typeof e?.error === "string") return e as ApiError;
+  return { error: "Request failed" };
 }
 
 export default function CreateGiftForm() {
-  const [senderEmail, setSenderEmail] = useState("");
-  const [recipientEmail, setRecipientEmail] = useState("");
+  const [senderEmail, setSenderEmail] = useState("newstartmedia369@gmail.com");
+  const [recipientEmail, setRecipientEmail] = useState("adamgdodds@gmail.com");
   const [recipientPhone, setRecipientPhone] = useState("");
-  const [amountDollars, setAmountDollars] = useState<number>(10);
-  const [message, setMessage] = useState("");
+  const [amountDollars, setAmountDollars] = useState<string>("10");
+  const [message, setMessage] = useState<string>("");
 
-  const [submitting, setSubmitting] = useState(false);
-  const [apiError, setApiError] = useState<string>("");
-  const [apiField, setApiField] = useState<string>("");
-  const [created, setCreated] = useState<CreateGiftOk | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [token, setToken] = useState<string>("");
+  const [turnstileReady, setTurnstileReady] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState<boolean>(false);
 
-  // Turnstile (explicit render)
-  const canUseTurnstile = typeof window !== "undefined" && !!TURNSTILE_SITE_KEY;
-  const [turnstileLoadError, setTurnstileLoadError] = useState<string>("");
-  const widgetIdRef = React.useRef<string | null>(null);
-  const [tokenLen, setTokenLen] = useState(0);
+  const [error, setError] = useState<string>("");
+  const [fieldError, setFieldError] = useState<string>("");
+  const [result, setResult] = useState<CreateGiftOk | null>(null);
 
-  const presets = useMemo(
-    () => [
-      "Thinking of you. I appreciate you more than you know.",
-      "Thank you for being there for me. You made a difference.",
-      "You’ve helped me in ways I can’t fully explain — thank you.",
-      "I’m proud of you. I see how hard you’re working.",
-      "I’m grateful for you. No strings attached.",
-      "This is just a small thank you for a big impact.",
-    ],
-    [],
-  );
+  const widgetIdRef = useRef<string | null>(null);
+  const widgetContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const amountCents = useMemo(() => moneyToCents(amountDollars), [amountDollars]);
-  const senderOk = useMemo(() => isEmail(senderEmail.trim()), [senderEmail]);
+  const cents = useMemo(() => moneyToCents(Number(amountDollars)), [amountDollars]);
 
-  const recipientEmailOk = useMemo(
-    () => (recipientEmail.trim() ? isEmail(recipientEmail) : false),
-    [recipientEmail],
-  );
+  const canSubmit = useMemo(() => {
+    const s = senderEmail.trim();
+    const re = recipientEmail.trim();
+    const rp = recipientPhone.trim();
+    const hasRecipient = Boolean(re) || Boolean(rp);
 
-  const normalizedPhone = useMemo(() => (recipientPhone.trim() ? normalizePhoneToE164(recipientPhone) : ""), [recipientPhone]);
-  const recipientPhoneOk = useMemo(
-    () => (recipientPhone.trim() ? isE164(normalizedPhone) : false),
-    [recipientPhone, normalizedPhone],
-  );
+    return (
+      !submitting &&
+      isEmail(s) &&
+      hasRecipient &&
+      (re ? isEmail(re) : true) &&
+      (rp ? isE164Phone(rp) : true) &&
+      cents >= 1 &&
+      message.trim().length >= 1 &&
+      token.length >= 20 // token is usually ~1000+; keep loose but not empty
+    );
+  }, [submitting, senderEmail, recipientEmail, recipientPhone, cents, message, token]);
 
-  const recipientOk = useMemo(() => recipientEmailOk || recipientPhoneOk, [recipientEmailOk, recipientPhoneOk]);
-  const messageOk = useMemo(() => message.trim().length >= 2, [message]);
-
-  const formOk = useMemo(() => {
-    const minOk = amountCents >= 1000;
-    const captchaOk = !canUseTurnstile || tokenLen > 10;
-    return senderOk && recipientOk && messageOk && minOk && captchaOk && !submitting;
-  }, [senderOk, recipientOk, messageOk, amountCents, canUseTurnstile, tokenLen, submitting]);
-
-  function recipientHint() {
-    if (recipientEmail.trim() && !recipientEmailOk) return "Email looks invalid.";
-    if (recipientPhone.trim() && !recipientPhoneOk) return "Phone must be like 6043691517 or +16043691517.";
-    if (!recipientEmail.trim() && !recipientPhone.trim()) return "Add an email or a phone number (at least one).";
-    return "";
-  }
-
-  function clearFormInputs() {
-    setSenderEmail("");
-    setRecipientEmail("");
-    setRecipientPhone("");
-    setAmountDollars(10);
-    setMessage("");
-  }
-
-  function getHiddenToken(): string {
-    if (typeof document === "undefined") return "";
-    const input = document.querySelector<HTMLInputElement>('input[name="cf-turnstile-response"]');
-    return (input?.value || "").trim();
-  }
-
-  function tryResetTurnstile() {
-    try {
-      if (window.turnstile?.reset && widgetIdRef.current) window.turnstile.reset(widgetIdRef.current);
-    } catch {}
-    setTokenLen(0);
-  }
-
-  // Load script + explicit render widget
   useEffect(() => {
-    if (!canUseTurnstile) return;
+    // Load Turnstile script (once)
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+    if (existing) {
+      setTurnstileReady(Boolean(window.turnstile));
+      return;
+    }
 
-    const ensureScript = () =>
-      new Promise<void>((resolve, reject) => {
-        const existing = document.querySelector<HTMLScriptElement>(`script[src^="https://challenges.cloudflare.com/turnstile/"]`);
-        if (existing) {
-          // might already be loaded
-          if ((window as any).turnstile) return resolve();
-          existing.addEventListener("load", () => resolve(), { once: true });
-          existing.addEventListener("error", () => reject(new Error("script load error")), { once: true });
-          return;
-        }
+    const script = document.createElement("script");
+    script.src = TURNSTILE_SCRIPT_SRC;
+    script.async = true;
+    script.defer = true;
 
-        const s = document.createElement("script");
-        s.src = TURNSTILE_SCRIPT_SRC;
-        s.async = true;
-        s.defer = true;
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error("script load error"));
-        document.head.appendChild(s);
-      });
+    script.onload = () => {
+      setTurnstileReady(Boolean(window.turnstile));
+    };
+    script.onerror = () => {
+      setTurnstileReady(false);
+      setError("Turnstile failed to load. Please refresh and try again.");
+    };
 
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await ensureScript();
-        if (cancelled) return;
-
-        setTurnstileLoadError("");
-
-        const container = document.getElementById("tm-turnstile");
-        if (!container) return;
-
-        if (!window.turnstile?.render) {
-          setTurnstileLoadError("Unable to load CAPTCHA. Please refresh and try again.");
-          return;
-        }
-
-        // Render once
-        if (!widgetIdRef.current) {
-          const wid = window.turnstile.render(container, {
-            sitekey: TURNSTILE_SITE_KEY,
-            theme: "auto",
-            callback: () => setTokenLen(getHiddenToken().length),
-            "expired-callback": () => setTokenLen(0),
-            "error-callback": () => setTokenLen(0),
-          });
-          widgetIdRef.current = String(wid);
-        }
-
-        // Poll token (backup)
-        const tick = () => {
-          if (cancelled) return;
-          setTokenLen(getHiddenToken().length);
-          window.setTimeout(tick, 350);
-        };
-        tick();
-      } catch {
-        if (cancelled) return;
-        setTurnstileLoadError("Unable to load CAPTCHA. Please refresh and try again.");
-      }
-    })();
+    document.head.appendChild(script);
 
     return () => {
-      cancelled = true;
+      // Do not remove script globally; multiple pages may rely on it.
     };
-  }, [canUseTurnstile]);
+  }, []);
+
+  useEffect(() => {
+    // Render Turnstile explicitly into #tm-turnstile once turnstile is ready
+    if (!turnstileReady) return;
+    if (!widgetContainerRef.current) return;
+
+    // Clear any prior widget
+    try {
+      if (widgetIdRef.current && window.turnstile?.remove) {
+        window.turnstile.remove(widgetIdRef.current);
+      }
+    } catch {
+      // ignore
+    }
+    widgetIdRef.current = null;
+    setToken("");
+
+    const el = widgetContainerRef.current;
+
+    try {
+      const id = window.turnstile?.render(el, {
+        sitekey: TURNSTILE_SITE_KEY,
+        theme: "auto",
+        size: "normal",
+        callback: (t: string) => {
+          setToken(String(t || ""));
+          setError("");
+          setFieldError("");
+        },
+        "expired-callback": () => {
+          setToken("");
+        },
+        "timeout-callback": () => {
+          setToken("");
+        },
+        "error-callback": () => {
+          setToken("");
+          setError("Turnstile verification failed. Please try again.");
+        },
+        "refresh-expired": "auto",
+        "refresh-timeout": "auto",
+      });
+
+      if (typeof id === "string") {
+        widgetIdRef.current = id;
+      }
+    } catch {
+      setError("Turnstile failed to initialize. Please refresh and try again.");
+    }
+
+    return () => {
+      try {
+        if (widgetIdRef.current && window.turnstile?.remove) {
+          window.turnstile.remove(widgetIdRef.current);
+        }
+      } catch {
+        // ignore
+      }
+      widgetIdRef.current = null;
+    };
+  }, [turnstileReady]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (submitting) return;
-
-    setApiError("");
-    setApiField("");
-    setCreated(null);
-    setCopied(false);
-
-    if (!senderOk) {
-      setApiError("Sender email is required and must be valid.");
-      setApiField("senderEmail");
-      return;
-    }
-    if (!recipientOk) {
-      setApiError("Please provide a valid recipient email or phone.");
-      setApiField("recipient");
-      return;
-    }
-    if (!messageOk) {
-      setApiError("Please write a short message.");
-      setApiField("message");
-      return;
-    }
-    if (amountCents < 1000) {
-      setApiError("Minimum amount is $10.00.");
-      setApiField("amount");
-      return;
-    }
-
-    const phoneToSend = recipientPhone.trim() ? normalizePhoneToE164(recipientPhone) : "";
-    if (recipientPhone.trim() && !isE164(phoneToSend)) {
-      setApiError("Phone looks invalid. Try 6043691517 or +16043691517.");
-      setApiField("recipientPhone");
-      return;
-    }
-
-    let turnstileToken = "";
-    if (canUseTurnstile) {
-      if (turnstileLoadError) {
-        setApiError(turnstileLoadError);
-        setApiField("turnstileToken");
-        return;
-      }
-      turnstileToken = getHiddenToken();
-      if (!turnstileToken) {
-        setApiError("Please complete the CAPTCHA.");
-        setApiField("turnstileToken");
-        return;
-      }
-    }
-
     setSubmitting(true);
+    setError("");
+    setFieldError("");
+    setResult(null);
+
+    const s = senderEmail.trim();
+    const re = recipientEmail.trim();
+    const rp = recipientPhone.trim();
+    const m = message.trim();
+
+    // Frontend validation (keep minimal)
+    if (!isEmail(s)) {
+      setSubmitting(false);
+      setFieldError("senderEmail");
+      setError("Please enter a valid sender email.");
+      return;
+    }
+    if (!re && !rp) {
+      setSubmitting(false);
+      setFieldError("recipient");
+      setError("Please enter a recipient email or phone number.");
+      return;
+    }
+    if (re && !isEmail(re)) {
+      setSubmitting(false);
+      setFieldError("recipientEmail");
+      setError("Please enter a valid recipient email.");
+      return;
+    }
+    if (rp && !isE164Phone(rp)) {
+      setSubmitting(false);
+      setFieldError("recipientPhone");
+      setError("Phone must be in E.164 format (e.g. +16043691517).");
+      return;
+    }
+    if (cents < 1) {
+      setSubmitting(false);
+      setFieldError("amount");
+      setError("Please enter a valid amount.");
+      return;
+    }
+    if (!m) {
+      setSubmitting(false);
+      setFieldError("message");
+      setError("Please write a short message.");
+      return;
+    }
+    if (!token) {
+      setSubmitting(false);
+      setFieldError("turnstile");
+      setError("Please complete the Turnstile check.");
+      return;
+    }
 
     try {
-      const payload: any = {
-        senderEmail: senderEmail.trim(),
-        recipientEmail: recipientEmail.trim() || undefined,
-        recipientPhone: phoneToSend || undefined,
-        message: message.trim(),
-        amount: amountCents,
-        turnstileToken: canUseTurnstile ? turnstileToken : undefined,
-      };
-
-      Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-
-      const body = toSearchParams(payload);
-
-      const res = await fetch(`${API_BASE}/api/gifts`, {
+      const resp = await fetch(`${API_BASE}/api/gifts`, {
         method: "POST",
-        body,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          senderEmail: s,
+          recipientEmail: re || undefined,
+          recipientPhone: rp || undefined,
+          message: m,
+          amount: cents, // ✅ NUMBER (cents), not string
+          turnstileToken: token,
+        }),
       });
 
-      const data = (await res.json().catch(() => ({}))) as CreateGiftResponse;
+      let data: any = null;
+      try {
+        data = await resp.json();
+      } catch {
+        // ignore
+      }
 
-      if (!res.ok) {
-        const msg = (data as any)?.error || `Request failed (${res.status})`;
-        setApiError(msg);
-        setApiField((data as any)?.field || "");
-        tryResetTurnstile();
+      if (!resp.ok || !data?.ok) {
+        const err = parseApiError(data || { error: "Request failed" });
+        setError(err.error || "Request failed");
+        setFieldError(err.field || "");
+        setSubmitting(false);
+
+        // If Turnstile failed server-side, reset the widget so user can retry cleanly
+        try {
+          if (widgetIdRef.current && window.turnstile?.reset) {
+            window.turnstile.reset(widgetIdRef.current);
+          }
+        } catch {
+          // ignore
+        }
+        setToken("");
         return;
       }
 
-      const ok = data as CreateGiftOk;
-      setCreated(ok);
-
-      const abs = absoluteLink(ok.claimUrl || "");
-      if (abs) safeSetLastClaimUrl(abs);
-
-      clearFormInputs();
-      tryResetTurnstile();
-    } catch {
-      setApiError("Network error. Please try again.");
-      setApiField("");
-      tryResetTurnstile();
-    } finally {
+      setResult(data as CreateGiftOk);
       setSubmitting(false);
+
+      // Reset Turnstile after a successful submit (prevents token reuse)
+      try {
+        if (widgetIdRef.current && window.turnstile?.reset) {
+          window.turnstile.reset(widgetIdRef.current);
+        }
+      } catch {
+        // ignore
+      }
+      setToken("");
+    } catch (err: any) {
+      setError(err?.message || "Network error");
+      setSubmitting(false);
+
+      try {
+        if (widgetIdRef.current && window.turnstile?.reset) {
+          window.turnstile.reset(widgetIdRef.current);
+        }
+      } catch {
+        // ignore
+      }
+      setToken("");
     }
   }
 
-  const claimUrl = created?.claimUrl ? absoluteLink(created.claimUrl) : "";
-
-  async function copyLink() {
-    if (!claimUrl) return;
-    try {
-      await navigator.clipboard?.writeText(claimUrl);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {}
-  }
-
-  function openClaim() {
-    if (!claimUrl) return;
-    window.open(claimUrl, "_blank", "noopener,noreferrer");
-  }
-
-  const permissionCopy = recipientPhone.trim()
-    ? "By sending via SMS, you confirm you have permission to contact this recipient."
-    : "By sending, you confirm you have permission to contact the recipient.";
-
   return (
-    <div className="w-full max-w-xl px-4 sm:px-0">
-      <form onSubmit={onSubmit} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold text-gray-900">Send a ThankuMail</h2>
-          <p className="mt-1 text-sm text-gray-600">Send by email, phone, or both.</p>
-        </div>
+    <div className="w-full max-w-xl mx-auto">
+      <form onSubmit={onSubmit} className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft">
+        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a ThankuMail</h2>
+        <p className="text-sm text-tm-charcoal/70 mb-5">
+          Write something real. Add a small gift. Let it land.
+        </p>
 
-        {apiError ? (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{apiError}</div>
-        ) : null}
-
-        {created ? (
-          <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 px-4 py-4 text-sm text-green-900">
-            <div className="text-base font-semibold">Sent.</div>
-
-            {claimUrl ? (
-              <div className="mt-3 rounded-xl border border-green-200 bg-white px-3 py-3">
-                <div className="text-xs font-semibold text-gray-600">Claim link</div>
-                <div className="mt-1 break-all text-xs text-gray-900">{claimUrl}</div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={openClaim}
-                    className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-95 active:opacity-90"
-                  >
-                    Open claim page →
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={copyLink}
-                    className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 hover:bg-gray-50"
-                  >
-                    {copied ? "Copied" : "Copy link"}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="grid gap-4">
+        <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-900">Your email</label>
+            <label className="block text-sm font-medium text-tm-charcoal mb-1">Your email</label>
             <input
-              className={cx(
-                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
-                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
-                apiField === "senderEmail" ? "border-red-300" : "",
-              )}
-              placeholder="you@example.com"
               value={senderEmail}
               onChange={(e) => setSenderEmail(e.target.value)}
-              inputMode="email"
+              type="email"
               autoComplete="email"
-            />
-            <div className="mt-1 text-xs text-gray-600">Required.</div>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-900">Recipient email (optional)</label>
-            <input
-              className={cx(
-                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
-                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
-                apiField === "recipientEmail" || apiField === "recipient" ? "border-red-300" : "",
+              className={classNames(
+                "w-full rounded-xl border px-3 py-2 outline-none bg-white",
+                fieldError === "senderEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
               )}
-              placeholder="friend@example.com"
-              value={recipientEmail}
-              onChange={(e) => setRecipientEmail(e.target.value)}
-              inputMode="email"
-              autoComplete="email"
+              placeholder="you@example.com"
             />
           </div>
 
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-900">Recipient phone (optional)</label>
-            <input
-              className={cx(
-                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
-                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
-                apiField === "recipientPhone" || apiField === "recipient" ? "border-red-300" : "",
-              )}
-              placeholder="6043691517 or +16043691517"
-              value={recipientPhone}
-              onChange={(e) => setRecipientPhone(e.target.value)}
-              inputMode="tel"
-              autoComplete="tel"
-            />
-            <div className="mt-1 text-xs text-gray-600">{recipientHint()}</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-tm-charcoal mb-1">Recipient email (optional)</label>
+              <input
+                value={recipientEmail}
+                onChange={(e) => setRecipientEmail(e.target.value)}
+                type="email"
+                autoComplete="email"
+                className={classNames(
+                  "w-full rounded-xl border px-3 py-2 outline-none bg-white",
+                  fieldError === "recipientEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                )}
+                placeholder="friend@example.com"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-tm-charcoal mb-1">Recipient phone (optional)</label>
+              <input
+                value={recipientPhone}
+                onChange={(e) => setRecipientPhone(e.target.value)}
+                type="tel"
+                autoComplete="tel"
+                className={classNames(
+                  "w-full rounded-xl border px-3 py-2 outline-none bg-white",
+                  fieldError === "recipientPhone" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                )}
+                placeholder="+16043691517"
+              />
+            </div>
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-900">Gift amount (CAD)</label>
-            <input
-              className={cx(
-                "w-full box-border rounded-xl border bg-white px-3 py-2 text-sm outline-none",
-                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
-                apiField === "amount" ? "border-red-300" : "",
-              )}
-              type="number"
-              min={10}
-              step={1}
-              value={Number.isFinite(amountDollars) ? amountDollars : 10}
-              onChange={(e) => setAmountDollars(Number(e.target.value))}
-            />
-            <div className="mt-1 text-xs text-gray-600">Minimum $10.00</div>
+            <label className="block text-sm font-medium text-tm-charcoal mb-1">Gift amount (USD)</label>
+            <div className="flex items-center gap-3">
+              <input
+                value={amountDollars}
+                onChange={(e) => setAmountDollars(e.target.value)}
+                inputMode="decimal"
+                className={classNames(
+                  "w-36 rounded-xl border px-3 py-2 outline-none bg-white",
+                  fieldError === "amount" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                )}
+                placeholder="10"
+              />
+              <div className="text-sm text-tm-charcoal/70">
+                Sending <span className="font-medium text-tm-charcoal">{cents}</span> cents
+              </div>
+            </div>
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-900">Your message</label>
+            <label className="block text-sm font-medium text-tm-charcoal mb-1">Message</label>
             <textarea
-              className={cx(
-                "min-h-[140px] w-full box-border resize-y rounded-xl border bg-white px-3 py-2 text-sm outline-none",
-                "border-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
-                apiField === "message" ? "border-red-300" : "",
-              )}
-              placeholder="Write something real…"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              maxLength={2000}
+              rows={5}
+              className={classNames(
+                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none",
+                fieldError === "message" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+              )}
+              placeholder="Say what you really mean…"
             />
-            <div className="mt-2 flex flex-wrap gap-2">
-              {presets.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-900 hover:opacity-90"
-                  onClick={() => setMessage(p)}
-                >
-                  Use preset
-                </button>
-              ))}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-tm-charcoal mb-2">Human check</label>
+            <div
+              id="tm-turnstile"
+              ref={widgetContainerRef}
+              className={classNames(
+                "min-h-[65px] rounded-xl border bg-white flex items-center justify-center overflow-hidden",
+                fieldError === "turnstile" ? "border-red-400" : "border-tm-cream/60"
+              )}
+            />
+            <div className="mt-2 text-xs text-tm-charcoal/60">
+              Token:{" "}
+              {token ? (
+                <span className="font-mono break-all">{token.slice(0, 24)}… ({token.length})</span>
+              ) : (
+                <span className="font-mono">none</span>
+              )}
             </div>
           </div>
 
-          {canUseTurnstile ? (
-            <div>
-              <label className="mb-2 block text-sm font-medium text-gray-900">CAPTCHA</label>
+          {error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+          ) : null}
 
-              <div
-                className={cx(
-                  "inline-block rounded-xl border bg-white p-3",
-                  apiField === "turnstileToken" ? "border-red-300" : "border-gray-200",
-                )}
-              >
-                <div id="tm-turnstile" />
+          {result?.ok ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
+              <div className="font-medium mb-1">Sent!</div>
+              <div className="break-all">
+                Claim link:{" "}
+                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
+                  {result.claimUrl}
+                </a>
               </div>
-
-              {turnstileLoadError ? <div className="mt-2 text-xs text-red-700">{turnstileLoadError}</div> : null}
-              {!turnstileLoadError ? <div className="mt-2 text-[11px] text-gray-500">tokenLen: {tokenLen}</div> : null}
+              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
             </div>
-          ) : (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              CAPTCHA site key not configured in the frontend build.
-            </div>
-          )}
+          ) : null}
 
           <button
             type="submit"
-            disabled={!formOk}
-            className="rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!canSubmit}
+            className={classNames(
+              "w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
+              canSubmit
+                ? "bg-tm-amber text-tm-charcoal hover:opacity-95"
+                : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
+            )}
           >
             {submitting ? "Sending…" : "Send ThankuMail"}
           </button>
 
-          <div className="text-xs text-gray-600">{permissionCopy}</div>
+          <div className="text-xs text-tm-charcoal/60">
+            Tip: You can provide either email or phone (or both).
+          </div>
         </div>
       </form>
     </div>
