@@ -14,11 +14,12 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-05_002";
+const VERSION = "routes_v2026-02-06_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1_plus_admin_test_create_v2";
+const ROUTES_MARKER =
+  "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1_plus_admin_test_create_v2_plus_domain_block_v1";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -97,6 +98,23 @@ function isE164(s: string) {
 }
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
+}
+
+/* -------------------- BLOCKED EMAIL DOMAINS -------------------- */
+const BLOCKED_EMAIL_DOMAINS = new Set([
+  "domain.com",
+  "example.com",
+  "test.com",
+  "mailinator.com",
+  "10minutemail.com",
+]);
+
+function isBlockedEmailDomain(email: string) {
+  const e = String(email || "").trim().toLowerCase();
+  const parts = e.split("@");
+  if (parts.length !== 2) return false;
+  const domain = parts[1].trim();
+  return BLOCKED_EMAIL_DOMAINS.has(domain);
 }
 
 /* -------------------- VALIDATION -------------------- */
@@ -443,6 +461,16 @@ export function registerRoutes(app: Express): Server {
     if (recipientEmail && !isEmail(recipientEmail)) {
       return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
+    if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Recipient email domain not allowed",
+        field: "recipientEmail",
+        code: "BLOCKED_EMAIL_DOMAIN",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
 
     const publicId = newPublicId();
     const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
@@ -599,6 +627,16 @@ export function registerRoutes(app: Express): Server {
     if (recipientEmail && !isEmail(recipientEmail)) {
       return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
+    if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Recipient email domain not allowed",
+        field: "recipientEmail",
+        code: "BLOCKED_EMAIL_DOMAIN",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
 
     const publicId = newPublicId();
     const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
@@ -728,6 +766,7 @@ export function registerRoutes(app: Express): Server {
           willReturn,
           sendFailed: 0,
           skippedNoRecipientEmail: 0,
+          skippedBlockedDomain: 0,
           skippedSendingDisabled: REMINDER_SENDING_ENABLED ? 0 : willRemind,
           cutoff: cutoff.toISOString(),
           olderThanMs,
@@ -743,6 +782,7 @@ export function registerRoutes(app: Express): Server {
       let returned = 0;
       let sendFailed = 0;
       let skippedNoRecipientEmail = 0;
+      let skippedBlockedDomain = 0;
       let skippedSendingDisabled = 0;
 
       for (const g of toRemind) {
@@ -757,6 +797,12 @@ export function registerRoutes(app: Express): Server {
         if (!isEmail(recipientEmail)) {
           skippedNoRecipientEmail += 1;
           logEvent("reminder_skipped_no_recipient_email", { publicId });
+          continue;
+        }
+
+        if (isBlockedEmailDomain(recipientEmail)) {
+          skippedBlockedDomain += 1;
+          logEvent("reminder_skipped_blocked_domain", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
           continue;
         }
 
@@ -860,6 +906,7 @@ export function registerRoutes(app: Express): Server {
         returned,
         sendFailed,
         skippedNoRecipientEmail,
+        skippedBlockedDomain,
         skippedSendingDisabled,
         cutoff: cutoff.toISOString(),
         olderThanMs,
@@ -892,6 +939,20 @@ export function registerRoutes(app: Express): Server {
 
     if (!recipientEmail && !recipientPhone) {
       return res.status(400).json({ error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+    }
+
+    if (recipientEmail && !isEmail(recipientEmail)) {
+      return res.status(400).json({ error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+    }
+
+    if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
+      return res.status(400).json({
+        error: "Recipient email domain not allowed",
+        field: "recipientEmail",
+        code: "BLOCKED_EMAIL_DOMAIN",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
 
     if (recipientPhone && !isE164(recipientPhone)) {
