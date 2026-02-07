@@ -1,10 +1,12 @@
+// WHERE TO PASTE: client/tailwind.config.js
+// ACTION: Full file replacement (paste exactly)
+
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
-    "./client/index.html",
-    "./client/src/**/*.{js,ts,jsx,tsx}",
-    "./shared/**/*.{js,ts,jsx,tsx}",
-    "./server/**/*.{js,ts,jsx,tsx}",
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+    "../shared/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
     extend: {},
