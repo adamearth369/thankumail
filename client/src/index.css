@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 /* ThankuMail — Warm Gratitude theme */
 :root {
@@ -25,13 +23,13 @@ body {
   color: var(--tm-charcoal);
 }
 
-/* Global focus ring (accessible, on-brand) */
+/* Global focus ring */
 :focus-visible {
   outline: 2px solid var(--tm-gold);
   outline-offset: 2px;
 }
 
-/* Nice selection */
+/* Selection */
 ::selection {
   background: rgba(201, 162, 39, 0.35);
 }
