@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type ApiError = {
@@ -48,12 +45,13 @@ declare global {
       remove: (widgetId?: string) => void;
       getResponse: (widgetId?: string) => string;
     };
+    __tm_turnstile_promise__?: Promise<void>;
   }
 }
 
 const API_BASE = "https://api.thankumail.com";
 
-// This is NOT secret. It’s the public Turnstile Site Key used by the frontend build.
+// Public Turnstile Site Key (frontend)
 const TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
@@ -67,7 +65,6 @@ function isEmail(s: string) {
 }
 
 function isE164Phone(s: string) {
-  // E.164 basic: + and 8-15 digits
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
@@ -80,6 +77,54 @@ function parseApiError(e: any): ApiError {
   if (typeof e === "string") return { error: e };
   if (typeof e?.error === "string") return e as ApiError;
   return { error: "Request failed" };
+}
+
+function waitForTurnstileReady(timeoutMs: number) {
+  return new Promise<void>((resolve, reject) => {
+    const start = Date.now();
+
+    const tick = () => {
+      const ok = typeof window.turnstile?.render === "function";
+      if (ok) return resolve();
+
+      if (Date.now() - start >= timeoutMs) {
+        return reject(new Error("Turnstile did not become ready in time."));
+      }
+      setTimeout(tick, 50);
+    };
+
+    tick();
+  });
+}
+
+function ensureTurnstileLoaded(): Promise<void> {
+  if (window.__tm_turnstile_promise__) return window.__tm_turnstile_promise__;
+
+  window.__tm_turnstile_promise__ = new Promise<void>((resolve, reject) => {
+    const alreadyReady = typeof window.turnstile?.render === "function";
+    if (alreadyReady) return resolve();
+
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+    if (existing) {
+      // Script tag exists (maybe from another page). Wait for the global to be ready.
+      waitForTurnstileReady(12000).then(resolve).catch(reject);
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = TURNSTILE_SCRIPT_SRC;
+    script.async = true;
+    script.defer = true;
+
+    script.onload = () => {
+      waitForTurnstileReady(12000).then(resolve).catch(reject);
+    };
+    script.onerror = () => reject(new Error("Turnstile script failed to load."));
+
+    document.head.appendChild(script);
+  });
+
+  return window.__tm_turnstile_promise__;
 }
 
 export default function CreateGiftForm() {
@@ -116,40 +161,30 @@ export default function CreateGiftForm() {
       (rp ? isE164Phone(rp) : true) &&
       cents >= 1 &&
       message.trim().length >= 1 &&
-      token.length >= 20 // token is usually ~1000+; keep loose but not empty
+      token.length >= 20
     );
   }, [submitting, senderEmail, recipientEmail, recipientPhone, cents, message, token]);
 
   useEffect(() => {
-    // Load Turnstile script (once)
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
-    if (existing) {
-      setTurnstileReady(Boolean(window.turnstile));
-      return;
-    }
+    let cancelled = false;
 
-    const script = document.createElement("script");
-    script.src = TURNSTILE_SCRIPT_SRC;
-    script.async = true;
-    script.defer = true;
-
-    script.onload = () => {
-      setTurnstileReady(Boolean(window.turnstile));
-    };
-    script.onerror = () => {
-      setTurnstileReady(false);
-      setError("Turnstile failed to load. Please refresh and try again.");
-    };
-
-    document.head.appendChild(script);
+    ensureTurnstileLoaded()
+      .then(() => {
+        if (cancelled) return;
+        setTurnstileReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTurnstileReady(false);
+        setError("Turnstile failed to load. Please refresh and try again.");
+      });
 
     return () => {
-      // Do not remove script globally; multiple pages may rely on it.
+      cancelled = true;
     };
   }, []);
 
   useEffect(() => {
-    // Render Turnstile explicitly into #tm-turnstile once turnstile is ready
     if (!turnstileReady) return;
     if (!widgetContainerRef.current) return;
 
@@ -166,38 +201,38 @@ export default function CreateGiftForm() {
 
     const el = widgetContainerRef.current;
 
-    try {
-      const id = window.turnstile?.render(el, {
-        sitekey: TURNSTILE_SITE_KEY,
-        theme: "auto",
-        size: "normal",
-        callback: (t: string) => {
-          setToken(String(t || ""));
-          setError("");
-          setFieldError("");
-        },
-        "expired-callback": () => {
-          setToken("");
-        },
-        "timeout-callback": () => {
-          setToken("");
-        },
-        "error-callback": () => {
-          setToken("");
-          setError("Turnstile verification failed. Please try again.");
-        },
-        "refresh-expired": "auto",
-        "refresh-timeout": "auto",
-      });
+    const renderNow = () => {
+      try {
+        const id = window.turnstile?.render(el, {
+          sitekey: TURNSTILE_SITE_KEY,
+          theme: "auto",
+          size: "normal",
+          callback: (t: string) => {
+            setToken(String(t || ""));
+            setError("");
+            setFieldError("");
+          },
+          "expired-callback": () => setToken(""),
+          "timeout-callback": () => setToken(""),
+          "error-callback": () => {
+            setToken("");
+            setError("Turnstile verification failed. Please try again.");
+          },
+          "refresh-expired": "auto",
+          "refresh-timeout": "auto",
+        });
 
-      if (typeof id === "string") {
-        widgetIdRef.current = id;
+        if (typeof id === "string") widgetIdRef.current = id;
+      } catch {
+        setError("Turnstile failed to initialize. Please refresh and try again.");
       }
-    } catch {
-      setError("Turnstile failed to initialize. Please refresh and try again.");
-    }
+    };
+
+    // Give the DOM a beat (helps with SPA + hydration timing)
+    const raf = requestAnimationFrame(renderNow);
 
     return () => {
+      cancelAnimationFrame(raf);
       try {
         if (widgetIdRef.current && window.turnstile?.remove) {
           window.turnstile.remove(widgetIdRef.current);
@@ -221,7 +256,6 @@ export default function CreateGiftForm() {
     const rp = recipientPhone.trim();
     const m = message.trim();
 
-    // Frontend validation (keep minimal)
     if (!isEmail(s)) {
       setSubmitting(false);
       setFieldError("senderEmail");
@@ -274,7 +308,7 @@ export default function CreateGiftForm() {
           recipientEmail: re || undefined,
           recipientPhone: rp || undefined,
           message: m,
-          amount: cents, // ✅ NUMBER (cents), not string
+          amount: cents,
           turnstileToken: token,
         }),
       });
@@ -292,7 +326,6 @@ export default function CreateGiftForm() {
         setFieldError(err.field || "");
         setSubmitting(false);
 
-        // If Turnstile failed server-side, reset the widget so user can retry cleanly
         try {
           if (widgetIdRef.current && window.turnstile?.reset) {
             window.turnstile.reset(widgetIdRef.current);
@@ -307,7 +340,6 @@ export default function CreateGiftForm() {
       setResult(data as CreateGiftOk);
       setSubmitting(false);
 
-      // Reset Turnstile after a successful submit (prevents token reuse)
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
           window.turnstile.reset(widgetIdRef.current);
