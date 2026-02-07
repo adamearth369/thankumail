@@ -42,7 +42,6 @@ declare global {
           "refresh-expired"?: "auto" | "manual";
           "refresh-timeout"?: "auto" | "manual";
           size?: "normal" | "compact";
-          // allow additional props Cloudflare may support
           [k: string]: any;
         }
       ) => string;
@@ -100,6 +99,11 @@ function countTurnstileIframes() {
   return iframes.filter((f) => String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com")).length;
 }
 
+function isTurnstileErrorCode(code?: string) {
+  const c = String(code || "").toUpperCase();
+  return c === "TURNSTILE_FAILED";
+}
+
 export default function CreateGiftForm() {
   const [senderEmail, setSenderEmail] = useState("newstartmedia369@gmail.com");
   const [recipientEmail, setRecipientEmail] = useState("adamgdodds@gmail.com");
@@ -119,6 +123,9 @@ export default function CreateGiftForm() {
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
+
+  // Error priority latch: server errors should not be overridden by Turnstile callbacks
+  const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
 
   const cents = useMemo(() => moneyToCents(Number(amountDollars)), [amountDollars]);
 
@@ -140,6 +147,17 @@ export default function CreateGiftForm() {
     );
   }, [submitting, senderEmail, recipientEmail, recipientPhone, cents, message, token]);
 
+  function setErrorWithLock(msg: string, lock: "none" | "server" | "turnstile") {
+    errorLockRef.current = lock;
+    setError(msg);
+  }
+
+  function clearErrorsAndUnlock() {
+    errorLockRef.current = "none";
+    setError("");
+    setFieldError("");
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -154,7 +172,7 @@ export default function CreateGiftForm() {
         script.onerror = () => {
           if (cancelled) return;
           setTurnstileReady(false);
-          setError("Turnstile failed to load. Please refresh and try again.");
+          setErrorWithLock("Turnstile failed to load. Please refresh and try again.", "turnstile");
         };
 
         document.head.appendChild(script);
@@ -164,7 +182,7 @@ export default function CreateGiftForm() {
       if (cancelled) return;
 
       setTurnstileReady(ok);
-      if (!ok) setError("Turnstile is taking too long to initialize. Please refresh and try again.");
+      if (!ok) setErrorWithLock("Turnstile is taking too long to initialize. Please refresh and try again.", "turnstile");
     }
 
     ensureTurnstile();
@@ -207,14 +225,31 @@ export default function CreateGiftForm() {
         size: "normal",
         callback: (t: string) => {
           setToken(String(t || ""));
-          setError("");
-          setFieldError("");
+          // Only clear errors if they were Turnstile-related or unlocked
+          if (errorLockRef.current !== "server") {
+            errorLockRef.current = "none";
+            setError("");
+            setFieldError("");
+          }
         },
-        "expired-callback": () => setToken(""),
-        "timeout-callback": () => setToken(""),
+        "expired-callback": () => {
+          setToken("");
+          // Do not override server errors
+          if (errorLockRef.current !== "server") {
+            errorLockRef.current = "turnstile";
+          }
+        },
+        "timeout-callback": () => {
+          setToken("");
+          if (errorLockRef.current !== "server") {
+            errorLockRef.current = "turnstile";
+          }
+        },
         "error-callback": () => {
           setToken("");
-          setError("Turnstile verification failed. Please try again.");
+          // Do not override server errors
+          if (errorLockRef.current === "server") return;
+          setErrorWithLock("Turnstile verification failed. Please try again.", "turnstile");
         },
         "refresh-expired": "auto",
         "refresh-timeout": "auto",
@@ -231,7 +266,9 @@ export default function CreateGiftForm() {
         }
       }, 1500);
     } catch {
-      setError("Turnstile failed to initialize. Please refresh and try again.");
+      if (errorLockRef.current !== "server") {
+        setErrorWithLock("Turnstile failed to initialize. Please refresh and try again.", "turnstile");
+      }
     }
   }
 
@@ -258,6 +295,7 @@ export default function CreateGiftForm() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
+    errorLockRef.current = "none";
     setError("");
     setFieldError("");
     setResult(null);
@@ -270,43 +308,43 @@ export default function CreateGiftForm() {
     if (!isEmail(s)) {
       setSubmitting(false);
       setFieldError("senderEmail");
-      setError("Please enter a valid sender email.");
+      setErrorWithLock("Please enter a valid sender email.", "none");
       return;
     }
     if (!re && !rp) {
       setSubmitting(false);
       setFieldError("recipient");
-      setError("Please enter a recipient email or phone number.");
+      setErrorWithLock("Please enter a recipient email or phone number.", "none");
       return;
     }
     if (re && !isEmail(re)) {
       setSubmitting(false);
       setFieldError("recipientEmail");
-      setError("Please enter a valid recipient email.");
+      setErrorWithLock("Please enter a valid recipient email.", "none");
       return;
     }
     if (rp && !isE164Phone(rp)) {
       setSubmitting(false);
       setFieldError("recipientPhone");
-      setError("Phone must be in E.164 format (e.g. +16043691517).");
+      setErrorWithLock("Phone must be in E.164 format (e.g. +16043691517).", "none");
       return;
     }
     if (cents < 1) {
       setSubmitting(false);
       setFieldError("amount");
-      setError("Please enter a valid amount.");
+      setErrorWithLock("Please enter a valid amount.", "none");
       return;
     }
     if (!m) {
       setSubmitting(false);
       setFieldError("message");
-      setError("Please write a short message.");
+      setErrorWithLock("Please write a short message.", "none");
       return;
     }
     if (!token) {
       setSubmitting(false);
       setFieldError("turnstile");
-      setError("Please complete the Turnstile check.");
+      setErrorWithLock("Please complete the Turnstile check.", "turnstile");
       return;
     }
 
@@ -333,11 +371,15 @@ export default function CreateGiftForm() {
 
       if (!resp.ok || !data?.ok) {
         const err = parseApiError(data || { error: "Request failed" });
-        setError(err.error || "Request failed");
+        const code = String(err.code || "");
+
+        // Server error priority: only Turnstile failures are "turnstile"; everything else is "server"
+        const lock: "server" | "turnstile" = isTurnstileErrorCode(code) ? "turnstile" : "server";
+        setErrorWithLock(err.error || "Request failed", lock);
         setFieldError(err.field || "");
         setSubmitting(false);
 
-        // Reset widget + token
+        // Reset widget + token (safe, but don't let widget callbacks override server error)
         try {
           if (widgetIdRef.current && window.turnstile?.reset) {
             window.turnstile.reset(widgetIdRef.current);
@@ -351,6 +393,7 @@ export default function CreateGiftForm() {
 
       setResult(data as CreateGiftOk);
       setSubmitting(false);
+      errorLockRef.current = "none";
 
       // Reset widget after success
       try {
@@ -362,7 +405,8 @@ export default function CreateGiftForm() {
       }
       setToken("");
     } catch (err: any) {
-      setError(err?.message || "Network error");
+      // Network errors are not Turnstile; treat as server-level
+      setErrorWithLock(err?.message || "Network error", "server");
       setSubmitting(false);
 
       try {
@@ -387,7 +431,9 @@ export default function CreateGiftForm() {
             <label className="block text-sm font-medium text-tm-charcoal mb-1">Your email</label>
             <input
               value={senderEmail}
-              onChange={(e) => setSenderEmail(e.target.value)}
+              onChange={(e) => {
+                setSenderEmail(e.target.value);
+              }}
               type="email"
               autoComplete="email"
               className={classNames(
@@ -495,8 +541,7 @@ export default function CreateGiftForm() {
               <button
                 type="button"
                 onClick={() => {
-                  setError("");
-                  setFieldError("");
+                  clearErrorsAndUnlock();
                   destroyWidget();
                   requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
