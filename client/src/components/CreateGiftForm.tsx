@@ -45,13 +45,12 @@ declare global {
       remove: (widgetId?: string) => void;
       getResponse: (widgetId?: string) => string;
     };
-    __tm_turnstile_promise__?: Promise<void>;
   }
 }
 
 const API_BASE = "https://api.thankumail.com";
 
-// Public Turnstile Site Key (frontend)
+// Public Turnstile Site Key (frontend-only)
 const TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
@@ -65,6 +64,7 @@ function isEmail(s: string) {
 }
 
 function isE164Phone(s: string) {
+  // E.164 basic: + and 8-15 digits
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
@@ -79,52 +79,16 @@ function parseApiError(e: any): ApiError {
   return { error: "Request failed" };
 }
 
-function waitForTurnstileReady(timeoutMs: number) {
-  return new Promise<void>((resolve, reject) => {
+function waitForTurnstile(maxMs: number) {
+  return new Promise<boolean>((resolve) => {
     const start = Date.now();
-
     const tick = () => {
-      const ok = typeof window.turnstile?.render === "function";
-      if (ok) return resolve();
-
-      if (Date.now() - start >= timeoutMs) {
-        return reject(new Error("Turnstile did not become ready in time."));
-      }
+      if (window.turnstile && typeof window.turnstile.render === "function") return resolve(true);
+      if (Date.now() - start >= maxMs) return resolve(false);
       setTimeout(tick, 50);
     };
-
     tick();
   });
-}
-
-function ensureTurnstileLoaded(): Promise<void> {
-  if (window.__tm_turnstile_promise__) return window.__tm_turnstile_promise__;
-
-  window.__tm_turnstile_promise__ = new Promise<void>((resolve, reject) => {
-    const alreadyReady = typeof window.turnstile?.render === "function";
-    if (alreadyReady) return resolve();
-
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
-    if (existing) {
-      // Script tag exists (maybe from another page). Wait for the global to be ready.
-      waitForTurnstileReady(12000).then(resolve).catch(reject);
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = TURNSTILE_SCRIPT_SRC;
-    script.async = true;
-    script.defer = true;
-
-    script.onload = () => {
-      waitForTurnstileReady(12000).then(resolve).catch(reject);
-    };
-    script.onerror = () => reject(new Error("Turnstile script failed to load."));
-
-    document.head.appendChild(script);
-  });
-
-  return window.__tm_turnstile_promise__;
 }
 
 export default function CreateGiftForm() {
@@ -168,16 +132,33 @@ export default function CreateGiftForm() {
   useEffect(() => {
     let cancelled = false;
 
-    ensureTurnstileLoaded()
-      .then(() => {
-        if (cancelled) return;
-        setTurnstileReady(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setTurnstileReady(false);
-        setError("Turnstile failed to load. Please refresh and try again.");
-      });
+    async function ensureTurnstile() {
+      // If script already exists, DO NOT return early — it may not have initialized window.turnstile yet.
+      const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+      if (!existing) {
+        const script = document.createElement("script");
+        script.src = TURNSTILE_SCRIPT_SRC;
+        script.async = true;
+        script.defer = true;
+
+        script.onerror = () => {
+          if (cancelled) return;
+          setTurnstileReady(false);
+          setError("Turnstile failed to load. Please refresh and try again.");
+        };
+
+        document.head.appendChild(script);
+      }
+
+      // Wait for window.turnstile to actually exist (covers “script present but not ready yet”).
+      const ok = await waitForTurnstile(5000);
+      if (cancelled) return;
+
+      setTurnstileReady(ok);
+      if (!ok) setError("Turnstile is taking too long to initialize. Please refresh and try again.");
+    }
+
+    ensureTurnstile();
 
     return () => {
       cancelled = true;
@@ -187,6 +168,7 @@ export default function CreateGiftForm() {
   useEffect(() => {
     if (!turnstileReady) return;
     if (!widgetContainerRef.current) return;
+    if (!window.turnstile?.render) return;
 
     // Clear any prior widget
     try {
@@ -196,43 +178,38 @@ export default function CreateGiftForm() {
     } catch {
       // ignore
     }
+
     widgetIdRef.current = null;
     setToken("");
 
     const el = widgetContainerRef.current;
 
-    const renderNow = () => {
-      try {
-        const id = window.turnstile?.render(el, {
-          sitekey: TURNSTILE_SITE_KEY,
-          theme: "auto",
-          size: "normal",
-          callback: (t: string) => {
-            setToken(String(t || ""));
-            setError("");
-            setFieldError("");
-          },
-          "expired-callback": () => setToken(""),
-          "timeout-callback": () => setToken(""),
-          "error-callback": () => {
-            setToken("");
-            setError("Turnstile verification failed. Please try again.");
-          },
-          "refresh-expired": "auto",
-          "refresh-timeout": "auto",
-        });
+    try {
+      const id = window.turnstile.render(el, {
+        sitekey: TURNSTILE_SITE_KEY,
+        theme: "auto",
+        size: "normal",
+        callback: (t: string) => {
+          setToken(String(t || ""));
+          setError("");
+          setFieldError("");
+        },
+        "expired-callback": () => setToken(""),
+        "timeout-callback": () => setToken(""),
+        "error-callback": () => {
+          setToken("");
+          setError("Turnstile verification failed. Please try again.");
+        },
+        "refresh-expired": "auto",
+        "refresh-timeout": "auto",
+      });
 
-        if (typeof id === "string") widgetIdRef.current = id;
-      } catch {
-        setError("Turnstile failed to initialize. Please refresh and try again.");
-      }
-    };
-
-    // Give the DOM a beat (helps with SPA + hydration timing)
-    const raf = requestAnimationFrame(renderNow);
+      if (typeof id === "string") widgetIdRef.current = id;
+    } catch {
+      setError("Turnstile failed to initialize. Please refresh and try again.");
+    }
 
     return () => {
-      cancelAnimationFrame(raf);
       try {
         if (widgetIdRef.current && window.turnstile?.remove) {
           window.turnstile.remove(widgetIdRef.current);
