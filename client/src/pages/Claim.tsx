@@ -1,7 +1,5 @@
-// WHERE TO PASTE: client/src/pages/Claim.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import confetti from "canvas-confetti";
 
 declare global {
   interface Window {
@@ -80,6 +78,17 @@ function cn(...xs: Array<string | false | undefined | null>) {
   return xs.filter(Boolean).join(" ");
 }
 
+function fireConfettiBurst() {
+  try {
+    const defaults = { origin: { y: 0.75 } };
+    confetti({ ...defaults, particleCount: 110, spread: 70, startVelocity: 45 });
+    confetti({ ...defaults, particleCount: 55, spread: 120, startVelocity: 35 });
+    confetti({ ...defaults, particleCount: 30, spread: 160, startVelocity: 25 });
+  } catch {
+    // ignore
+  }
+}
+
 export default function Claim() {
   const publicId = getPublicIdFromPath();
 
@@ -107,6 +116,9 @@ export default function Claim() {
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
 
+  // Confetti once per successful claim
+  const confettiFiredRef = useRef<boolean>(false);
+
   // IMPORTANT: don't boot Turnstile until the gift exists (prevents invalid-token showing captcha errors)
   const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
@@ -129,11 +141,20 @@ export default function Claim() {
     setError(invalidLinkMessage());
   }
 
+  // Fire confetti exactly once when we transition into success
+  useEffect(() => {
+    if (!ok) return;
+    if (confettiFiredRef.current) return;
+    confettiFiredRef.current = true;
+    fireConfettiBurst();
+  }, [ok]);
+
   // Load gift (ALWAYS from production API)
   useEffect(() => {
     async function loadGift() {
       setLoading(true);
       invalidRef.current = false;
+      confettiFiredRef.current = false;
 
       try {
         const r = await fetch(`${API_BASE}/api/gifts/${publicId}`, { method: "GET" });
