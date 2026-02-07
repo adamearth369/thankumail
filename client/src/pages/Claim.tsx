@@ -16,15 +16,50 @@ function getPublicIdFromPath() {
   return parts[parts.length - 1] || "";
 }
 
+function isInvalidLinkSignal(status: number, code: string, msg: string) {
+  const c = String(code || "").toUpperCase();
+  const m = String(msg || "");
+  if (status === 404) return true;
+  if (
+    c === "NOT_FOUND" ||
+    c === "GIFT_NOT_FOUND" ||
+    c === "INVALID_TOKEN" ||
+    c === "INVALID_OR_EXPIRED" ||
+    c === "EXPIRED"
+  )
+    return true;
+  if (/not found/i.test(m)) return true;
+  if (/invalid/i.test(m) && /token|link|id/i.test(m)) return true;
+  if (/expired/i.test(m) && /link|token|id/i.test(m)) return true;
+  if (/invalid or expired/i.test(m)) return true;
+  return false;
+}
+
+function invalidLinkMessage() {
+  return "This ThankuMail link is invalid or expired.";
+}
+
 function friendlyError(msg: string) {
   const m = String(msg || "");
   if (!m) return "";
+
+  // IMPORTANT: invalid/expired must always win over verification/captcha wording
+  if (
+    /not found/i.test(m) ||
+    /invalid or expired/i.test(m) ||
+    (/invalid/i.test(m) && /token|link|id/i.test(m)) ||
+    (/expired/i.test(m) && /link|token|id/i.test(m))
+  ) {
+    return invalidLinkMessage();
+  }
+
+  if (/already claimed/i.test(m)) return "This ThankuMail has already been claimed.";
+  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — we’re finalizing your gift.";
+
   if (/TURNSTILE_FAILED/i.test(m) || /captcha/i.test(m) || /verification/i.test(m)) {
     return "Verification expired or failed — please verify again.";
   }
-  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — we’re finalizing your gift.";
-  if (/already claimed/i.test(m)) return "This ThankuMail has already been claimed.";
-  if (/not found/i.test(m)) return "This ThankuMail link is invalid or expired.";
+
   return m;
 }
 
@@ -61,6 +96,9 @@ export default function Claim() {
   const [ok, setOk] = useState(false);
   const [alreadyClaimed, setAlreadyClaimed] = useState(false);
 
+  // Invalid-link latch (prevents Turnstile from ever overriding invalid/expired)
+  const invalidRef = useRef<boolean>(false);
+
   // Turnstile
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
@@ -70,8 +108,8 @@ export default function Claim() {
   const renderedRef = useRef<boolean>(false);
 
   // IMPORTANT: don't boot Turnstile until the gift exists (prevents invalid-token showing captcha errors)
-  const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok;
-  const canAttemptClaim = !!gift && !alreadyClaimed && !ok;
+  const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+  const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
   const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
 
@@ -80,9 +118,23 @@ export default function Claim() {
     return Number.isFinite(cents) ? (cents / 100).toFixed(2) : "0.00";
   }, [gift]);
 
+  function lockInvalidLink() {
+    invalidRef.current = true;
+    setGift(null);
+    setAlreadyClaimed(false);
+    setOk(false);
+    setArmed(false);
+    setRetryAfterSec(null);
+    setClaiming(false);
+    setError(invalidLinkMessage());
+  }
+
   // Load gift (ALWAYS from production API)
   useEffect(() => {
     async function loadGift() {
+      setLoading(true);
+      invalidRef.current = false;
+
       try {
         const r = await fetch(`${API_BASE}/api/gifts/${publicId}`, { method: "GET" });
         const j: any = await safeJson(r);
@@ -91,12 +143,31 @@ export default function Claim() {
           throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
         }
 
-        if (!r.ok) throw new Error(j?.error || "Failed to load gift");
+        if (!r.ok) {
+          const code = String(j?.code || "");
+          const msg = String(j?.error || "Failed to load gift");
+          if (isInvalidLinkSignal(r.status, code, msg)) {
+            lockInvalidLink();
+            return;
+          }
+          throw new Error(msg);
+        }
 
         setGift(j);
         setAlreadyClaimed(Boolean(j?.isClaimed));
+        setError("");
       } catch (e: any) {
-        setError(friendlyError(e?.message || "Failed to load gift"));
+        const msg = String(e?.message || "Failed to load gift");
+        if (
+          /not found/i.test(msg) ||
+          /invalid or expired/i.test(msg) ||
+          (/invalid/i.test(msg) && /token|link|id/i.test(msg)) ||
+          (/expired/i.test(msg) && /link|token|id/i.test(msg))
+        ) {
+          lockInvalidLink();
+          return;
+        }
+        setError(friendlyError(msg));
       } finally {
         setLoading(false);
       }
@@ -192,7 +263,7 @@ export default function Claim() {
     script.onload = () => setTurnstileBooting(false);
     script.onerror = () => {
       setTurnstileBooting(false);
-      setError("Verification failed to load. Please refresh the page.");
+      if (!invalidRef.current) setError("Verification failed to load. Please refresh the page.");
     };
 
     document.body.appendChild(script);
@@ -220,16 +291,19 @@ export default function Claim() {
         const id = ts.render("#turnstile-container", {
           sitekey: siteKey,
           callback: (token: string) => {
+            if (invalidRef.current) return;
             tokenRef.current = token || "";
             setCaptchaReady(!!token);
             setError("");
           },
           "expired-callback": () => {
+            if (invalidRef.current) return;
             tokenRef.current = "";
             setCaptchaReady(false);
             setArmed(false);
           },
           "error-callback": () => {
+            if (invalidRef.current) return;
             tokenRef.current = "";
             setCaptchaReady(false);
             setArmed(false);
@@ -250,7 +324,7 @@ export default function Claim() {
       window.clearInterval(interval);
       if (!renderedRef.current) {
         setTurnstileBooting(false);
-        setError("Verification didn’t load. Please refresh the page.");
+        if (!invalidRef.current) setError("Verification didn’t load. Please refresh the page.");
       }
     }, 3000);
 
@@ -294,6 +368,11 @@ export default function Claim() {
           const code = String(j?.code || "");
           const msg = String(j?.error || "Claim failed");
 
+          if (isInvalidLinkSignal(r.status, code, msg)) {
+            lockInvalidLink();
+            return;
+          }
+
           if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
             setAlreadyClaimed(true);
             setError("This ThankuMail has already been claimed.");
@@ -303,7 +382,7 @@ export default function Claim() {
           if (code === "TURNSTILE_FAILED") {
             hardResetTurnstile();
             setArmed(false);
-            setError("Verification expired — please verify again.");
+            if (!invalidRef.current) setError("Verification expired — please verify again.");
             return;
           }
 
@@ -319,7 +398,7 @@ export default function Claim() {
           if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
         } catch {}
       } catch (e: any) {
-        setError(friendlyError(e?.message || "Claim failed"));
+        if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
       } finally {
         setClaiming(false);
         setArmed(false);
@@ -362,6 +441,11 @@ export default function Claim() {
         const code = String(j?.code || "");
         const msg = String(j?.error || "Claim failed");
 
+        if (isInvalidLinkSignal(r.status, code, msg)) {
+          lockInvalidLink();
+          return;
+        }
+
         if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
           setAlreadyClaimed(true);
           setError("This ThankuMail has already been claimed.");
@@ -371,7 +455,7 @@ export default function Claim() {
         if (code === "TURNSTILE_FAILED") {
           hardResetTurnstile();
           setArmed(false);
-          setError("Verification expired — please verify again.");
+          if (!invalidRef.current) setError("Verification expired — please verify again.");
           return;
         }
 
@@ -387,7 +471,7 @@ export default function Claim() {
         if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
       } catch {}
     } catch (e: any) {
-      setError(friendlyError(e?.message || "Claim failed"));
+      if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
     } finally {
       setClaiming(false);
     }
@@ -425,12 +509,12 @@ export default function Claim() {
     );
   }
 
-  if (error && !gift) {
+  if ((error && !gift) || invalidRef.current) {
     return (
       <div className="min-h-[70vh] flex items-center justify-center px-6">
         <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50 p-6">
           <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this ThankuMail</div>
-          <div className="text-sm text-red-700">{error}</div>
+          <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
         </div>
       </div>
     );
