@@ -54,8 +54,6 @@ declare global {
 
 const API_BASE = "https://api.thankumail.com";
 
-// Public Turnstile Site Key (frontend-only)
-const TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 function moneyToCents(dollars: number) {
@@ -127,6 +125,11 @@ export default function CreateGiftForm() {
   // Error priority latch: server errors should not be overridden by Turnstile callbacks
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
 
+  // Read Turnstile site key from env (Render Static Site env: VITE_TURNSTILE_SITE_KEY)
+  const TURNSTILE_SITE_KEY = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY
+    ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
+    : "";
+
   const cents = useMemo(() => moneyToCents(Number(amountDollars)), [amountDollars]);
 
   const canSubmit = useMemo(() => {
@@ -143,9 +146,10 @@ export default function CreateGiftForm() {
       (rp ? isE164Phone(rp) : true) &&
       cents >= 1 &&
       message.trim().length >= 1 &&
-      token.length >= 20
+      token.length >= 20 &&
+      TURNSTILE_SITE_KEY.length > 0
     );
-  }, [submitting, senderEmail, recipientEmail, recipientPhone, cents, message, token]);
+  }, [submitting, senderEmail, recipientEmail, recipientPhone, cents, message, token, TURNSTILE_SITE_KEY]);
 
   function setErrorWithLock(msg: string, lock: "none" | "server" | "turnstile") {
     errorLockRef.current = lock;
@@ -162,6 +166,12 @@ export default function CreateGiftForm() {
     let cancelled = false;
 
     async function ensureTurnstile() {
+      if (!TURNSTILE_SITE_KEY) {
+        setTurnstileReady(false);
+        setErrorWithLock("Verification is not configured (missing site key).", "turnstile");
+        return;
+      }
+
       const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
       if (!existing) {
         const script = document.createElement("script");
@@ -190,7 +200,7 @@ export default function CreateGiftForm() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [TURNSTILE_SITE_KEY]);
 
   function destroyWidget() {
     try {
@@ -210,6 +220,7 @@ export default function CreateGiftForm() {
     const el = widgetContainerRef.current;
     if (!el) return;
     if (!window.turnstile?.render) return;
+    if (!TURNSTILE_SITE_KEY) return;
 
     setTurnstileBlocked(false);
     setToken("");
@@ -276,6 +287,7 @@ export default function CreateGiftForm() {
     if (!turnstileReady) return;
     if (!widgetContainerRef.current) return;
     if (!window.turnstile?.render) return;
+    if (!TURNSTILE_SITE_KEY) return;
 
     destroyWidget();
 
@@ -290,7 +302,7 @@ export default function CreateGiftForm() {
       destroyWidget();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [turnstileReady]);
+  }, [turnstileReady, TURNSTILE_SITE_KEY]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -339,6 +351,12 @@ export default function CreateGiftForm() {
       setSubmitting(false);
       setFieldError("message");
       setErrorWithLock("Please write a short message.", "none");
+      return;
+    }
+    if (!TURNSTILE_SITE_KEY) {
+      setSubmitting(false);
+      setFieldError("turnstile");
+      setErrorWithLock("Verification is not configured. Please contact support.", "turnstile");
       return;
     }
     if (!token) {
