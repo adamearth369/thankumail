@@ -1,4 +1,9 @@
-@import "tailwindcss";
+/* WHERE TO PASTE: client/src/index.css */
+/* ACTION: Full file replacement */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 /* ThankuMail — Warm Gratitude theme */
 :root {
@@ -26,7 +31,6 @@ body {
   color: var(--tm-charcoal);
 }
 
-/* Global focus ring */
 :focus-visible {
   outline: 2px solid var(--tm-gold);
   outline-offset: 2px;
@@ -36,19 +40,7 @@ body {
   background: rgba(201, 162, 39, 0.35);
 }
 
-/* ---------- HARD FALLBACKS (in case Tailwind utilities don't emit) ---------- */
-.rounded-2xl {
-  border-radius: 1.25rem;
-}
-
+/* Fallback helpers (minimal safety) */
 .shadow-soft {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-}
-
-.bg-tm-amber {
-  background-color: var(--tm-amber);
-}
-
-.text-tm-charcoal {
-  color: var(--tm-charcoal);
 }
