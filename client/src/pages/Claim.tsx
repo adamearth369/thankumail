@@ -63,14 +63,15 @@ export default function Claim() {
 
   // Turnstile
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
-  const [turnstileBooting, setTurnstileBooting] = useState<boolean>(!!siteKey);
+  const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
   const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey);
   const tokenRef = useRef<string>("");
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
 
-  const shouldShowCaptcha = Boolean(siteKey) && !alreadyClaimed && !ok;
-  const canAttemptClaim = !alreadyClaimed && !ok;
+  // IMPORTANT: don't boot Turnstile until the gift exists (prevents invalid-token showing captcha errors)
+  const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok;
+  const canAttemptClaim = !!gift && !alreadyClaimed && !ok;
 
   const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
 
@@ -444,9 +445,7 @@ export default function Claim() {
             <div className="text-sm text-tm-charcoal/60">ThankuMail</div>
 
             <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">It’s yours.</h1>
-            <p className="mt-2 text-tm-charcoal/70">
-              The note was the heart of it. The gift is the follow-through.
-            </p>
+            <p className="mt-2 text-tm-charcoal/70">The note was the heart of it. The gift is the follow-through.</p>
 
             <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
               <div className="text-xs uppercase tracking-wide text-tm-charcoal/60 mb-2">Message</div>
@@ -537,15 +536,11 @@ export default function Claim() {
             </button>
 
             {alreadyClaimed ? (
-              <div className="mt-3 text-xs text-tm-charcoal/60">
-                If you believe this is a mistake, ask the sender to create a new ThankuMail.
-              </div>
+              <div className="mt-3 text-xs text-tm-charcoal/60">If you believe this is a mistake, ask the sender to create a new ThankuMail.</div>
             ) : waitingOnDelay || armed ? (
               <div className="mt-3 text-xs text-tm-charcoal/60">No second click needed — this completes automatically.</div>
             ) : (
-              <div className="mt-3 text-xs text-tm-charcoal/60">
-                If you weren’t expecting this, you can ignore it — nothing else is required.
-              </div>
+              <div className="mt-3 text-xs text-tm-charcoal/60">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
             )}
           </div>
         </div>
