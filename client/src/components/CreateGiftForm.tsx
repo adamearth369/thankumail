@@ -2,6 +2,7 @@
 // ACTION: Full file replacement (paste exactly)
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import confetti from "canvas-confetti";
 
 type ApiError = {
   error: string;
@@ -53,7 +54,6 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
-
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 function moneyToCents(dollars: number) {
@@ -100,6 +100,18 @@ function countTurnstileIframes() {
 function isTurnstileErrorCode(code?: string) {
   const c = String(code || "").toUpperCase();
   return c === "TURNSTILE_FAILED";
+}
+
+function fireConfettiBurst() {
+  try {
+    const defaults = { origin: { y: 0.75 } };
+
+    confetti({ ...defaults, particleCount: 90, spread: 70, startVelocity: 45 });
+    confetti({ ...defaults, particleCount: 45, spread: 120, startVelocity: 35 });
+    confetti({ ...defaults, particleCount: 25, spread: 160, startVelocity: 25 });
+  } catch {
+    // ignore
+  }
 }
 
 export default function CreateGiftForm() {
@@ -412,6 +424,9 @@ export default function CreateGiftForm() {
       setResult(data as CreateGiftOk);
       setSubmitting(false);
       errorLockRef.current = "none";
+
+      // CONFETTI: fire on successful send
+      fireConfettiBurst();
 
       // Reset widget after success
       try {
