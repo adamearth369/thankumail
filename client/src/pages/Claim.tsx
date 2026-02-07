@@ -41,6 +41,10 @@ async function safeJson(res: Response) {
   }
 }
 
+function cn(...xs: Array<string | false | undefined | null>) {
+  return xs.filter(Boolean).join(" ");
+}
+
 export default function Claim() {
   const publicId = getPublicIdFromPath();
 
@@ -388,36 +392,6 @@ export default function Claim() {
     }
   }
 
-  if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
-  if (error && !gift) return <div style={{ padding: 32, color: "#b00020" }}>{error}</div>;
-
-  // SUCCESS: keep it warm + simple + clear
-  if (ok) {
-    return (
-      <div style={{ maxWidth: 520, margin: "40px auto", padding: 24 }}>
-        <div style={{ marginBottom: 14, color: "#666" }}>ThankuMail</div>
-
-        <h1 style={{ margin: "0 0 10px 0" }}>It’s yours.</h1>
-        <div style={{ color: "#666", marginBottom: 18 }}>
-          The note was the heart of it. The gift is the follow-through.
-        </div>
-
-        <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fafafa" }}>
-          <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>Message</div>
-          <div style={{ fontSize: 18, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{gift?.message || "—"}</div>
-        </div>
-
-        <div style={{ marginTop: 14, color: "#666" }}>
-          Gift amount: <strong style={{ color: "#111" }}>${amountDollars}</strong>
-        </div>
-
-        <div style={{ marginTop: 18, fontSize: 13, color: "#777" }}>
-          If you weren’t expecting this, you can ignore it — nothing else is required.
-        </div>
-      </div>
-    );
-  }
-
   const buttonDisabled =
     !canAttemptClaim ||
     claiming ||
@@ -438,84 +412,147 @@ export default function Claim() {
       ? "You’re verified. We’re securing the gift — it will complete automatically."
       : "";
 
-  return (
-    <div style={{ maxWidth: 520, margin: "40px auto", padding: 24 }}>
-      <div style={{ marginBottom: 14, color: "#666" }}>ThankuMail</div>
-
-      <h1 style={{ margin: "0 0 10px 0" }}>A note for you.</h1>
-      <div style={{ color: "#666", marginBottom: 18 }}>Read the message first. Claim when you’re ready.</div>
-
-      {alreadyClaimed ? (
-        <div style={{ color: "#b00020", marginBottom: 12 }}>{statusLine}</div>
-      ) : error ? (
-        <div style={{ color: "#b00020", marginBottom: 12 }}>{error}</div>
-      ) : statusLine ? (
-        <div style={{ color: "#111", marginBottom: 12 }}>{statusLine}</div>
-      ) : null}
-
-      <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fafafa", marginBottom: 14 }}>
-        <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>Message</div>
-        <div style={{ fontSize: 18, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{gift?.message || "—"}</div>
+  if (loading) {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center px-6">
+        <div className="w-full max-w-md rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
+          <div className="text-sm text-tm-charcoal/60 mb-2">ThankuMail</div>
+          <div className="font-outfit text-2xl text-tm-charcoal">Loading…</div>
+          <div className="mt-3 text-sm text-tm-charcoal/70">Just a moment.</div>
+        </div>
       </div>
+    );
+  }
 
-      <div style={{ border: "1px solid #ddd", borderRadius: 14, padding: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-          <div style={{ fontWeight: 800, color: "#111" }}>Gift</div>
-          <div style={{ color: "#666", fontSize: 13 }}>
-            Amount: <strong style={{ color: "#111" }}>${amountDollars}</strong>
+  if (error && !gift) {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center px-6">
+        <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50 p-6">
+          <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this ThankuMail</div>
+          <div className="text-sm text-red-700">{error}</div>
+        </div>
+      </div>
+    );
+  }
+
+  // SUCCESS
+  if (ok) {
+    return (
+      <div className="min-h-[70vh] flex items-start justify-center px-6 py-10">
+        <div className="w-full max-w-xl">
+          <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
+            <div className="text-sm text-tm-charcoal/60">ThankuMail</div>
+
+            <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">It’s yours.</h1>
+            <p className="mt-2 text-tm-charcoal/70">
+              The note was the heart of it. The gift is the follow-through.
+            </p>
+
+            <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
+              <div className="text-xs uppercase tracking-wide text-tm-charcoal/60 mb-2">Message</div>
+              <div className="text-lg leading-relaxed text-tm-charcoal whitespace-pre-wrap">{gift?.message || "—"}</div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-tm-cream/40 bg-tm-cream/20 p-4">
+              <div className="text-sm text-tm-charcoal/70">Gift amount</div>
+              <div className="font-outfit text-2xl text-tm-charcoal">${amountDollars}</div>
+            </div>
+
+            <div className="mt-5 text-xs text-tm-charcoal/60">
+              If you weren’t expecting this, you can ignore it — nothing else is required.
+            </div>
           </div>
         </div>
+      </div>
+    );
+  }
 
-        <div style={{ color: "#666", fontSize: 13, marginBottom: 12 }}>
-          For safety, there’s a quick verification and a short pause before it finalizes.
-        </div>
+  // CLAIM PAGE
+  return (
+    <div className="min-h-[70vh] flex items-start justify-center px-6 py-10">
+      <div className="w-full max-w-xl">
+        <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
+          <div className="text-sm text-tm-charcoal/60">ThankuMail</div>
 
-        {shouldShowCaptcha ? (
-          <div style={{ marginBottom: 12 }}>
-            <div id="turnstile-container" />
-            {turnstileBooting ? (
-              <div style={{ color: "#666", marginTop: 8 }}>Loading verification…</div>
-            ) : captchaReady ? (
-              <div style={{ color: "#666", marginTop: 8 }}>Verified ✓</div>
+          <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">A note for you.</h1>
+          <p className="mt-2 text-tm-charcoal/70">Read the message first. Claim when you’re ready.</p>
+
+          {alreadyClaimed ? (
+            <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              {statusLine || "This ThankuMail has already been claimed."}
+            </div>
+          ) : error ? (
+            <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
+          ) : statusLine ? (
+            <div className="mt-4 rounded-2xl border border-tm-cream/40 bg-tm-cream/20 px-4 py-3 text-sm text-tm-charcoal">
+              {statusLine}
+            </div>
+          ) : null}
+
+          <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
+            <div className="text-xs uppercase tracking-wide text-tm-charcoal/60 mb-2">Message</div>
+            <div className="text-lg leading-relaxed text-tm-charcoal whitespace-pre-wrap">{gift?.message || "—"}</div>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-tm-charcoal">Gift</div>
+                <div className="mt-1 text-xs text-tm-charcoal/60">
+                  For safety, there’s a quick verification and a short pause before it finalizes.
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-xs text-tm-charcoal/60">Amount</div>
+                <div className="font-outfit text-2xl text-tm-charcoal">${amountDollars}</div>
+              </div>
+            </div>
+
+            {shouldShowCaptcha ? (
+              <div className="mt-4">
+                <div className="rounded-2xl border border-tm-cream/40 bg-white p-4">
+                  <div id="turnstile-container" />
+                  {turnstileBooting ? (
+                    <div className="mt-2 text-xs text-tm-charcoal/60">Loading verification…</div>
+                  ) : captchaReady ? (
+                    <div className="mt-2 text-xs text-tm-charcoal/60">Verified ✓</div>
+                  ) : null}
+                </div>
+              </div>
             ) : null}
+
+            {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 ? (
+              <div className="mt-4 text-sm text-tm-charcoal/70">Finalizing your gift… about {retryAfterSec} seconds.</div>
+            ) : null}
+
+            <button
+              onClick={handleClaimClick}
+              disabled={buttonDisabled}
+              className={cn(
+                "mt-4 w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
+                buttonDisabled ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed" : "bg-tm-amber text-tm-charcoal hover:opacity-95"
+              )}
+            >
+              {buttonText}
+            </button>
+
+            {alreadyClaimed ? (
+              <div className="mt-3 text-xs text-tm-charcoal/60">
+                If you believe this is a mistake, ask the sender to create a new ThankuMail.
+              </div>
+            ) : waitingOnDelay || armed ? (
+              <div className="mt-3 text-xs text-tm-charcoal/60">No second click needed — this completes automatically.</div>
+            ) : (
+              <div className="mt-3 text-xs text-tm-charcoal/60">
+                If you weren’t expecting this, you can ignore it — nothing else is required.
+              </div>
+            )}
           </div>
-        ) : null}
+        </div>
 
-        {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 && (
-          <div style={{ color: "#666", marginBottom: 12 }}>Finalizing your gift… about {retryAfterSec} seconds.</div>
-        )}
-
-        <button
-          onClick={handleClaimClick}
-          disabled={buttonDisabled}
-          style={{
-            width: "100%",
-            padding: "12px 14px",
-            borderRadius: 12,
-            border: "none",
-            background: "#111",
-            color: "#fff",
-            fontWeight: 800,
-            cursor: buttonDisabled ? "not-allowed" : "pointer",
-            opacity: buttonDisabled ? 0.5 : 1,
-          }}
-        >
-          {buttonText}
-        </button>
-
-        {alreadyClaimed ? (
-          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-            If you believe this is a mistake, ask the sender to create a new ThankuMail.
-          </div>
-        ) : null}
-
-        {waitingOnDelay || armed ? (
-          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>No second click needed — this completes automatically.</div>
-        ) : (
-          <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>
-            If you weren’t expecting this, you can ignore it — nothing else is required.
-          </div>
-        )}
+        <div className="mt-4 text-center text-xs text-tm-charcoal/50">
+          ThankuMail is about the message first — the gift is just the follow-through.
+        </div>
       </div>
     </div>
   );
