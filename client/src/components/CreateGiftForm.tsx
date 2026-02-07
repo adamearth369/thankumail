@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type ApiError = {
@@ -39,6 +42,8 @@ declare global {
           "refresh-expired"?: "auto" | "manual";
           "refresh-timeout"?: "auto" | "manual";
           size?: "normal" | "compact";
+          // allow additional props Cloudflare may support
+          [k: string]: any;
         }
       ) => string;
       reset: (widgetId?: string) => void;
@@ -64,7 +69,6 @@ function isEmail(s: string) {
 }
 
 function isE164Phone(s: string) {
-  // E.164 basic: + and 8-15 digits
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
@@ -91,6 +95,11 @@ function waitForTurnstile(maxMs: number) {
   });
 }
 
+function countTurnstileIframes() {
+  const iframes = Array.from(document.querySelectorAll("iframe"));
+  return iframes.filter((f) => String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com")).length;
+}
+
 export default function CreateGiftForm() {
   const [senderEmail, setSenderEmail] = useState("newstartmedia369@gmail.com");
   const [recipientEmail, setRecipientEmail] = useState("adamgdodds@gmail.com");
@@ -100,6 +109,7 @@ export default function CreateGiftForm() {
 
   const [token, setToken] = useState<string>("");
   const [turnstileReady, setTurnstileReady] = useState<boolean>(false);
+  const [turnstileBlocked, setTurnstileBlocked] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   const [error, setError] = useState<string>("");
@@ -108,6 +118,7 @@ export default function CreateGiftForm() {
 
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
+  const renderSeqRef = useRef<number>(0);
 
   const cents = useMemo(() => moneyToCents(Number(amountDollars)), [amountDollars]);
 
@@ -133,7 +144,6 @@ export default function CreateGiftForm() {
     let cancelled = false;
 
     async function ensureTurnstile() {
-      // If script already exists, DO NOT return early — it may not have initialized window.turnstile yet.
       const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
       if (!existing) {
         const script = document.createElement("script");
@@ -150,8 +160,7 @@ export default function CreateGiftForm() {
         document.head.appendChild(script);
       }
 
-      // Wait for window.turnstile to actually exist (covers “script present but not ready yet”).
-      const ok = await waitForTurnstile(5000);
+      const ok = await waitForTurnstile(8000);
       if (cancelled) return;
 
       setTurnstileReady(ok);
@@ -165,12 +174,7 @@ export default function CreateGiftForm() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!turnstileReady) return;
-    if (!widgetContainerRef.current) return;
-    if (!window.turnstile?.render) return;
-
-    // Clear any prior widget
+  function destroyWidget() {
     try {
       if (widgetIdRef.current && window.turnstile?.remove) {
         window.turnstile.remove(widgetIdRef.current);
@@ -178,12 +182,24 @@ export default function CreateGiftForm() {
     } catch {
       // ignore
     }
-
     widgetIdRef.current = null;
-    setToken("");
 
     const el = widgetContainerRef.current;
+    if (el) el.innerHTML = "";
+  }
 
+  function renderWidget() {
+    const el = widgetContainerRef.current;
+    if (!el) return;
+    if (!window.turnstile?.render) return;
+
+    setTurnstileBlocked(false);
+    setToken("");
+
+    // make sure container is empty
+    el.innerHTML = "";
+
+    const seq = ++renderSeqRef.current;
     try {
       const id = window.turnstile.render(el, {
         sitekey: TURNSTILE_SITE_KEY,
@@ -205,20 +221,38 @@ export default function CreateGiftForm() {
       });
 
       if (typeof id === "string") widgetIdRef.current = id;
+
+      // Detect “hidden input created but iframe never appears”
+      setTimeout(() => {
+        if (seq !== renderSeqRef.current) return;
+        const tmIframes = countTurnstileIframes();
+        if (tmIframes === 0) {
+          setTurnstileBlocked(true);
+        }
+      }, 1500);
     } catch {
       setError("Turnstile failed to initialize. Please refresh and try again.");
     }
+  }
+
+  useEffect(() => {
+    if (!turnstileReady) return;
+    if (!widgetContainerRef.current) return;
+    if (!window.turnstile?.render) return;
+
+    destroyWidget();
+
+    // Render after paint (more reliable across browsers)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        renderWidget();
+      });
+    });
 
     return () => {
-      try {
-        if (widgetIdRef.current && window.turnstile?.remove) {
-          window.turnstile.remove(widgetIdRef.current);
-        }
-      } catch {
-        // ignore
-      }
-      widgetIdRef.current = null;
+      destroyWidget();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnstileReady]);
 
   async function onSubmit(e: React.FormEvent) {
@@ -303,6 +337,7 @@ export default function CreateGiftForm() {
         setFieldError(err.field || "");
         setSubmitting(false);
 
+        // Reset widget + token
         try {
           if (widgetIdRef.current && window.turnstile?.reset) {
             window.turnstile.reset(widgetIdRef.current);
@@ -317,6 +352,7 @@ export default function CreateGiftForm() {
       setResult(data as CreateGiftOk);
       setSubmitting(false);
 
+      // Reset widget after success
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
           window.turnstile.reset(widgetIdRef.current);
@@ -429,6 +465,14 @@ export default function CreateGiftForm() {
 
           <div>
             <label className="block text-sm font-medium text-tm-charcoal mb-2">Human check</label>
+
+            {turnstileBlocked ? (
+              <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                Turnstile is being blocked by this browser (no iframe loaded). If you’re using Brave/strict privacy settings,
+                disable shields for <span className="font-mono">thankumail.com</span> or try Chrome/Edge, then refresh.
+              </div>
+            ) : null}
+
             <div
               id="tm-turnstile"
               ref={widgetContainerRef}
@@ -437,13 +481,33 @@ export default function CreateGiftForm() {
                 fieldError === "turnstile" ? "border-red-400" : "border-tm-cream/60"
               )}
             />
-            <div className="mt-2 text-xs text-tm-charcoal/60">
-              Token:{" "}
-              {token ? (
-                <span className="font-mono break-all">{token.slice(0, 24)}… ({token.length})</span>
-              ) : (
-                <span className="font-mono">none</span>
-              )}
+
+            <div className="mt-2 flex items-center justify-between gap-2 text-xs text-tm-charcoal/60">
+              <div>
+                Token:{" "}
+                {token ? (
+                  <span className="font-mono break-all">{token.slice(0, 24)}… ({token.length})</span>
+                ) : (
+                  <span className="font-mono">none</span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setFieldError("");
+                  destroyWidget();
+                  requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                      renderWidget();
+                    });
+                  });
+                }}
+                className="rounded-lg border border-tm-cream/60 bg-white px-2 py-1 text-tm-charcoal hover:opacity-90"
+              >
+                Retry
+              </button>
             </div>
           </div>
 
