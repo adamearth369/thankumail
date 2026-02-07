@@ -1,46 +1,93 @@
 /* WHERE TO PASTE: client/src/index.css */
 /* ACTION: Full file replacement */
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-/* ThankuMail — Warm Gratitude theme */
-:root {
-  --tm-forest: #1f3d2b;
-  --tm-cream: #f6f1e8;
-  --tm-gold: #c9a227;
-  --tm-charcoal: #2a2a2a;
+/* -------------------- THEME TOKENS -------------------- */
+@layer base {
+  :root {
+    --tm-forest: #1f3d2b;
+    --tm-cream: #f6f1e8;
+    --tm-gold: #c9a227;
+    --tm-charcoal: #2a2a2a;
 
-  --tm-card: #fffcf6;
-  --tm-muted: #eee6da;
-  --tm-border: #e5d9c8;
+    --tm-card: #fffcf6;
+    --tm-muted: #eee6da;
+    --tm-border: #e5d9c8;
 
-  --tm-amber: #f3c969;
-  --tm-honey: #d9b44a;
+    --tm-amber: #f3c969;
+    --tm-honey: #d9b44a;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--tm-cream);
+    color: var(--tm-charcoal);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--tm-gold);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgba(201, 162, 39, 0.35);
+  }
 }
 
-html,
-body {
-  height: 100%;
-}
+/* -------------------- GUARANTEED UTILITIES -------------------- */
+/* These exist even if Tailwind doesn't emit custom colors/utilities. */
+@layer utilities {
+  .shadow-soft {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  }
 
-body {
-  margin: 0;
-  background: var(--tm-cream);
-  color: var(--tm-charcoal);
-}
+  .bg-tm-forest {
+    background-color: var(--tm-forest);
+  }
+  .bg-tm-cream {
+    background-color: var(--tm-cream);
+  }
+  .bg-tm-card {
+    background-color: var(--tm-card);
+  }
+  .bg-tm-muted {
+    background-color: var(--tm-muted);
+  }
+  .bg-tm-amber {
+    background-color: var(--tm-amber);
+  }
+  .bg-tm-honey {
+    background-color: var(--tm-honey);
+  }
 
-:focus-visible {
-  outline: 2px solid var(--tm-gold);
-  outline-offset: 2px;
-}
+  .text-tm-forest {
+    color: var(--tm-forest);
+  }
+  .text-tm-cream {
+    color: var(--tm-cream);
+  }
+  .text-tm-gold {
+    color: var(--tm-gold);
+  }
+  .text-tm-charcoal {
+    color: var(--tm-charcoal);
+  }
 
-::selection {
-  background: rgba(201, 162, 39, 0.35);
-}
+  .border-tm-border {
+    border-color: var(--tm-border);
+  }
 
-/* Fallback helpers (minimal safety) */
-.shadow-soft {
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  /* Common Tailwind "slash opacity" classes used in the UI */
+  .bg-tm-cream\/60 {
+    background-color: color-mix(in srgb, var(--tm-cream) 60%, transparent);
+  }
+  .text-tm-charcoal\/50 {
+    color: color-mix(in srgb, var(--tm-charcoal) 50%, transparent);
+  }
 }
