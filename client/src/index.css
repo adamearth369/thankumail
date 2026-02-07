@@ -10,6 +10,9 @@
   --tm-card: #fffcf6;
   --tm-muted: #eee6da;
   --tm-border: #e5d9c8;
+
+  --tm-amber: #f3c969;
+  --tm-honey: #d9b44a;
 }
 
 html,
@@ -29,7 +32,23 @@ body {
   outline-offset: 2px;
 }
 
-/* Selection */
 ::selection {
   background: rgba(201, 162, 39, 0.35);
+}
+
+/* ---------- HARD FALLBACKS (in case Tailwind utilities don't emit) ---------- */
+.rounded-2xl {
+  border-radius: 1.25rem;
+}
+
+.shadow-soft {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+.bg-tm-amber {
+  background-color: var(--tm-amber);
+}
+
+.text-tm-charcoal {
+  color: var(--tm-charcoal);
 }
