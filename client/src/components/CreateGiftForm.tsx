@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -92,11 +89,6 @@ function waitForTurnstile(maxMs: number) {
   });
 }
 
-function countTurnstileIframes() {
-  const iframes = Array.from(document.querySelectorAll("iframe"));
-  return iframes.filter((f) => String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com")).length;
-}
-
 function isTurnstileErrorCode(code?: string) {
   const c = String(code || "").toUpperCase();
   return c === "TURNSTILE_FAILED";
@@ -105,7 +97,6 @@ function isTurnstileErrorCode(code?: string) {
 function fireConfettiBurst() {
   try {
     const defaults = { origin: { y: 0.75 } };
-
     confetti({ ...defaults, particleCount: 90, spread: 70, startVelocity: 45 });
     confetti({ ...defaults, particleCount: 45, spread: 120, startVelocity: 35 });
     confetti({ ...defaults, particleCount: 25, spread: 160, startVelocity: 25 });
@@ -133,6 +124,8 @@ export default function CreateGiftForm() {
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
+  const blockedTimerRef = useRef<number | null>(null);
+  const renderAttemptsRef = useRef<number>(0);
 
   // Error priority latch: server errors should not be overridden by Turnstile callbacks
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
@@ -174,6 +167,13 @@ export default function CreateGiftForm() {
     setFieldError("");
   }
 
+  function clearBlockedTimer() {
+    if (blockedTimerRef.current !== null) {
+      window.clearTimeout(blockedTimerRef.current);
+      blockedTimerRef.current = null;
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -194,7 +194,7 @@ export default function CreateGiftForm() {
         script.onerror = () => {
           if (cancelled) return;
           setTurnstileReady(false);
-          setErrorWithLock("Turnstile failed to load. Please refresh and try again.", "turnstile");
+          setErrorWithLock("Verification failed to load. Please refresh and try again.", "turnstile");
         };
 
         document.head.appendChild(script);
@@ -204,7 +204,7 @@ export default function CreateGiftForm() {
       if (cancelled) return;
 
       setTurnstileReady(ok);
-      if (!ok) setErrorWithLock("Turnstile is taking too long to initialize. Please refresh and try again.", "turnstile");
+      if (!ok) setErrorWithLock("Verification is taking too long to initialize. Please refresh and try again.", "turnstile");
     }
 
     ensureTurnstile();
@@ -215,6 +215,8 @@ export default function CreateGiftForm() {
   }, [TURNSTILE_SITE_KEY]);
 
   function destroyWidget() {
+    clearBlockedTimer();
+
     try {
       if (widgetIdRef.current && window.turnstile?.remove) {
         window.turnstile.remove(widgetIdRef.current);
@@ -226,6 +228,33 @@ export default function CreateGiftForm() {
 
     const el = widgetContainerRef.current;
     if (el) el.innerHTML = "";
+  }
+
+  function containerHasIframe(): boolean {
+    const el = widgetContainerRef.current;
+    if (!el) return false;
+
+    // Turnstile generally injects an iframe into/under the container.
+    const iframeInContainer = el.querySelector("iframe");
+    if (iframeInContainer) return true;
+
+    // Backup: any Turnstile-related iframe on the page
+    const any = Array.from(document.querySelectorAll("iframe"));
+    return any.some((f) => String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com"));
+  }
+
+  function scheduleBlockedCheck(seq: number) {
+    clearBlockedTimer();
+
+    // Only show “blocked” after enough time to avoid false positives on slow loads.
+    // Also require 2 render attempts before showing the warning.
+    blockedTimerRef.current = window.setTimeout(() => {
+      if (seq !== renderSeqRef.current) return;
+      if (renderAttemptsRef.current < 2) return;
+
+      const hasIframe = containerHasIframe();
+      if (!hasIframe) setTurnstileBlocked(true);
+    }, 4500);
   }
 
   function renderWidget() {
@@ -241,6 +270,8 @@ export default function CreateGiftForm() {
     el.innerHTML = "";
 
     const seq = ++renderSeqRef.current;
+    renderAttemptsRef.current += 1;
+
     try {
       const id = window.turnstile.render(el, {
         sitekey: TURNSTILE_SITE_KEY,
@@ -272,7 +303,7 @@ export default function CreateGiftForm() {
           setToken("");
           // Do not override server errors
           if (errorLockRef.current === "server") return;
-          setErrorWithLock("Turnstile verification failed. Please try again.", "turnstile");
+          setErrorWithLock("Verification failed. Please try again.", "turnstile");
         },
         "refresh-expired": "auto",
         "refresh-timeout": "auto",
@@ -280,17 +311,11 @@ export default function CreateGiftForm() {
 
       if (typeof id === "string") widgetIdRef.current = id;
 
-      // Detect “hidden input created but iframe never appears”
-      setTimeout(() => {
-        if (seq !== renderSeqRef.current) return;
-        const tmIframes = countTurnstileIframes();
-        if (tmIframes === 0) {
-          setTurnstileBlocked(true);
-        }
-      }, 1500);
+      // Slower + safer blocked detection to avoid false positives
+      scheduleBlockedCheck(seq);
     } catch {
       if (errorLockRef.current !== "server") {
-        setErrorWithLock("Turnstile failed to initialize. Please refresh and try again.", "turnstile");
+        setErrorWithLock("Verification failed to initialize. Please refresh and try again.", "turnstile");
       }
     }
   }
@@ -374,7 +399,7 @@ export default function CreateGiftForm() {
     if (!token) {
       setSubmitting(false);
       setFieldError("turnstile");
-      setErrorWithLock("Please complete the Turnstile check.", "turnstile");
+      setErrorWithLock("Please complete the verification.", "turnstile");
       return;
     }
 
@@ -543,12 +568,13 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-tm-charcoal mb-2">Human check</label>
+            <label className="block text-sm font-medium text-tm-charcoal mb-2">Verification</label>
 
             {turnstileBlocked ? (
               <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                Turnstile is being blocked by this browser (no iframe loaded). If you’re using Brave/strict privacy settings,
-                disable shields for <span className="font-mono">thankumail.com</span> or try Chrome/Edge, then refresh.
+                The verification box didn’t load (often caused by strict privacy blockers).
+                If you’re using Brave/shields, strict tracking protection, or an ad blocker, allow
+                <span className="font-mono"> challenges.cloudflare.com</span> for this page and refresh — or try Chrome/Edge.
               </div>
             ) : null}
 
@@ -575,10 +601,17 @@ export default function CreateGiftForm() {
                 type="button"
                 onClick={() => {
                   clearErrorsAndUnlock();
+                  setTurnstileBlocked(false);
+                  renderAttemptsRef.current = 0;
                   destroyWidget();
                   requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
+                      // first retry attempt
                       renderWidget();
+                      // second retry attempt shortly after (helps some blockers/slow loads)
+                      window.setTimeout(() => {
+                        renderWidget();
+                      }, 700);
                     });
                   });
                 }}
