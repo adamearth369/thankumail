@@ -9,8 +9,8 @@
     --tm-charcoal: #2a2a2a;
 
     --tm-card: #ffffff;
-    --tm-muted: #f3f0ff;
-    --tm-border: #ece8ff;
+    --tm-muted: #ede9fe;
+    --tm-border: #dcd6ff;
 
     --tm-amber: #f3c969;
     --tm-honey: #d9b44a;
@@ -24,16 +24,17 @@
   body {
     margin: 0;
 
-    /* SUBTLE SOFT LAVENDER GRADIENT BACKGROUND */
+    /* DEEPER PURPLE GRADIENT */
     background:
       radial-gradient(
-        circle at 50% 20%,
-        rgba(167, 139, 250, 0.08),
+        circle at 50% 15%,
+        rgba(124, 58, 237, 0.18),
         transparent 60%
       ),
       linear-gradient(
         180deg,
-        #faf8ff 0%,
+        #f3f0ff 0%,
+        #e9e4ff 40%,
         #ffffff 100%
       );
 
@@ -54,7 +55,7 @@
 /* -------------------- GUARANTEED UTILITIES -------------------- */
 @layer utilities {
   .shadow-soft {
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
   }
 
   .bg-tm-forest { background-color: var(--tm-forest); }
