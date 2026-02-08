@@ -48,7 +48,7 @@ export async function sendGiftSms(opts: {
     // - Avoid spammy words (“free”, “urgent”, emojis, etc.)
 
     const shortMessage =
-      "You were sent a ThankuMail gift.";
+      "You were sent a thankÜmail gift.";
 
     const body = [
       shortMessage,

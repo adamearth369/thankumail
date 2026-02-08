@@ -456,7 +456,7 @@ export default function CreateGiftForm() {
   return (
     <div className="w-full max-w-xl mx-auto">
       <form onSubmit={onSubmit} className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft">
-        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a ThankuMail</h2>
+        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a thankÜmail</h2>
         <p className="text-sm text-tm-charcoal/70 mb-5">Write something real. Add a small gift. Let it land.</p>
 
         <div className="space-y-4">
@@ -612,7 +612,7 @@ export default function CreateGiftForm() {
               canSubmit ? "bg-tm-amber text-tm-charcoal hover:opacity-95" : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
             )}
           >
-            {submitting ? "Sending…" : "Send ThankuMail"}
+            {submitting ? "Sending…" : "Send thankÜmail"}
           </button>
 
           <div className="text-xs text-tm-charcoal/60">Tip: You can provide either email or phone (or both).</div>

@@ -34,7 +34,7 @@ function isInvalidLinkSignal(status: number, code: string, msg: string) {
 }
 
 function invalidLinkMessage() {
-  return "This ThankuMail link is invalid or expired.";
+  return "This thankÜmail link is invalid or expired.";
 }
 
 function friendlyError(msg: string) {
@@ -51,7 +51,7 @@ function friendlyError(msg: string) {
     return invalidLinkMessage();
   }
 
-  if (/already claimed/i.test(m)) return "This ThankuMail has already been claimed.";
+  if (/already claimed/i.test(m)) return "This thankÜmail has already been claimed.";
   if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — we’re finalizing your gift.";
 
   if (/TURNSTILE_FAILED/i.test(m) || /captcha/i.test(m) || /verification/i.test(m)) {
@@ -396,7 +396,7 @@ export default function Claim() {
 
           if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
             setAlreadyClaimed(true);
-            setError("This ThankuMail has already been claimed.");
+            setError("This thankÜmail has already been claimed.");
             return;
           }
 
@@ -469,7 +469,7 @@ export default function Claim() {
 
         if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
           setAlreadyClaimed(true);
-          setError("This ThankuMail has already been claimed.");
+          setError("This thankÜmail has already been claimed.");
           return;
         }
 
@@ -513,7 +513,7 @@ export default function Claim() {
   else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
 
   const statusLine = alreadyClaimed
-    ? "This ThankuMail has already been claimed."
+    ? "This thankÜmail has already been claimed."
     : waitingOnDelay || armed
       ? "You’re verified. We’re securing the gift — it will complete automatically."
       : "";
@@ -522,7 +522,7 @@ export default function Claim() {
     return (
       <div className="min-h-[70vh] flex items-center justify-center px-6">
         <div className="w-full max-w-md rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
-          <div className="text-sm text-tm-charcoal/60 mb-2">ThankuMail</div>
+          <div className="text-sm text-tm-charcoal/60 mb-2">thankÜmail</div>
           <div className="font-outfit text-2xl text-tm-charcoal">Loading…</div>
           <div className="mt-3 text-sm text-tm-charcoal/70">Just a moment.</div>
         </div>
@@ -534,7 +534,7 @@ export default function Claim() {
     return (
       <div className="min-h-[70vh] flex items-center justify-center px-6">
         <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50 p-6">
-          <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this ThankuMail</div>
+          <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankÜmail</div>
           <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
         </div>
       </div>
@@ -547,7 +547,7 @@ export default function Claim() {
       <div className="min-h-[70vh] flex items-start justify-center px-6 py-10">
         <div className="w-full max-w-xl">
           <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
-            <div className="text-sm text-tm-charcoal/60">ThankuMail</div>
+            <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
 
             <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">It’s yours.</h1>
             <p className="mt-2 text-tm-charcoal/70">The note was the heart of it. The gift is the follow-through.</p>
@@ -576,14 +576,14 @@ export default function Claim() {
     <div className="min-h-[70vh] flex items-start justify-center px-6 py-10">
       <div className="w-full max-w-xl">
         <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
-          <div className="text-sm text-tm-charcoal/60">ThankuMail</div>
+          <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
 
           <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">A note for you.</h1>
           <p className="mt-2 text-tm-charcoal/70">Read the message first. Claim when you’re ready.</p>
 
           {alreadyClaimed ? (
             <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-              {statusLine || "This ThankuMail has already been claimed."}
+              {statusLine || "This thankÜmail has already been claimed."}
             </div>
           ) : error ? (
             <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
@@ -641,7 +641,7 @@ export default function Claim() {
             </button>
 
             {alreadyClaimed ? (
-              <div className="mt-3 text-xs text-tm-charcoal/60">If you believe this is a mistake, ask the sender to create a new ThankuMail.</div>
+              <div className="mt-3 text-xs text-tm-charcoal/60">If you believe this is a mistake, ask the sender to create a new thankÜmail.</div>
             ) : waitingOnDelay || armed ? (
               <div className="mt-3 text-xs text-tm-charcoal/60">No second click needed — this completes automatically.</div>
             ) : (
@@ -651,7 +651,7 @@ export default function Claim() {
         </div>
 
         <div className="mt-4 text-center text-xs text-tm-charcoal/50">
-          ThankuMail is about the message first — the gift is just the follow-through.
+          thankÜmail is about the message first — the gift is just the follow-through.
         </div>
       </div>
     </div>

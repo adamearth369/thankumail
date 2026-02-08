@@ -132,7 +132,7 @@ async function sendBrevoEmail(params: {
 
     // IMPORTANT: these must match a VERIFIED sender in Brevo
     const fromEmail = env("FROM_EMAIL", "no-reply@thankumail.com");
-    const fromName = env("FROM_NAME", "ThankuMail");
+    const fromName = env("FROM_NAME", "thankÜmail");
 
     // CRITICAL ANONYMITY:
     // Always force Reply-To to the same no-reply identity so Brevo/account defaults can’t leak a real address.
@@ -220,11 +220,11 @@ async function sendBrevoEmail(params: {
 /* -------------------- PUBLIC API -------------------- */
 export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: boolean; error?: string }> {
   const claimUrl = toAbsoluteLink(args.claimUrl);
-  const subject = `You received a ThankuMail`;
+  const subject = `You received a thankÜmail`;
 
   // ANONYMITY: do NOT include senderEmail anywhere in the email.
   const textContent = [
-    `You received a ThankuMail`,
+    `You received a thankÜmail`,
     ``,
     `Amount: ${money(args.amountCents)}`,
     args.message ? `Message: ${args.message}` : "",
@@ -236,7 +236,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
 
   const htmlContent = `
     <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
-      <h2 style="margin:0 0 12px">You received a ThankuMail 🎁</h2>
+      <h2 style="margin:0 0 12px">You received a thankÜmail 🎁</h2>
       <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
       ${
         args.message
@@ -246,7 +246,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
       }
       <p style="margin:0 0 16px">
         <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#111; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
-          Claim your ThankuMail →
+          Claim your thankÜmail →
         </a>
       </p>
       <p style="margin:0; font-size:12px; color:#666">
@@ -260,7 +260,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
     subject,
     textContent,
     htmlContent,
-    headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "gift" },
+    headers: { "X-thankÜmail-PublicId": args.publicId, "X-thankÜmail-Kind": "gift" },
   });
 
   return r.ok ? { ok: true } : { ok: false, error: r.error };
@@ -268,16 +268,16 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
 
 export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ ok: boolean; error?: string }> {
   const claimUrl = toAbsoluteLink(args.claimUrl);
-  const subject = `Reminder: your ThankuMail is waiting`;
+  const subject = `Reminder: your thankÜmail is waiting`;
 
   // ANONYMITY: do NOT include senderEmail anywhere in the email.
-  const textContent = [`Your ThankuMail is still waiting.`, ``, `Amount: ${money(args.amountCents)}`, ``, `Claim: ${claimUrl}`]
+  const textContent = [`Your thankÜmail is still waiting.`, ``, `Amount: ${money(args.amountCents)}`, ``, `Claim: ${claimUrl}`]
     .filter(Boolean)
     .join("\n");
 
   const htmlContent = `
     <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
-      <h2 style="margin:0 0 12px">Your ThankuMail is still waiting 💛</h2>
+      <h2 style="margin:0 0 12px">Your thankÜmail is still waiting 💛</h2>
       <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
       <p style="margin:0 0 16px">
         <a href="${claimUrl}" style="display:inline-block; padding:10px 14px; background:#111; color:#fff; text-decoration:none; border-radius:10px; font-weight:700">
@@ -295,7 +295,7 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
     subject,
     textContent,
     htmlContent,
-    headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "reminder" },
+    headers: { "X-thankÜmail-PublicId": args.publicId, "X-thankÜmail-Kind": "reminder" },
   });
 
   return r.ok ? { ok: true } : { ok: false, error: r.error };
@@ -304,10 +304,10 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
 export async function sendReturnToSenderEmail(
   args: SendReturnToSenderEmailArgs,
 ): Promise<{ ok: boolean; error?: string }> {
-  const subject = `Your ThankuMail update`;
+  const subject = `Your thankÜmail update`;
 
   const textContent = [
-    `Your ThankuMail could not be completed.`,
+    `Your thankÜmail could not be completed.`,
     ``,
     `Public ID: ${args.publicId}`,
     `Amount: ${money(args.amountCents)}`,
@@ -318,7 +318,7 @@ export async function sendReturnToSenderEmail(
 
   const htmlContent = `
     <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height:1.4">
-      <h2 style="margin:0 0 12px">Your ThankuMail update</h2>
+      <h2 style="margin:0 0 12px">Your thankÜmail update</h2>
       <p style="margin:0 0 8px"><b>Public ID:</b> ${escapeHtml(args.publicId)}</p>
       <p style="margin:0 0 8px"><b>Amount:</b> ${money(args.amountCents)}</p>
       ${args.reason ? `<p style="margin:0 0 8px"><b>Reason:</b> ${escapeHtml(args.reason)}</p>` : ""}
@@ -330,7 +330,7 @@ export async function sendReturnToSenderEmail(
     subject,
     textContent,
     htmlContent,
-    headers: { "X-ThankuMail-PublicId": args.publicId, "X-ThankuMail-Kind": "return_to_sender" },
+    headers: { "X-thankÜmail-PublicId": args.publicId, "X-thankÜmail-Kind": "return_to_sender" },
   });
 
   return r.ok ? { ok: true } : { ok: false, error: r.error };

@@ -1,8 +1,8 @@
-# ThankuMail
+# thankÜmail
 
 ## Overview
 
-ThankuMail is an anonymous email gifting service that allows users to send digital gift cards and thank-you notes to recipients. The application enables senders to create gifts with custom messages and amounts, which recipients can then claim through unique, shareable links. The core flow is: create a gift → share the claim link → recipient opens and claims the gift.
+thankÜmail is an anonymous email gifting service that allows users to send digital gift cards and thank-you notes to recipients. The application enables senders to create gifts with custom messages and amounts, which recipients can then claim through unique, shareable links. The core flow is: create a gift → share the claim link → recipient opens and claims the gift.
 
 ## User Preferences
 

@@ -45,7 +45,7 @@ async function main() {
   const PORT = process.env.PORT || 10000;
 
   httpServer.listen(PORT, () => {
-    console.log(`ThankuMail server running on port ${PORT}`);
+    console.log(`thankÜmail server running on port ${PORT}`);
   });
 }
 

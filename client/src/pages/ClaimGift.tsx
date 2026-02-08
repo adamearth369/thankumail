@@ -70,7 +70,7 @@ export default function ClaimGift() {
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="text-center space-y-4">
           <Loader2 className="w-10 h-10 animate-spin text-primary mx-auto" />
-          <p className="text-slate-500 font-medium">Opening your ThankuMail…</p>
+          <p className="text-slate-500 font-medium">Opening your thankÜmail…</p>
         </div>
       </div>
     );
@@ -83,7 +83,7 @@ export default function ClaimGift() {
           <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <AlertCircle className="w-8 h-8 text-red-500" />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 font-display mb-2">We couldn’t find this ThankuMail</h1>
+          <h1 className="text-2xl font-bold text-gray-900 font-display mb-2">We couldn’t find this thankÜmail</h1>
           <p className="text-slate-500 mb-6">The link may be invalid, expired, or already completed.</p>
           <a href="/" className="btn-secondary w-full py-3 inline-block">
             Go Home
@@ -150,7 +150,7 @@ export default function ClaimGift() {
               </div>
 
               <a href="/" className="btn-secondary w-full py-3 flex items-center justify-center gap-2 mt-4">
-                Send a ThankuMail <ArrowRight className="w-4 h-4" />
+                Send a thankÜmail <ArrowRight className="w-4 h-4" />
               </a>
 
               <div className="text-xs text-slate-400 flex items-center justify-center gap-2">

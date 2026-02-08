@@ -1160,7 +1160,7 @@ export function registerRoutes(app: Express): Server {
 
       if (gift.returnedToSenderAt) {
         return res.status(410).json({
-          error: "This ThankuMail was returned to sender and can no longer be claimed",
+          error: "This thankÜmail was returned to sender and can no longer be claimed",
           code: "RETURNED_TO_SENDER",
           returnedToSenderAt: gift.returnedToSenderAt,
           version: VERSION,

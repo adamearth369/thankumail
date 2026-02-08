@@ -1,4 +1,4 @@
-// ThankuMail MVP – Replit Starter
+// thankÜmail MVP – Replit Starter
 // Purpose: Anonymous email gifting service (gift cards / digital notes)
 // Stack: Node.js + Express (simple, Replit-friendly)
 
@@ -21,7 +21,7 @@ function generateId() {
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ThankuMail MVP running' });
+  res.json({ status: 'thankÜmail MVP running' });
 });
 
 // Create a gift (anonymous sender)
@@ -79,7 +79,7 @@ app.post('/api/gift/:id/claim', (req, res) => {
 // ------------------ Server ------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`ThankuMail MVP listening on port ${PORT}`);
+  console.log(`thankÜmail MVP listening on port ${PORT}`);
 });
 
 /*

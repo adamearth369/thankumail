@@ -7,7 +7,7 @@ export default function Landing() {
             T
           </div>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>ThankuMail</div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>thankÜmail</div>
             <div style={{ fontSize: 13, opacity: 0.75 }}>The easiest way to say thanks</div>
           </div>
         </div>
@@ -48,7 +48,7 @@ export default function Landing() {
       </section>
 
       <footer style={{ marginTop: 28, paddingTop: 14, borderTop: "1px solid #eee", fontSize: 13, opacity: 0.75 }}>
-        © {new Date().getFullYear()} ThankuMail
+        © {new Date().getFullYear()} thankÜmail
       </footer>
     </main>
   );
