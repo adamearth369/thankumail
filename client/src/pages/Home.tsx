@@ -3,9 +3,9 @@ import CreateGiftForm from "../components/CreateGiftForm";
 
 export default function Home() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#5e3abf] via-[#6c45d6] to-[#8b6cff] text-white">
+    <div className="min-h-screen bg-gradient-to-br from-[#3a1c71] via-[#5f2eea] to-[#a855f7] text-white">
       <main id="send" className="mx-auto max-w-5xl px-4 pt-16 pb-16">
-        <div className="rounded-2xl bg-white/90 backdrop-blur shadow-soft border border-white/20 p-6 text-tm-charcoal">
+        <div className="rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-tm-charcoal">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold">
               Create your thankÜmail
