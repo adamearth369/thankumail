@@ -11,7 +11,7 @@ export default function Home() {
           <img
             src="/thankumail-logo.png"
             alt="thankÜmail"
-            className="w-[420px] sm:w-[520px] md:w-[600px] h-auto"
+            className="w-[420px] sm:w-[520px] md:w-[600px] h-auto brightness-0 invert drop-shadow-lg"
           />
         </div>
 
