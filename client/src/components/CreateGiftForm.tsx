@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -54,7 +51,8 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
-const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const TURNSTILE_SCRIPT_SRC =
+  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 function moneyToCents(dollars: number) {
   const cents = Math.round((Number(dollars) || 0) * 100);
@@ -84,7 +82,8 @@ function waitForTurnstile(maxMs: number) {
   return new Promise<boolean>((resolve) => {
     const start = Date.now();
     const tick = () => {
-      if (window.turnstile && typeof window.turnstile.render === "function") return resolve(true);
+      if (window.turnstile && typeof window.turnstile.render === "function")
+        return resolve(true);
       if (Date.now() - start >= maxMs) return resolve(false);
       setTimeout(tick, 50);
     };
@@ -94,7 +93,9 @@ function waitForTurnstile(maxMs: number) {
 
 function countTurnstileIframes() {
   const iframes = Array.from(document.querySelectorAll("iframe"));
-  return iframes.filter((f) => String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com")).length;
+  return iframes.filter((f) =>
+    String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com")
+  ).length;
 }
 
 function isTurnstileErrorCode(code?: string) {
@@ -114,10 +115,11 @@ function fireConfettiBurst() {
 }
 
 export default function CreateGiftForm() {
-  const [senderEmail, setSenderEmail] = useState("newstartmedia369@gmail.com");
-  const [recipientEmail, setRecipientEmail] = useState("adamgdodds@gmail.com");
+  // empty inputs (no test emails)
+  const [senderEmail, setSenderEmail] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
-  const [amountDollars, setAmountDollars] = useState<string>("10");
+  const [amountDollars, setAmountDollars] = useState<string>("");
   const [message, setMessage] = useState<string>("");
 
   const [token, setToken] = useState<string>("");
@@ -141,7 +143,11 @@ export default function CreateGiftForm() {
     ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
     : "";
 
-  const cents = useMemo(() => moneyToCents(Number(amountDollars)), [amountDollars]);
+  const cents = useMemo(() => {
+    const raw = String(amountDollars || "").trim();
+    const cleaned = raw.replace(/[^0-9.]/g, "");
+    return moneyToCents(Number(cleaned));
+  }, [amountDollars]);
 
   const canSubmit = useMemo(() => {
     const s = senderEmail.trim();
@@ -160,7 +166,16 @@ export default function CreateGiftForm() {
       token.length >= 20 &&
       TURNSTILE_SITE_KEY.length > 0
     );
-  }, [submitting, senderEmail, recipientEmail, recipientPhone, cents, message, token, TURNSTILE_SITE_KEY]);
+  }, [
+    submitting,
+    senderEmail,
+    recipientEmail,
+    recipientPhone,
+    cents,
+    message,
+    token,
+    TURNSTILE_SITE_KEY,
+  ]);
 
   function setErrorWithLock(msg: string, lock: "none" | "server" | "turnstile") {
     errorLockRef.current = lock;
@@ -179,11 +194,16 @@ export default function CreateGiftForm() {
     async function ensureTurnstile() {
       if (!TURNSTILE_SITE_KEY) {
         setTurnstileReady(false);
-        setErrorWithLock("Verification is not configured (missing site key).", "turnstile");
+        setErrorWithLock(
+          "Verification is not configured (missing site key).",
+          "turnstile"
+        );
         return;
       }
 
-      const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+      const existing = document.querySelector<HTMLScriptElement>(
+        `script[src="${TURNSTILE_SCRIPT_SRC}"]`
+      );
       if (!existing) {
         const script = document.createElement("script");
         script.src = TURNSTILE_SCRIPT_SRC;
@@ -193,7 +213,10 @@ export default function CreateGiftForm() {
         script.onerror = () => {
           if (cancelled) return;
           setTurnstileReady(false);
-          setErrorWithLock("Turnstile failed to load. Please refresh and try again.", "turnstile");
+          setErrorWithLock(
+            "Verification failed to load. Please refresh and try again.",
+            "turnstile"
+          );
         };
 
         document.head.appendChild(script);
@@ -203,7 +226,11 @@ export default function CreateGiftForm() {
       if (cancelled) return;
 
       setTurnstileReady(ok);
-      if (!ok) setErrorWithLock("Turnstile is taking too long to initialize. Please refresh and try again.", "turnstile");
+      if (!ok)
+        setErrorWithLock(
+          "Verification is taking too long to initialize. Please refresh and try again.",
+          "turnstile"
+        );
     }
 
     ensureTurnstile();
@@ -236,7 +263,6 @@ export default function CreateGiftForm() {
     setTurnstileBlocked(false);
     setToken("");
 
-    // make sure container is empty
     el.innerHTML = "";
 
     const seq = ++renderSeqRef.current;
@@ -247,7 +273,6 @@ export default function CreateGiftForm() {
         size: "normal",
         callback: (t: string) => {
           setToken(String(t || ""));
-          // Only clear errors if they were Turnstile-related or unlocked
           if (errorLockRef.current !== "server") {
             errorLockRef.current = "none";
             setError("");
@@ -265,7 +290,7 @@ export default function CreateGiftForm() {
         "error-callback": () => {
           setToken("");
           if (errorLockRef.current === "server") return;
-          setErrorWithLock("Turnstile verification failed. Please try again.", "turnstile");
+          setErrorWithLock("Verification failed. Please try again.", "turnstile");
         },
         "refresh-expired": "auto",
         "refresh-timeout": "auto",
@@ -273,7 +298,6 @@ export default function CreateGiftForm() {
 
       if (typeof id === "string") widgetIdRef.current = id;
 
-      // Detect “hidden input created but iframe never appears”
       setTimeout(() => {
         if (seq !== renderSeqRef.current) return;
         const tmIframes = countTurnstileIframes();
@@ -281,7 +305,10 @@ export default function CreateGiftForm() {
       }, 1500);
     } catch {
       if (errorLockRef.current !== "server") {
-        setErrorWithLock("Turnstile failed to initialize. Please refresh and try again.", "turnstile");
+        setErrorWithLock(
+          "Verification failed to initialize. Please refresh and try again.",
+          "turnstile"
+        );
       }
     }
   }
@@ -364,7 +391,7 @@ export default function CreateGiftForm() {
     if (!token) {
       setSubmitting(false);
       setFieldError("turnstile");
-      setErrorWithLock("Please complete the Turnstile check.", "turnstile");
+      setErrorWithLock("Please complete the verification.", "turnstile");
       return;
     }
 
@@ -392,7 +419,9 @@ export default function CreateGiftForm() {
       if (!resp.ok || !data?.ok) {
         const err = parseApiError(data || { error: "Request failed" });
         const code = String(err.code || "");
-        const lock: "server" | "turnstile" = isTurnstileErrorCode(code) ? "turnstile" : "server";
+        const lock: "server" | "turnstile" = isTurnstileErrorCode(code)
+          ? "turnstile"
+          : "server";
 
         setErrorWithLock(err.error || "Request failed", lock);
         setFieldError(err.field || "");
@@ -414,6 +443,13 @@ export default function CreateGiftForm() {
       errorLockRef.current = "none";
 
       fireConfettiBurst();
+
+      // clear form after success
+      setSenderEmail("");
+      setRecipientEmail("");
+      setRecipientPhone("");
+      setAmountDollars("");
+      setMessage("");
 
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
@@ -443,9 +479,14 @@ export default function CreateGiftForm() {
 
   return (
     <div className="w-full max-w-xl mx-auto">
-      <form onSubmit={onSubmit} className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft">
+      <form
+        onSubmit={onSubmit}
+        className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft"
+      >
         <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a thankÜmail</h2>
-        <p className="text-sm text-tm-charcoal/70 mb-5">Write something real. Add a small gift. Let it land.</p>
+        <p className="text-sm text-tm-charcoal/70 mb-5">
+          Write something real. Add a small gift. Let it land.
+        </p>
 
         <div className="space-y-4">
           <div>
@@ -454,11 +495,13 @@ export default function CreateGiftForm() {
               onChange={(e) => setSenderEmail(e.target.value)}
               type="email"
               autoComplete="email"
-              aria-label="Sender email"
-              placeholder="Sender email"
+              aria-label="Your email"
+              placeholder="Your email"
               className={classNames(
                 inputBase,
-                fieldError === "senderEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                fieldError === "senderEmail"
+                  ? "border-red-400"
+                  : "border-tm-cream/60 focus:border-tm-honey"
               )}
             />
           </div>
@@ -470,11 +513,13 @@ export default function CreateGiftForm() {
                 onChange={(e) => setRecipientEmail(e.target.value)}
                 type="email"
                 autoComplete="email"
-                aria-label="Recipient email"
-                placeholder="Recipient email (optional)"
+                aria-label="Receivers email"
+                placeholder="Receivers email"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                  fieldError === "recipientEmail"
+                    ? "border-red-400"
+                    : "border-tm-cream/60 focus:border-tm-honey"
                 )}
               />
             </div>
@@ -486,10 +531,12 @@ export default function CreateGiftForm() {
                 type="tel"
                 autoComplete="tel"
                 aria-label="Recipient phone"
-                placeholder="Recipient phone (optional) e.g. +16043691517"
+                placeholder="Recipient phone (optional)"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientPhone" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                  fieldError === "recipientPhone"
+                    ? "border-red-400"
+                    : "border-tm-cream/60 focus:border-tm-honey"
                 )}
               />
             </div>
@@ -501,11 +548,13 @@ export default function CreateGiftForm() {
                 value={amountDollars}
                 onChange={(e) => setAmountDollars(e.target.value)}
                 inputMode="decimal"
-                aria-label="Amount in USD"
-                placeholder="Amount (USD)"
+                aria-label="$25 (USD)"
+                placeholder="$25 (USD)"
                 className={classNames(
                   "w-44 rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-tm-charcoal/40",
-                  fieldError === "amount" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                  fieldError === "amount"
+                    ? "border-red-400"
+                    : "border-tm-cream/60 focus:border-tm-honey"
                 )}
               />
               <div className="text-sm text-tm-charcoal/70">
@@ -523,7 +572,9 @@ export default function CreateGiftForm() {
               placeholder="Message"
               className={classNames(
                 "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none placeholder:text-tm-charcoal/40",
-                fieldError === "message" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
+                fieldError === "message"
+                  ? "border-red-400"
+                  : "border-tm-cream/60 focus:border-tm-honey"
               )}
             />
           </div>
@@ -533,8 +584,8 @@ export default function CreateGiftForm() {
 
             {turnstileBlocked ? (
               <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                Verification didn’t load here. If you’re using Brave/strict privacy settings, allow
-                challenges.cloudflare.com for this site (or try Chrome/Edge), then refresh.
+                Verification didn’t load here. If you’re using Brave/strict privacy settings,
+                allow challenges.cloudflare.com for this site (or try Chrome/Edge), then refresh.
               </div>
             ) : null}
 
@@ -551,7 +602,9 @@ export default function CreateGiftForm() {
               <div>
                 Token:{" "}
                 {token ? (
-                  <span className="font-mono break-all">{token.slice(0, 24)}… ({token.length})</span>
+                  <span className="font-mono break-all">
+                    {token.slice(0, 24)}… ({token.length})
+                  </span>
                 ) : (
                   <span className="font-mono">none</span>
                 )}
@@ -575,7 +628,11 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
-          {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+          {error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
 
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
@@ -586,7 +643,9 @@ export default function CreateGiftForm() {
                   {result.claimUrl}
                 </a>
               </div>
-              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
+              {result.deliveryError ? (
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+              ) : null}
             </div>
           ) : null}
 
@@ -595,7 +654,9 @@ export default function CreateGiftForm() {
             disabled={!canSubmit}
             className={classNames(
               "w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
-              canSubmit ? "bg-tm-amber text-tm-charcoal hover:opacity-95" : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
+              canSubmit
+                ? "bg-tm-amber text-tm-charcoal hover:opacity-95"
+                : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
             )}
           >
             {submitting ? "Sending…" : "Send thankÜmail"}
