@@ -133,7 +133,6 @@ export default function CreateGiftForm() {
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
-
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
 
   const TURNSTILE_SITE_KEY = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY
@@ -223,11 +222,12 @@ export default function CreateGiftForm() {
       if (cancelled) return;
 
       setTurnstileReady(ok);
-      if (!ok)
+      if (!ok) {
         setErrorWithLock(
           "Verification is taking too long to initialize. Please refresh and try again.",
           "turnstile"
         );
+      }
     }
 
     ensureTurnstile();
@@ -263,6 +263,23 @@ export default function CreateGiftForm() {
     el.innerHTML = "";
 
     const seq = ++renderSeqRef.current;
+
+    // Poll for iframe appearance (prevents “stuck warning”)
+    const start = Date.now();
+    const poll = () => {
+      if (seq !== renderSeqRef.current) return;
+      const tmIframes = countTurnstileIframes();
+      if (tmIframes > 0) {
+        setTurnstileBlocked(false);
+        return;
+      }
+      if (Date.now() - start >= 5200) {
+        setTurnstileBlocked(true);
+        return;
+      }
+      setTimeout(poll, 400);
+    };
+
     try {
       const id = window.turnstile.render(el, {
         sitekey: TURNSTILE_SITE_KEY,
@@ -295,11 +312,8 @@ export default function CreateGiftForm() {
 
       if (typeof id === "string") widgetIdRef.current = id;
 
-      setTimeout(() => {
-        if (seq !== renderSeqRef.current) return;
-        const tmIframes = countTurnstileIframes();
-        if (tmIframes === 0) setTurnstileBlocked(true);
-      }, 1500);
+      // start polling after render attempt
+      setTimeout(poll, 250);
     } catch {
       if (errorLockRef.current !== "server") {
         setErrorWithLock(
@@ -476,6 +490,9 @@ export default function CreateGiftForm() {
   const inputBase =
     "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-tm-charcoal/40";
 
+  const showSoftTurnstileHint =
+    turnstileReady && turnstileBlocked && !token && fieldError !== "turnstile";
+
   return (
     <div className="w-full max-w-xl mx-auto">
       <form
@@ -576,10 +593,10 @@ export default function CreateGiftForm() {
           <div>
             <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
 
-            {turnstileBlocked ? (
+            {showSoftTurnstileHint ? (
               <div className="mb-2 text-xs text-tm-charcoal/60">
-                If verification doesn’t appear, allow <span className="font-medium">challenges.cloudflare.com</span>{" "}
-                or refresh.
+                If verification doesn’t appear, allow{" "}
+                <span className="font-medium">challenges.cloudflare.com</span> or refresh.
               </div>
             ) : null}
 
@@ -638,7 +655,9 @@ export default function CreateGiftForm() {
                 </a>
               </div>
               {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+                <div className="mt-2 text-emerald-900/80">
+                  Delivery note: {result.deliveryError}
+                </div>
               ) : null}
             </div>
           ) : null}
