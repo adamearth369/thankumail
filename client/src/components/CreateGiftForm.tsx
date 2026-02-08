@@ -264,7 +264,6 @@ export default function CreateGiftForm() {
 
     const seq = ++renderSeqRef.current;
 
-    // Poll for iframe appearance (prevents “stuck warning”)
     const start = Date.now();
     const poll = () => {
       if (seq !== renderSeqRef.current) return;
@@ -312,7 +311,6 @@ export default function CreateGiftForm() {
 
       if (typeof id === "string") widgetIdRef.current = id;
 
-      // start polling after render attempt
       setTimeout(poll, 250);
     } catch {
       if (errorLockRef.current !== "server") {
