@@ -115,7 +115,6 @@ function fireConfettiBurst() {
 }
 
 export default function CreateGiftForm() {
-  // empty inputs (no test emails)
   const [senderEmail, setSenderEmail] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
@@ -135,10 +134,8 @@ export default function CreateGiftForm() {
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
 
-  // Error priority latch: server errors should not be overridden by Turnstile callbacks
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
 
-  // Read Turnstile site key from env (Render Static Site env: VITE_TURNSTILE_SITE_KEY)
   const TURNSTILE_SITE_KEY = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY
     ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
     : "";
@@ -385,7 +382,10 @@ export default function CreateGiftForm() {
     if (!TURNSTILE_SITE_KEY) {
       setSubmitting(false);
       setFieldError("turnstile");
-      setErrorWithLock("Verification is not configured. Please contact support.", "turnstile");
+      setErrorWithLock(
+        "Verification is not configured. Please contact support.",
+        "turnstile"
+      );
       return;
     }
     if (!token) {
@@ -444,7 +444,6 @@ export default function CreateGiftForm() {
 
       fireConfettiBurst();
 
-      // clear form after success
       setSenderEmail("");
       setRecipientEmail("");
       setRecipientPhone("");
@@ -483,11 +482,6 @@ export default function CreateGiftForm() {
         onSubmit={onSubmit}
         className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft"
       >
-        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a thankÜmail</h2>
-        <p className="text-sm text-tm-charcoal/70 mb-5">
-          Write something real. Add a small gift. Let it land.
-        </p>
-
         <div className="space-y-4">
           <div>
             <input
@@ -583,9 +577,9 @@ export default function CreateGiftForm() {
             <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
 
             {turnstileBlocked ? (
-              <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                Verification didn’t load here. If you’re using Brave/strict privacy settings,
-                allow challenges.cloudflare.com for this site (or try Chrome/Edge), then refresh.
+              <div className="mb-2 text-xs text-tm-charcoal/60">
+                If verification doesn’t appear, allow <span className="font-medium">challenges.cloudflare.com</span>{" "}
+                or refresh.
               </div>
             ) : null}
 
@@ -662,7 +656,9 @@ export default function CreateGiftForm() {
             {submitting ? "Sending…" : "Send thankÜmail"}
           </button>
 
-          <div className="text-xs text-tm-charcoal/60">Tip: You can provide either email or phone (or both).</div>
+          <div className="text-xs text-tm-charcoal/60">
+            Tip: You can provide either email or phone (or both).
+          </div>
         </div>
       </form>
     </div>
