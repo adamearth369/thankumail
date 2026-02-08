@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -89,6 +92,11 @@ function waitForTurnstile(maxMs: number) {
   });
 }
 
+function countTurnstileIframes() {
+  const iframes = Array.from(document.querySelectorAll("iframe"));
+  return iframes.filter((f) => String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com")).length;
+}
+
 function isTurnstileErrorCode(code?: string) {
   const c = String(code || "").toUpperCase();
   return c === "TURNSTILE_FAILED";
@@ -124,8 +132,6 @@ export default function CreateGiftForm() {
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
-  const blockedTimerRef = useRef<number | null>(null);
-  const renderAttemptsRef = useRef<number>(0);
 
   // Error priority latch: server errors should not be overridden by Turnstile callbacks
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
@@ -167,13 +173,6 @@ export default function CreateGiftForm() {
     setFieldError("");
   }
 
-  function clearBlockedTimer() {
-    if (blockedTimerRef.current !== null) {
-      window.clearTimeout(blockedTimerRef.current);
-      blockedTimerRef.current = null;
-    }
-  }
-
   useEffect(() => {
     let cancelled = false;
 
@@ -194,7 +193,7 @@ export default function CreateGiftForm() {
         script.onerror = () => {
           if (cancelled) return;
           setTurnstileReady(false);
-          setErrorWithLock("Verification failed to load. Please refresh and try again.", "turnstile");
+          setErrorWithLock("Turnstile failed to load. Please refresh and try again.", "turnstile");
         };
 
         document.head.appendChild(script);
@@ -204,7 +203,7 @@ export default function CreateGiftForm() {
       if (cancelled) return;
 
       setTurnstileReady(ok);
-      if (!ok) setErrorWithLock("Verification is taking too long to initialize. Please refresh and try again.", "turnstile");
+      if (!ok) setErrorWithLock("Turnstile is taking too long to initialize. Please refresh and try again.", "turnstile");
     }
 
     ensureTurnstile();
@@ -215,8 +214,6 @@ export default function CreateGiftForm() {
   }, [TURNSTILE_SITE_KEY]);
 
   function destroyWidget() {
-    clearBlockedTimer();
-
     try {
       if (widgetIdRef.current && window.turnstile?.remove) {
         window.turnstile.remove(widgetIdRef.current);
@@ -228,33 +225,6 @@ export default function CreateGiftForm() {
 
     const el = widgetContainerRef.current;
     if (el) el.innerHTML = "";
-  }
-
-  function containerHasIframe(): boolean {
-    const el = widgetContainerRef.current;
-    if (!el) return false;
-
-    // Turnstile generally injects an iframe into/under the container.
-    const iframeInContainer = el.querySelector("iframe");
-    if (iframeInContainer) return true;
-
-    // Backup: any Turnstile-related iframe on the page
-    const any = Array.from(document.querySelectorAll("iframe"));
-    return any.some((f) => String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com"));
-  }
-
-  function scheduleBlockedCheck(seq: number) {
-    clearBlockedTimer();
-
-    // Only show “blocked” after enough time to avoid false positives on slow loads.
-    // Also require 2 render attempts before showing the warning.
-    blockedTimerRef.current = window.setTimeout(() => {
-      if (seq !== renderSeqRef.current) return;
-      if (renderAttemptsRef.current < 2) return;
-
-      const hasIframe = containerHasIframe();
-      if (!hasIframe) setTurnstileBlocked(true);
-    }, 4500);
   }
 
   function renderWidget() {
@@ -270,8 +240,6 @@ export default function CreateGiftForm() {
     el.innerHTML = "";
 
     const seq = ++renderSeqRef.current;
-    renderAttemptsRef.current += 1;
-
     try {
       const id = window.turnstile.render(el, {
         sitekey: TURNSTILE_SITE_KEY,
@@ -303,7 +271,7 @@ export default function CreateGiftForm() {
           setToken("");
           // Do not override server errors
           if (errorLockRef.current === "server") return;
-          setErrorWithLock("Verification failed. Please try again.", "turnstile");
+          setErrorWithLock("Turnstile verification failed. Please try again.", "turnstile");
         },
         "refresh-expired": "auto",
         "refresh-timeout": "auto",
@@ -311,11 +279,17 @@ export default function CreateGiftForm() {
 
       if (typeof id === "string") widgetIdRef.current = id;
 
-      // Slower + safer blocked detection to avoid false positives
-      scheduleBlockedCheck(seq);
+      // Detect “hidden input created but iframe never appears”
+      setTimeout(() => {
+        if (seq !== renderSeqRef.current) return;
+        const tmIframes = countTurnstileIframes();
+        if (tmIframes === 0) {
+          setTurnstileBlocked(true);
+        }
+      }, 1500);
     } catch {
       if (errorLockRef.current !== "server") {
-        setErrorWithLock("Verification failed to initialize. Please refresh and try again.", "turnstile");
+        setErrorWithLock("Turnstile failed to initialize. Please refresh and try again.", "turnstile");
       }
     }
   }
@@ -399,7 +373,7 @@ export default function CreateGiftForm() {
     if (!token) {
       setSubmitting(false);
       setFieldError("turnstile");
-      setErrorWithLock("Please complete the verification.", "turnstile");
+      setErrorWithLock("Please complete the Turnstile check.", "turnstile");
       return;
     }
 
@@ -481,7 +455,7 @@ export default function CreateGiftForm() {
   return (
     <div className="w-full max-w-xl mx-auto">
       <form onSubmit={onSubmit} className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft">
-        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a thankÜmail</h2>
+        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a ThankuMail</h2>
         <p className="text-sm text-tm-charcoal/70 mb-5">Write something real. Add a small gift. Let it land.</p>
 
         <div className="space-y-4">
@@ -495,10 +469,10 @@ export default function CreateGiftForm() {
               type="email"
               autoComplete="email"
               className={classNames(
-                "w-full rounded-xl border px-3 py-2 outline-none bg-white",
+                "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
                 fieldError === "senderEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
               )}
-              placeholder="you@example.com"
+              placeholder="Sender email"
             />
           </div>
 
@@ -511,10 +485,10 @@ export default function CreateGiftForm() {
                 type="email"
                 autoComplete="email"
                 className={classNames(
-                  "w-full rounded-xl border px-3 py-2 outline-none bg-white",
+                  "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
                   fieldError === "recipientEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
                 )}
-                placeholder="friend@example.com"
+                placeholder="Recipient email (optional)"
               />
             </div>
 
@@ -526,10 +500,10 @@ export default function CreateGiftForm() {
                 type="tel"
                 autoComplete="tel"
                 className={classNames(
-                  "w-full rounded-xl border px-3 py-2 outline-none bg-white",
+                  "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
                   fieldError === "recipientPhone" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
                 )}
-                placeholder="+16043691517"
+                placeholder="Recipient phone (optional)"
               />
             </div>
           </div>
@@ -542,10 +516,10 @@ export default function CreateGiftForm() {
                 onChange={(e) => setAmountDollars(e.target.value)}
                 inputMode="decimal"
                 className={classNames(
-                  "w-36 rounded-xl border px-3 py-2 outline-none bg-white",
+                  "w-36 rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
                   fieldError === "amount" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
                 )}
-                placeholder="10"
+                placeholder="Amount"
               />
               <div className="text-sm text-tm-charcoal/70">
                 Sending <span className="font-medium text-tm-charcoal">{cents}</span> cents
@@ -560,21 +534,20 @@ export default function CreateGiftForm() {
               onChange={(e) => setMessage(e.target.value)}
               rows={5}
               className={classNames(
-                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none",
+                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none placeholder:text-slate-400",
                 fieldError === "message" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
               )}
-              placeholder="Say what you really mean…"
+              placeholder="Message"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-tm-charcoal mb-2">Verification</label>
+            <label className="block text-sm font-medium text-tm-charcoal mb-2">Human check</label>
 
             {turnstileBlocked ? (
               <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                The verification box didn’t load (often caused by strict privacy blockers).
-                If you’re using Brave/shields, strict tracking protection, or an ad blocker, allow
-                <span className="font-mono"> challenges.cloudflare.com</span> for this page and refresh — or try Chrome/Edge.
+                Turnstile is being blocked by this browser (no iframe loaded). If you’re using Brave/strict privacy settings,
+                disable shields for <span className="font-mono">thankumail.com</span> or try Chrome/Edge, then refresh.
               </div>
             ) : null}
 
@@ -601,17 +574,10 @@ export default function CreateGiftForm() {
                 type="button"
                 onClick={() => {
                   clearErrorsAndUnlock();
-                  setTurnstileBlocked(false);
-                  renderAttemptsRef.current = 0;
                   destroyWidget();
                   requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
-                      // first retry attempt
                       renderWidget();
-                      // second retry attempt shortly after (helps some blockers/slow loads)
-                      window.setTimeout(() => {
-                        renderWidget();
-                      }, 700);
                     });
                   });
                 }}
@@ -645,7 +611,7 @@ export default function CreateGiftForm() {
               canSubmit ? "bg-tm-amber text-tm-charcoal hover:opacity-95" : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
             )}
           >
-            {submitting ? "Sending…" : "Send thankÜmail"}
+            {submitting ? "Sending…" : "Send ThankuMail"}
           </button>
 
           <div className="text-xs text-tm-charcoal/60">Tip: You can provide either email or phone (or both).</div>
