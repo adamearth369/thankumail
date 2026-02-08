@@ -1,21 +1,16 @@
-/* WHERE TO PASTE: client/src/index.css */
-/* ACTION: Full file replacement */
-
 @import "tailwindcss";
 
 /* -------------------- THEME TOKENS -------------------- */
 @layer base {
   :root {
     --tm-forest: #1f3d2b;
-
-    /* NEW LIGHT PURPLE BASE */
-    --tm-cream: #f3edff;
-    --tm-card: #faf7ff;
-    --tm-muted: #ede7ff;
-    --tm-border: #e2d9ff;
-
+    --tm-cream: #f6f1e8;
     --tm-gold: #c9a227;
     --tm-charcoal: #2a2a2a;
+
+    --tm-card: #ffffff;
+    --tm-muted: #f3f0ff;
+    --tm-border: #ece8ff;
 
     --tm-amber: #f3c969;
     --tm-honey: #d9b44a;
@@ -28,7 +23,21 @@
 
   body {
     margin: 0;
-    background: var(--tm-cream);
+
+    /* SUBTLE SOFT LAVENDER GRADIENT BACKGROUND */
+    background:
+      radial-gradient(
+        circle at 50% 20%,
+        rgba(167, 139, 250, 0.08),
+        transparent 60%
+      ),
+      linear-gradient(
+        180deg,
+        #faf8ff 0%,
+        #ffffff 100%
+      );
+
+    background-attachment: fixed;
     color: var(--tm-charcoal);
   }
 
@@ -45,7 +54,7 @@
 /* -------------------- GUARANTEED UTILITIES -------------------- */
 @layer utilities {
   .shadow-soft {
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
   }
 
   .bg-tm-forest { background-color: var(--tm-forest); }
