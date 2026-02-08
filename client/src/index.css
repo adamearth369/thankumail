@@ -9,8 +9,8 @@
     --tm-charcoal: #2a2a2a;
 
     --tm-card: #ffffff;
-    --tm-muted: #ede9fe;
-    --tm-border: #dcd6ff;
+    --tm-muted: #e4dcff;
+    --tm-border: #cfc6ff;
 
     --tm-amber: #f3c969;
     --tm-honey: #d9b44a;
@@ -24,17 +24,19 @@
   body {
     margin: 0;
 
-    /* DEEPER PURPLE GRADIENT */
+    /* STRONGER PURPLE ATMOSPHERIC GRADIENT */
     background:
       radial-gradient(
-        circle at 50% 15%,
-        rgba(124, 58, 237, 0.18),
-        transparent 60%
+        circle at 50% 10%,
+        rgba(109, 40, 217, 0.35),
+        rgba(139, 92, 246, 0.25) 35%,
+        transparent 70%
       ),
       linear-gradient(
         180deg,
-        #f3f0ff 0%,
-        #e9e4ff 40%,
+        #ede9fe 0%,
+        #ddd6fe 35%,
+        #f5f3ff 60%,
         #ffffff 100%
       );
 
@@ -55,7 +57,7 @@
 /* -------------------- GUARANTEED UTILITIES -------------------- */
 @layer utilities {
   .shadow-soft {
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.10);
   }
 
   .bg-tm-forest { background-color: var(--tm-forest); }
