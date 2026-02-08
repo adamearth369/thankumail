@@ -256,20 +256,14 @@ export default function CreateGiftForm() {
         },
         "expired-callback": () => {
           setToken("");
-          // Do not override server errors
-          if (errorLockRef.current !== "server") {
-            errorLockRef.current = "turnstile";
-          }
+          if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
         },
         "timeout-callback": () => {
           setToken("");
-          if (errorLockRef.current !== "server") {
-            errorLockRef.current = "turnstile";
-          }
+          if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
         },
         "error-callback": () => {
           setToken("");
-          // Do not override server errors
           if (errorLockRef.current === "server") return;
           setErrorWithLock("Turnstile verification failed. Please try again.", "turnstile");
         },
@@ -283,9 +277,7 @@ export default function CreateGiftForm() {
       setTimeout(() => {
         if (seq !== renderSeqRef.current) return;
         const tmIframes = countTurnstileIframes();
-        if (tmIframes === 0) {
-          setTurnstileBlocked(true);
-        }
+        if (tmIframes === 0) setTurnstileBlocked(true);
       }, 1500);
     } catch {
       if (errorLockRef.current !== "server") {
@@ -302,7 +294,6 @@ export default function CreateGiftForm() {
 
     destroyWidget();
 
-    // Render after paint (more reliable across browsers)
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         renderWidget();
@@ -401,14 +392,12 @@ export default function CreateGiftForm() {
       if (!resp.ok || !data?.ok) {
         const err = parseApiError(data || { error: "Request failed" });
         const code = String(err.code || "");
-
-        // Server error priority: only Turnstile failures are "turnstile"; everything else is "server"
         const lock: "server" | "turnstile" = isTurnstileErrorCode(code) ? "turnstile" : "server";
+
         setErrorWithLock(err.error || "Request failed", lock);
         setFieldError(err.field || "");
         setSubmitting(false);
 
-        // Reset widget + token (safe, but don't let widget callbacks override server error)
         try {
           if (widgetIdRef.current && window.turnstile?.reset) {
             window.turnstile.reset(widgetIdRef.current);
@@ -424,10 +413,8 @@ export default function CreateGiftForm() {
       setSubmitting(false);
       errorLockRef.current = "none";
 
-      // CONFETTI: fire on successful send
       fireConfettiBurst();
 
-      // Reset widget after success
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
           window.turnstile.reset(widgetIdRef.current);
@@ -437,7 +424,6 @@ export default function CreateGiftForm() {
       }
       setToken("");
     } catch (err: any) {
-      // Network errors are not Turnstile; treat as server-level
       setErrorWithLock(err?.message || "Network error", "server");
       setSubmitting(false);
 
@@ -452,74 +438,75 @@ export default function CreateGiftForm() {
     }
   }
 
+  const inputBase =
+    "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-tm-charcoal/40";
+
   return (
     <div className="w-full max-w-xl mx-auto">
       <form onSubmit={onSubmit} className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft">
-        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a ThankuMail</h2>
+        <h2 className="font-outfit text-2xl text-tm-charcoal mb-1">Send a thankÜmail</h2>
         <p className="text-sm text-tm-charcoal/70 mb-5">Write something real. Add a small gift. Let it land.</p>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-tm-charcoal mb-1">Your email</label>
             <input
               value={senderEmail}
-              onChange={(e) => {
-                setSenderEmail(e.target.value);
-              }}
+              onChange={(e) => setSenderEmail(e.target.value)}
               type="email"
               autoComplete="email"
+              aria-label="Sender email"
+              placeholder="Sender email"
               className={classNames(
-                "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
+                inputBase,
                 fieldError === "senderEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
               )}
-              placeholder="Sender email"
             />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-tm-charcoal mb-1">Recipient email (optional)</label>
               <input
                 value={recipientEmail}
                 onChange={(e) => setRecipientEmail(e.target.value)}
                 type="email"
                 autoComplete="email"
+                aria-label="Recipient email"
+                placeholder="Recipient email (optional)"
                 className={classNames(
-                  "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
+                  inputBase,
                   fieldError === "recipientEmail" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
                 )}
-                placeholder="Recipient email (optional)"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-tm-charcoal mb-1">Recipient phone (optional)</label>
               <input
                 value={recipientPhone}
                 onChange={(e) => setRecipientPhone(e.target.value)}
                 type="tel"
                 autoComplete="tel"
+                aria-label="Recipient phone"
+                placeholder="Recipient phone (optional) e.g. +16043691517"
                 className={classNames(
-                  "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
+                  inputBase,
                   fieldError === "recipientPhone" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
                 )}
-                placeholder="Recipient phone (optional)"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-tm-charcoal mb-1">Gift amount (USD)</label>
             <div className="flex items-center gap-3">
               <input
                 value={amountDollars}
                 onChange={(e) => setAmountDollars(e.target.value)}
                 inputMode="decimal"
+                aria-label="Amount in USD"
+                placeholder="Amount (USD)"
                 className={classNames(
-                  "w-36 rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-slate-400",
+                  "w-44 rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-tm-charcoal/40",
                   fieldError === "amount" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
                 )}
-                placeholder="Amount"
               />
               <div className="text-sm text-tm-charcoal/70">
                 Sending <span className="font-medium text-tm-charcoal">{cents}</span> cents
@@ -528,26 +515,26 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-tm-charcoal mb-1">Message</label>
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               rows={5}
+              aria-label="Message"
+              placeholder="Message"
               className={classNames(
-                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none placeholder:text-slate-400",
+                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none placeholder:text-tm-charcoal/40",
                 fieldError === "message" ? "border-red-400" : "border-tm-cream/60 focus:border-tm-honey"
               )}
-              placeholder="Message"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-tm-charcoal mb-2">Human check</label>
+            <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
 
             {turnstileBlocked ? (
               <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                Turnstile is being blocked by this browser (no iframe loaded). If you’re using Brave/strict privacy settings,
-                disable shields for <span className="font-mono">thankumail.com</span> or try Chrome/Edge, then refresh.
+                Verification didn’t load here. If you’re using Brave/strict privacy settings, allow
+                challenges.cloudflare.com for this site (or try Chrome/Edge), then refresh.
               </div>
             ) : null}
 
@@ -611,7 +598,7 @@ export default function CreateGiftForm() {
               canSubmit ? "bg-tm-amber text-tm-charcoal hover:opacity-95" : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
             )}
           >
-            {submitting ? "Sending…" : "Send ThankuMail"}
+            {submitting ? "Sending…" : "Send thankÜmail"}
           </button>
 
           <div className="text-xs text-tm-charcoal/60">Tip: You can provide either email or phone (or both).</div>
