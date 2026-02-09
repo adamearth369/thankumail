@@ -18,11 +18,11 @@ export default function Home() {
             mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3",
           ].join(" ")}
         >
-          <div className="overflow-hidden h-[88px] sm:h-[100px] md:h-[112px] mb-1">
+          <div className="mb-2">
             <img
               src="/thankumail-logo.png"
               alt="thankÜmail"
-              className="w-[440px] sm:w-[540px] md:w-[620px] h-auto brightness-0 invert drop-shadow-lg"
+              className="w-[320px] sm:w-[420px] md:w-[500px] h-auto drop-shadow-xl"
             />
           </div>
 
