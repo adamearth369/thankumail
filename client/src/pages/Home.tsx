@@ -11,8 +11,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#3a1c71] via-[#5f2eea] to-[#a855f7] text-white">
-      <main id="send" className="mx-auto max-w-5xl px-4 pt-6 pb-16">
-
+      <main id="send" className="mx-auto max-w-5xl px-4 pt-10 pb-16">
         <div
           className={[
             "flex flex-col items-center text-center transition-all duration-700 ease-out",
@@ -39,7 +38,6 @@ export default function Home() {
         <footer className="mt-10 text-center text-sm text-white/70">
           thankümail is designed to be calm, honest, and human.
         </footer>
-
       </main>
     </div>
   );
