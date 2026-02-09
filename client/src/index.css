@@ -1,3 +1,84 @@
-@config "../../tailwind.config.cjs";
-
 @import "tailwindcss";
+
+/* -------------------- THEME TOKENS -------------------- */
+@layer base {
+  :root {
+    --tm-forest: #1f3d2b;
+    --tm-cream: #f6f1e8;
+    --tm-gold: #c9a227;
+    --tm-charcoal: #2a2a2a;
+
+    --tm-card: #ffffff;
+    --tm-muted: #e4dcff;
+    --tm-border: #cfc6ff;
+
+    --tm-amber: #f3c969;
+    --tm-honey: #d9b44a;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+
+    /* STRONGER PURPLE ATMOSPHERIC GRADIENT */
+    background:
+      radial-gradient(
+        circle at 50% 10%,
+        rgba(109, 40, 217, 0.35),
+        rgba(139, 92, 246, 0.25) 35%,
+        transparent 70%
+      ),
+      linear-gradient(
+        180deg,
+        #ede9fe 0%,
+        #ddd6fe 35%,
+        #f5f3ff 60%,
+        #ffffff 100%
+      );
+
+    background-attachment: fixed;
+    color: var(--tm-charcoal);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--tm-gold);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgba(201, 162, 39, 0.35);
+  }
+}
+
+/* -------------------- GUARANTEED UTILITIES -------------------- */
+@layer utilities {
+  .shadow-soft {
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.10);
+  }
+
+  .bg-tm-forest { background-color: var(--tm-forest); }
+  .bg-tm-cream { background-color: var(--tm-cream); }
+  .bg-tm-card { background-color: var(--tm-card); }
+  .bg-tm-muted { background-color: var(--tm-muted); }
+  .bg-tm-amber { background-color: var(--tm-amber); }
+  .bg-tm-honey { background-color: var(--tm-honey); }
+
+  .text-tm-forest { color: var(--tm-forest); }
+  .text-tm-cream { color: var(--tm-cream); }
+  .text-tm-gold { color: var(--tm-gold); }
+  .text-tm-charcoal { color: var(--tm-charcoal); }
+
+  .border-tm-border { border-color: var(--tm-border); }
+
+  .bg-tm-cream\/60 {
+    background-color: color-mix(in srgb, var(--tm-cream) 60%, transparent);
+  }
+
+  .text-tm-charcoal\/50 {
+    color: color-mix(in srgb, var(--tm-charcoal) 50%, transparent);
+  }
+}
