@@ -18,19 +18,17 @@ export default function Home() {
             mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3",
           ].join(" ")}
         >
-          <div className="mb-2">
-            <img
-              src="/thankumail-logo.png"
-              alt="thankÜmail"
-              className="w-[320px] sm:w-[420px] md:w-[500px] h-auto drop-shadow-xl"
-            />
-          </div>
+          <h1
+            className="font-quicksand text-[48px] sm:text-[64px] md:text-[76px] font-semibold tracking-tight drop-shadow-lg"
+          >
+            thankÜmail
+          </h1>
 
-          <div className="text-white/95 text-sm sm:text-base font-medium tracking-wide">
+          <div className="mt-2 text-white/95 text-sm sm:text-base font-medium tracking-wide">
             Anonymous Appreciation
           </div>
 
-          <div className="mt-2 text-sm sm:text-base text-white/85">
+          <div className="mt-1 text-sm sm:text-base text-white/85">
             Quiet generosity. Human moments.
           </div>
         </div>
