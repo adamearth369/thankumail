@@ -24,6 +24,12 @@
   body {
     margin: 0;
 
+    /* Default app font (body) */
+    font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+
     /* STRONGER PURPLE ATMOSPHERIC GRADIENT */
     background:
       radial-gradient(
@@ -56,6 +62,12 @@
 
 /* -------------------- GUARANTEED UTILITIES -------------------- */
 @layer utilities {
+  /* Always-available font utility (works even if Tailwind fontFamily config is missing) */
+  .font-quicksand {
+    font-family: "Quicksand", ui-sans-serif, system-ui, sans-serif;
+    font-optical-sizing: auto;
+  }
+
   .shadow-soft {
     box-shadow: 0 12px 35px rgba(0, 0, 0, 0.10);
   }
