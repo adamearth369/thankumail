@@ -1,4 +1,7 @@
-import React, { useEffect, useState } from "react";
+// WHERE TO PASTE: client/src/pages/Home.tsx
+// ACTION: Full file replacement (paste exactly)
+
+import React, { useEffect, useMemo, useState } from "react";
 import CreateGiftForm from "../components/CreateGiftForm";
 
 export default function Home() {
@@ -7,6 +10,12 @@ export default function Home() {
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 30);
     return () => clearTimeout(t);
+  }, []);
+
+  // Force the "u + combining diaeresis" glyph (u\u0308) to match the desired ü shape.
+  const wordmark = useMemo(() => {
+    const dia = "\u0308";
+    return `thanku${dia}mail`;
   }, []);
 
   return (
@@ -19,7 +28,7 @@ export default function Home() {
           ].join(" ")}
         >
           <h1 className="font-quicksand text-5xl sm:text-6xl md:text-7xl font-semibold tracking-tight drop-shadow-lg">
-            thankümail
+            {wordmark}
           </h1>
 
           <div className="mt-2 text-white/95 text-sm sm:text-base font-medium tracking-wide">
@@ -36,7 +45,7 @@ export default function Home() {
         </div>
 
         <footer className="mt-10 text-center text-sm text-white/70">
-          thankümail is designed to be calm, honest, and human.
+          {wordmark} is designed to be calm, honest, and human.
         </footer>
       </main>
     </div>
