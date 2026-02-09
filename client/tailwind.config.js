@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/tailwind.config.js
-// ACTION: Full file replacement (paste exactly)
-
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
@@ -11,10 +8,9 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Keep class names the same, but shift the "cream" vibe to a soft lavender
         tm: {
           forest: "#1F3B2C",
-          cream: "#F3EEFF", // light purple (replaces cream)
+          cream: "#F3EEFF",
           amber: "#F2B84B",
           honey: "#E9C46A",
           charcoal: "#1F2937",
@@ -29,6 +25,7 @@ module.exports = {
       },
       fontFamily: {
         outfit: ["Outfit", "ui-sans-serif", "system-ui", "sans-serif"],
+        quicksand: ["Quicksand", "ui-sans-serif", "system-ui", "sans-serif"],
       },
     },
   },
