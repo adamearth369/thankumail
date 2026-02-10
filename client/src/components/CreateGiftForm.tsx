@@ -142,8 +142,6 @@ export default function CreateGiftForm() {
     ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
     : "";
 
-  // Keep the same wordmark behavior you already use on the page
-  // (u + combining diaeresis) so every "thankümail" matches.
   const wordmark = useMemo(() => {
     const dia = "\u0308";
     return `thanku${dia}mail`;
@@ -166,9 +164,6 @@ export default function CreateGiftForm() {
     const emailOk = hasEmail ? isEmail(re) : false;
     const phoneOk = hasPhone ? isE164Phone(rp) : false;
 
-    // At least one delivery method.
-    // If email is valid, we allow submit even if the optional phone is junk.
-    // If email is empty, then phone must be valid E.164.
     const deliveryOk = (hasEmail && emailOk) || (!hasEmail && hasPhone && phoneOk);
 
     return (
@@ -379,7 +374,6 @@ export default function CreateGiftForm() {
     const emailOk = hasEmail ? isEmail(re) : false;
     const phoneOk = hasPhone ? isE164Phone(rpRaw) : false;
 
-    // If email exists and is valid, ignore invalid optional phone instead of blocking submit.
     const phoneToSend = phoneOk ? rpRaw : undefined;
 
     if (!isEmail(s)) {
@@ -516,7 +510,6 @@ export default function CreateGiftForm() {
     }
   }
 
-  // HARDENED VISIBILITY (uses standard Tailwind colors so custom palette can’t make inputs “invisible”)
   const inputBase =
     "w-full rounded-xl border px-3 py-2 outline-none bg-white text-slate-900 placeholder:text-slate-400 border-slate-400/70 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10";
 
@@ -572,7 +565,7 @@ export default function CreateGiftForm() {
                 type="tel"
                 autoComplete="tel"
                 aria-label="Recipient phone"
-                placeholder="Recipient phone (optional — must include +1, e.g. +12223334444)"
+                placeholder="Recipient phone (optional)"
                 className={classNames(
                   inputBase,
                   fieldError === "recipientPhone"
@@ -580,16 +573,20 @@ export default function CreateGiftForm() {
                     : ""
                 )}
               />
+              <div className="mt-1 text-[11px] text-slate-500">
+                Format: <span className="font-mono">+12223334444</span>
+              </div>
             </div>
           </div>
 
           <div>
+            <div className="text-sm font-medium text-slate-900 mb-2">Gift Amount</div>
             <div className="flex items-center gap-3">
               <input
                 value={amountDollars}
                 onChange={(e) => setAmountDollars(e.target.value)}
                 inputMode="decimal"
-                aria-label="$25 (USD)"
+                aria-label="Gift amount"
                 placeholder="$25 (USD)"
                 className={classNames(
                   "w-44",
@@ -599,10 +596,6 @@ export default function CreateGiftForm() {
                     : ""
                 )}
               />
-              <div className="text-sm text-slate-600">
-                Sending{" "}
-                <span className="font-medium text-slate-900">{cents}</span> cents
-              </div>
             </div>
           </div>
 
@@ -624,15 +617,12 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-900 mb-2">
-              Human check
-            </div>
+            <div className="text-sm font-medium text-slate-900 mb-2">Human check</div>
 
             {showSoftTurnstileHint ? (
               <div className="mb-2 text-xs text-slate-500">
                 If verification doesn’t appear, allow{" "}
-                <span className="font-medium">challenges.cloudflare.com</span> or
-                refresh.
+                <span className="font-medium">challenges.cloudflare.com</span> or refresh.
               </div>
             ) : null}
 
@@ -686,19 +676,12 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent!</div>
               <div className="break-all">
                 Claim link:{" "}
-                <a
-                  className="underline"
-                  href={result.claimUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
                   {result.claimUrl}
                 </a>
               </div>
               {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">
-                  Delivery note: {result.deliveryError}
-                </div>
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
               ) : null}
             </div>
           ) : null}
@@ -707,7 +690,6 @@ export default function CreateGiftForm() {
             type="submit"
             disabled={!canSubmit}
             className={classNames(
-              // Match Home.tsx wordmark styling
               "w-full rounded-2xl px-4 py-3 transition shadow-soft",
               "font-quicksand font-semibold tracking-tight",
               canSubmit
