@@ -12,11 +12,7 @@ export default function Home() {
     return () => clearTimeout(t);
   }, []);
 
-  // Force the "u + combining diaeresis" glyph (u\u0308) to match the desired ü shape.
-  const wordmark = useMemo(() => {
-    const dia = "\u0308";
-    return `thanku${dia}mail`;
-  }, []);
+  const wordmark = useMemo(() => "thankümail", []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#3a1c71] via-[#5f2eea] to-[#a855f7] text-white">
@@ -35,9 +31,7 @@ export default function Home() {
             Anonymous Appreciation
           </div>
 
-          <div className="mt-2 text-sm sm:text-base text-white/85">
-            No strings attached.
-          </div>
+          <div className="mt-2 text-sm sm:text-base text-white/85">No strings attached.</div>
         </div>
 
         <div className="mt-8 rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-tm-charcoal">
