@@ -485,8 +485,9 @@ export default function CreateGiftForm() {
     }
   }
 
+  // Force visible text + border even if parent area is white-on-dark.
   const inputBase =
-    "w-full rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-tm-charcoal/40";
+    "w-full rounded-xl border px-3 py-2 outline-none bg-white text-tm-charcoal placeholder:text-tm-charcoal/50 border-slate-300 focus:border-tm-honey";
 
   const showSoftTurnstileHint =
     turnstileReady && turnstileBlocked && !token && fieldError !== "turnstile";
@@ -495,7 +496,7 @@ export default function CreateGiftForm() {
     <div className="w-full max-w-xl mx-auto">
       <form
         onSubmit={onSubmit}
-        className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft"
+        className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft text-tm-charcoal"
       >
         <div className="space-y-4">
           <div>
@@ -506,12 +507,7 @@ export default function CreateGiftForm() {
               autoComplete="email"
               aria-label="Your email"
               placeholder="Your email"
-              className={classNames(
-                inputBase,
-                fieldError === "senderEmail"
-                  ? "border-red-400"
-                  : "border-tm-cream/60 focus:border-tm-honey"
-              )}
+              className={classNames(inputBase, fieldError === "senderEmail" ? "border-red-400" : "")}
             />
           </div>
 
@@ -526,9 +522,7 @@ export default function CreateGiftForm() {
                 placeholder="Receivers email"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientEmail"
-                    ? "border-red-400"
-                    : "border-tm-cream/60 focus:border-tm-honey"
+                  fieldError === "recipientEmail" ? "border-red-400" : ""
                 )}
               />
             </div>
@@ -543,9 +537,7 @@ export default function CreateGiftForm() {
                 placeholder="Recipient phone (optional)"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientPhone"
-                    ? "border-red-400"
-                    : "border-tm-cream/60 focus:border-tm-honey"
+                  fieldError === "recipientPhone" ? "border-red-400" : ""
                 )}
               />
             </div>
@@ -560,15 +552,12 @@ export default function CreateGiftForm() {
                 aria-label="$25 (USD)"
                 placeholder="$25 (USD)"
                 className={classNames(
-                  "w-44 rounded-xl border px-3 py-2 outline-none bg-white placeholder:text-tm-charcoal/40",
-                  fieldError === "amount"
-                    ? "border-red-400"
-                    : "border-tm-cream/60 focus:border-tm-honey"
+                  "w-44 rounded-xl border px-3 py-2 outline-none bg-white text-tm-charcoal placeholder:text-tm-charcoal/50 border-slate-300 focus:border-tm-honey",
+                  fieldError === "amount" ? "border-red-400" : ""
                 )}
               />
               <div className="text-sm text-tm-charcoal/70">
-                Sending{" "}
-                <span className="font-medium text-tm-charcoal">{cents}</span> cents
+                Sending <span className="font-medium text-tm-charcoal">{cents}</span> cents
               </div>
             </div>
           </div>
@@ -581,24 +570,19 @@ export default function CreateGiftForm() {
               aria-label="Message"
               placeholder="Message"
               className={classNames(
-                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none placeholder:text-tm-charcoal/40",
-                fieldError === "message"
-                  ? "border-red-400"
-                  : "border-tm-cream/60 focus:border-tm-honey"
+                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none text-tm-charcoal placeholder:text-tm-charcoal/50 border-slate-300 focus:border-tm-honey",
+                fieldError === "message" ? "border-red-400" : ""
               )}
             />
           </div>
 
           <div>
-            <div className="text-sm font-medium text-tm-charcoal mb-2">
-              Human check
-            </div>
+            <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
 
             {showSoftTurnstileHint ? (
               <div className="mb-2 text-xs text-tm-charcoal/60">
                 If verification doesn’t appear, allow{" "}
-                <span className="font-medium">challenges.cloudflare.com</span> or
-                refresh.
+                <span className="font-medium">challenges.cloudflare.com</span> or refresh.
               </div>
             ) : null}
 
@@ -607,7 +591,7 @@ export default function CreateGiftForm() {
               ref={widgetContainerRef}
               className={classNames(
                 "min-h-[65px] rounded-xl border bg-white flex items-center justify-center overflow-hidden",
-                fieldError === "turnstile" ? "border-red-400" : "border-tm-cream/60"
+                fieldError === "turnstile" ? "border-red-400" : "border-slate-300"
               )}
             />
 
@@ -634,7 +618,7 @@ export default function CreateGiftForm() {
                     });
                   });
                 }}
-                className="rounded-lg border border-tm-cream/60 bg-white px-2 py-1 text-tm-charcoal hover:opacity-90"
+                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-tm-charcoal hover:opacity-90"
               >
                 Retry
               </button>
@@ -652,19 +636,12 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent!</div>
               <div className="break-all">
                 Claim link:{" "}
-                <a
-                  className="underline"
-                  href={result.claimUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
                   {result.claimUrl}
                 </a>
               </div>
               {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">
-                  Delivery note: {result.deliveryError}
-                </div>
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
               ) : null}
             </div>
           ) : null}
