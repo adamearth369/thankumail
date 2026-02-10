@@ -1,84 +1,25 @@
-@import "tailwindcss";
+<!-- WHERE TO PASTE: client/index.html -->
+<!-- ACTION: Full file replacement (paste exactly) -->
 
-/* -------------------- SELF-HOSTED QUICKSAND -------------------- */
-@font-face {
-  font-family: "Quicksand";
-  src: url("/fonts/quicksand-400.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-@font-face {
-  font-family: "Quicksand";
-  src: url("/fonts/quicksand-500.woff2") format("woff2");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
+    <meta name="google" content="notranslate" />
 
-@font-face {
-  font-family: "Quicksand";
-  src: url("/fonts/quicksand-600.woff2") format("woff2");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
+    <!-- Preload self-hosted fonts to prevent flash on refresh -->
+    <link rel="preload" href="/fonts/dm-sans-400.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/dm-sans-500.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/dm-sans-700.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/quicksand-600.woff2" as="font" type="font/woff2" crossorigin />
 
-@font-face {
-  font-family: "Quicksand";
-  src: url("/fonts/quicksand-700.woff2") format("woff2");
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
+    <title>thankümail</title>
+  </head>
+  <body>
+    <div id="root"></div>
 
-/* -------------------- THEME TOKENS -------------------- */
-@layer base {
-  :root {
-    --tm-forest: #1f3d2b;
-    --tm-cream: #f6f1e8;
-    --tm-gold: #c9a227;
-    --tm-charcoal: #2a2a2a;
-
-    --tm-card: #ffffff;
-    --tm-muted: #e4dcff;
-    --tm-border: #cfc6ff;
-
-    --tm-amber: #f3c969;
-    --tm-honey: #d9b44a;
-  }
-
-  html,
-  body {
-    height: 100%;
-  }
-
-  body {
-    margin: 0;
-    font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
-    background:
-      radial-gradient(
-        circle at 50% 10%,
-        rgba(109, 40, 217, 0.35),
-        rgba(139, 92, 246, 0.25) 35%,
-        transparent 70%
-      ),
-      linear-gradient(
-        180deg,
-        #ede9fe 0%,
-        #ddd6fe 35%,
-        #f5f3ff 60%,
-        #ffffff 100%
-      );
-    background-attachment: fixed;
-    color: var(--tm-charcoal);
-  }
-}
-
-/* -------------------- GUARANTEED UTILITIES -------------------- */
-@layer utilities {
-  .font-quicksand {
-    font-family: "Quicksand", ui-sans-serif, system-ui, sans-serif;
-  }
-}
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
