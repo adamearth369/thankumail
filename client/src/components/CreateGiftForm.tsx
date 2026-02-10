@@ -672,10 +672,6 @@ export default function CreateGiftForm() {
           >
             {submitting ? "Sending…" : "Send thankÜmail"}
           </button>
-
-          <div className="text-xs text-tm-charcoal/60">
-            Tip: You can provide either email or phone (or both).
-          </div>
         </div>
       </form>
     </div>
