@@ -142,7 +142,8 @@ export default function CreateGiftForm() {
     ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
     : "";
 
-  // Force the "u + combining diaeresis" glyph (u\u0308) to match the desired ü shape.
+  // Keep the same wordmark behavior you already use on the page
+  // (u + combining diaeresis) so every "thankümail" matches.
   const wordmark = useMemo(() => {
     const dia = "\u0308";
     return `thanku${dia}mail`;
@@ -158,14 +159,22 @@ export default function CreateGiftForm() {
     const s = senderEmail.trim();
     const re = recipientEmail.trim();
     const rp = recipientPhone.trim();
-    const hasRecipient = Boolean(re) || Boolean(rp);
+
+    const hasEmail = Boolean(re);
+    const hasPhone = Boolean(rp);
+
+    const emailOk = hasEmail ? isEmail(re) : false;
+    const phoneOk = hasPhone ? isE164Phone(rp) : false;
+
+    // At least one delivery method.
+    // If email is valid, we allow submit even if the optional phone is junk.
+    // If email is empty, then phone must be valid E.164.
+    const deliveryOk = (hasEmail && emailOk) || (!hasEmail && hasPhone && phoneOk);
 
     return (
       !submitting &&
       isEmail(s) &&
-      hasRecipient &&
-      (re ? isEmail(re) : true) &&
-      (rp ? isE164Phone(rp) : true) &&
+      deliveryOk &&
       cents >= 1 &&
       message.trim().length >= 1 &&
       token.length >= 20 &&
@@ -361,8 +370,17 @@ export default function CreateGiftForm() {
 
     const s = senderEmail.trim();
     const re = recipientEmail.trim();
-    const rp = recipientPhone.trim();
+    const rpRaw = recipientPhone.trim();
     const m = message.trim();
+
+    const hasEmail = Boolean(re);
+    const hasPhone = Boolean(rpRaw);
+
+    const emailOk = hasEmail ? isEmail(re) : false;
+    const phoneOk = hasPhone ? isE164Phone(rpRaw) : false;
+
+    // If email exists and is valid, ignore invalid optional phone instead of blocking submit.
+    const phoneToSend = phoneOk ? rpRaw : undefined;
 
     if (!isEmail(s)) {
       setSubmitting(false);
@@ -370,24 +388,28 @@ export default function CreateGiftForm() {
       setErrorWithLock("Please enter a valid sender email.", "none");
       return;
     }
-    if (!re && !rp) {
+
+    if (!hasEmail && !hasPhone) {
       setSubmitting(false);
       setFieldError("recipient");
       setErrorWithLock("Please enter a recipient email or phone number.", "none");
       return;
     }
-    if (re && !isEmail(re)) {
+
+    if (hasEmail && !emailOk) {
       setSubmitting(false);
       setFieldError("recipientEmail");
       setErrorWithLock("Please enter a valid recipient email.", "none");
       return;
     }
-    if (rp && !isE164Phone(rp)) {
+
+    if (!hasEmail && hasPhone && !phoneOk) {
       setSubmitting(false);
       setFieldError("recipientPhone");
       setErrorWithLock("Phone must be in E.164 format (e.g. +16043691517).", "none");
       return;
     }
+
     if (cents < 1) {
       setSubmitting(false);
       setFieldError("amount");
@@ -422,8 +444,8 @@ export default function CreateGiftForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           senderEmail: s,
-          recipientEmail: re || undefined,
-          recipientPhone: rp || undefined,
+          recipientEmail: emailOk ? re : undefined,
+          recipientPhone: phoneToSend,
           message: m,
           amount: cents,
           turnstileToken: token,
@@ -550,7 +572,7 @@ export default function CreateGiftForm() {
                 type="tel"
                 autoComplete="tel"
                 aria-label="Recipient phone"
-                placeholder="Recipient phone (optional)"
+                placeholder="Recipient phone (optional — must include +1, e.g. +12223334444)"
                 className={classNames(
                   inputBase,
                   fieldError === "recipientPhone"
