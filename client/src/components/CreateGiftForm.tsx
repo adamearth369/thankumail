@@ -567,7 +567,8 @@ export default function CreateGiftForm() {
                 )}
               />
               <div className="text-sm text-tm-charcoal/70">
-                Sending <span className="font-medium text-tm-charcoal">{cents}</span> cents
+                Sending{" "}
+                <span className="font-medium text-tm-charcoal">{cents}</span> cents
               </div>
             </div>
           </div>
@@ -589,12 +590,15 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
+            <div className="text-sm font-medium text-tm-charcoal mb-2">
+              Human check
+            </div>
 
             {showSoftTurnstileHint ? (
               <div className="mb-2 text-xs text-tm-charcoal/60">
                 If verification doesn’t appear, allow{" "}
-                <span className="font-medium">challenges.cloudflare.com</span> or refresh.
+                <span className="font-medium">challenges.cloudflare.com</span> or
+                refresh.
               </div>
             ) : null}
 
@@ -648,7 +652,12 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent!</div>
               <div className="break-all">
                 Claim link:{" "}
-                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
+                <a
+                  className="underline"
+                  href={result.claimUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   {result.claimUrl}
                 </a>
               </div>
