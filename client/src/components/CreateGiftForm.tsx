@@ -670,7 +670,7 @@ export default function CreateGiftForm() {
                 : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
             )}
           >
-            {submitting ? "Sending…" : "Send thankÜmail"}
+            {submitting ? "Sending…" : "Send thanku\u0308mail"}
           </button>
         </div>
       </form>
