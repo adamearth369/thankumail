@@ -142,6 +142,12 @@ export default function CreateGiftForm() {
     ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
     : "";
 
+  // Force the "u + combining diaeresis" glyph (u\u0308) to match the desired ü shape.
+  const wordmark = useMemo(() => {
+    const dia = "\u0308";
+    return `thanku${dia}mail`;
+  }, []);
+
   const cents = useMemo(() => {
     const raw = String(amountDollars || "").trim();
     const cleaned = raw.replace(/[^0-9.]/g, "");
@@ -512,7 +518,9 @@ export default function CreateGiftForm() {
               placeholder="Your email"
               className={classNames(
                 inputBase,
-                fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
+                fieldError === "senderEmail"
+                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                  : ""
               )}
             />
           </div>
@@ -528,7 +536,9 @@ export default function CreateGiftForm() {
                 placeholder="Receivers email"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
+                  fieldError === "recipientEmail"
+                    ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                    : ""
                 )}
               />
             </div>
@@ -543,7 +553,9 @@ export default function CreateGiftForm() {
                 placeholder="Recipient phone (optional)"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientPhone" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
+                  fieldError === "recipientPhone"
+                    ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                    : ""
                 )}
               />
             </div>
@@ -560,11 +572,14 @@ export default function CreateGiftForm() {
                 className={classNames(
                   "w-44",
                   inputBase,
-                  fieldError === "amount" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
+                  fieldError === "amount"
+                    ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                    : ""
                 )}
               />
               <div className="text-sm text-slate-600">
-                Sending <span className="font-medium text-slate-900">{cents}</span> cents
+                Sending{" "}
+                <span className="font-medium text-slate-900">{cents}</span> cents
               </div>
             </div>
           </div>
@@ -579,18 +594,23 @@ export default function CreateGiftForm() {
               className={classNames(
                 "w-full resize-none",
                 inputBase,
-                fieldError === "message" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
+                fieldError === "message"
+                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                  : ""
               )}
             />
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-900 mb-2">Human check</div>
+            <div className="text-sm font-medium text-slate-900 mb-2">
+              Human check
+            </div>
 
             {showSoftTurnstileHint ? (
               <div className="mb-2 text-xs text-slate-500">
                 If verification doesn’t appear, allow{" "}
-                <span className="font-medium">challenges.cloudflare.com</span> or refresh.
+                <span className="font-medium">challenges.cloudflare.com</span> or
+                refresh.
               </div>
             ) : null}
 
@@ -644,12 +664,19 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent!</div>
               <div className="break-all">
                 Claim link:{" "}
-                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
+                <a
+                  className="underline"
+                  href={result.claimUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   {result.claimUrl}
                 </a>
               </div>
               {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+                <div className="mt-2 text-emerald-900/80">
+                  Delivery note: {result.deliveryError}
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -658,13 +685,15 @@ export default function CreateGiftForm() {
             type="submit"
             disabled={!canSubmit}
             className={classNames(
-              "w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
+              // Match Home.tsx wordmark styling
+              "w-full rounded-2xl px-4 py-3 transition shadow-soft",
+              "font-quicksand font-semibold tracking-tight",
               canSubmit
                 ? "bg-tm-amber text-tm-charcoal hover:opacity-95"
                 : "bg-slate-200 text-slate-500 cursor-not-allowed"
             )}
           >
-            {submitting ? "Sending…" : "Send thanku\u0308mail"}
+            {submitting ? "Sending…" : `Send ${wordmark}`}
           </button>
         </div>
       </form>
