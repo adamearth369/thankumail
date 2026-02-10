@@ -1,5 +1,38 @@
 @import "tailwindcss";
 
+/* -------------------- SELF-HOSTED QUICKSAND -------------------- */
+@font-face {
+  font-family: "Quicksand";
+  src: url("/fonts/quicksand-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Quicksand";
+  src: url("/fonts/quicksand-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Quicksand";
+  src: url("/fonts/quicksand-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Quicksand";
+  src: url("/fonts/quicksand-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* -------------------- THEME TOKENS -------------------- */
 @layer base {
   :root {
@@ -23,14 +56,7 @@
 
   body {
     margin: 0;
-
-    /* Default app font (body) */
     font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-
-    /* STRONGER PURPLE ATMOSPHERIC GRADIENT */
     background:
       radial-gradient(
         circle at 50% 10%,
@@ -45,52 +71,14 @@
         #f5f3ff 60%,
         #ffffff 100%
       );
-
     background-attachment: fixed;
     color: var(--tm-charcoal);
-  }
-
-  :focus-visible {
-    outline: 2px solid var(--tm-gold);
-    outline-offset: 2px;
-  }
-
-  ::selection {
-    background: rgba(201, 162, 39, 0.35);
   }
 }
 
 /* -------------------- GUARANTEED UTILITIES -------------------- */
 @layer utilities {
-  /* Always-available font utility (works even if Tailwind fontFamily config is missing) */
   .font-quicksand {
     font-family: "Quicksand", ui-sans-serif, system-ui, sans-serif;
-    font-optical-sizing: auto;
-  }
-
-  .shadow-soft {
-    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.10);
-  }
-
-  .bg-tm-forest { background-color: var(--tm-forest); }
-  .bg-tm-cream { background-color: var(--tm-cream); }
-  .bg-tm-card { background-color: var(--tm-card); }
-  .bg-tm-muted { background-color: var(--tm-muted); }
-  .bg-tm-amber { background-color: var(--tm-amber); }
-  .bg-tm-honey { background-color: var(--tm-honey); }
-
-  .text-tm-forest { color: var(--tm-forest); }
-  .text-tm-cream { color: var(--tm-cream); }
-  .text-tm-gold { color: var(--tm-gold); }
-  .text-tm-charcoal { color: var(--tm-charcoal); }
-
-  .border-tm-border { border-color: var(--tm-border); }
-
-  .bg-tm-cream\/60 {
-    background-color: color-mix(in srgb, var(--tm-cream) 60%, transparent);
-  }
-
-  .text-tm-charcoal\/50 {
-    color: color-mix(in srgb, var(--tm-charcoal) 50%, transparent);
   }
 }
