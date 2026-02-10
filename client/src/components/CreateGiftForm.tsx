@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -485,9 +488,9 @@ export default function CreateGiftForm() {
     }
   }
 
-  // Force visible text + border even if parent area is white-on-dark.
+  // HARDENED VISIBILITY (uses standard Tailwind colors so custom palette can’t make inputs “invisible”)
   const inputBase =
-    "w-full rounded-xl border px-3 py-2 outline-none bg-white text-tm-charcoal placeholder:text-tm-charcoal/50 border-slate-300 focus:border-tm-honey";
+    "w-full rounded-xl border px-3 py-2 outline-none bg-white text-slate-900 placeholder:text-slate-400 border-slate-400/70 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10";
 
   const showSoftTurnstileHint =
     turnstileReady && turnstileBlocked && !token && fieldError !== "turnstile";
@@ -496,7 +499,7 @@ export default function CreateGiftForm() {
     <div className="w-full max-w-xl mx-auto">
       <form
         onSubmit={onSubmit}
-        className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-5 shadow-soft text-tm-charcoal"
+        className="rounded-2xl border border-slate-300 bg-white p-5 shadow-soft text-slate-900"
       >
         <div className="space-y-4">
           <div>
@@ -507,7 +510,10 @@ export default function CreateGiftForm() {
               autoComplete="email"
               aria-label="Your email"
               placeholder="Your email"
-              className={classNames(inputBase, fieldError === "senderEmail" ? "border-red-400" : "")}
+              className={classNames(
+                inputBase,
+                fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
+              )}
             />
           </div>
 
@@ -522,7 +528,7 @@ export default function CreateGiftForm() {
                 placeholder="Receivers email"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientEmail" ? "border-red-400" : ""
+                  fieldError === "recipientEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
                 )}
               />
             </div>
@@ -537,7 +543,7 @@ export default function CreateGiftForm() {
                 placeholder="Recipient phone (optional)"
                 className={classNames(
                   inputBase,
-                  fieldError === "recipientPhone" ? "border-red-400" : ""
+                  fieldError === "recipientPhone" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
                 )}
               />
             </div>
@@ -552,12 +558,13 @@ export default function CreateGiftForm() {
                 aria-label="$25 (USD)"
                 placeholder="$25 (USD)"
                 className={classNames(
-                  "w-44 rounded-xl border px-3 py-2 outline-none bg-white text-tm-charcoal placeholder:text-tm-charcoal/50 border-slate-300 focus:border-tm-honey",
-                  fieldError === "amount" ? "border-red-400" : ""
+                  "w-44",
+                  inputBase,
+                  fieldError === "amount" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
                 )}
               />
-              <div className="text-sm text-tm-charcoal/70">
-                Sending <span className="font-medium text-tm-charcoal">{cents}</span> cents
+              <div className="text-sm text-slate-600">
+                Sending <span className="font-medium text-slate-900">{cents}</span> cents
               </div>
             </div>
           </div>
@@ -570,17 +577,18 @@ export default function CreateGiftForm() {
               aria-label="Message"
               placeholder="Message"
               className={classNames(
-                "w-full rounded-xl border px-3 py-2 outline-none bg-white resize-none text-tm-charcoal placeholder:text-tm-charcoal/50 border-slate-300 focus:border-tm-honey",
-                fieldError === "message" ? "border-red-400" : ""
+                "w-full resize-none",
+                inputBase,
+                fieldError === "message" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : ""
               )}
             />
           </div>
 
           <div>
-            <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
+            <div className="text-sm font-medium text-slate-900 mb-2">Human check</div>
 
             {showSoftTurnstileHint ? (
-              <div className="mb-2 text-xs text-tm-charcoal/60">
+              <div className="mb-2 text-xs text-slate-500">
                 If verification doesn’t appear, allow{" "}
                 <span className="font-medium">challenges.cloudflare.com</span> or refresh.
               </div>
@@ -591,11 +599,11 @@ export default function CreateGiftForm() {
               ref={widgetContainerRef}
               className={classNames(
                 "min-h-[65px] rounded-xl border bg-white flex items-center justify-center overflow-hidden",
-                fieldError === "turnstile" ? "border-red-400" : "border-slate-300"
+                fieldError === "turnstile" ? "border-red-400" : "border-slate-400/70"
               )}
             />
 
-            <div className="mt-2 flex items-center justify-between gap-2 text-xs text-tm-charcoal/60">
+            <div className="mt-2 flex items-center justify-between gap-2 text-xs text-slate-500">
               <div>
                 Token:{" "}
                 {token ? (
@@ -618,7 +626,7 @@ export default function CreateGiftForm() {
                     });
                   });
                 }}
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-tm-charcoal hover:opacity-90"
+                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-slate-900 hover:opacity-90"
               >
                 Retry
               </button>
@@ -653,7 +661,7 @@ export default function CreateGiftForm() {
               "w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
               canSubmit
                 ? "bg-tm-amber text-tm-charcoal hover:opacity-95"
-                : "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
+                : "bg-slate-200 text-slate-500 cursor-not-allowed"
             )}
           >
             {submitting ? "Sending…" : "Send thanku\u0308mail"}
