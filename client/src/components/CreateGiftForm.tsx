@@ -57,6 +57,29 @@ const API_BASE = "https://api.thankumail.com";
 const TURNSTILE_SCRIPT_SRC =
   "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
+const PRESET_MESSAGES: Array<{ id: string; text: string }> = [
+  {
+    id: "p1",
+    text: "I just wanted you to know how much I appreciate you. Thank you for being you.",
+  },
+  {
+    id: "p2",
+    text: "Your support made a bigger difference than you realize. I’m truly grateful.",
+  },
+  {
+    id: "p3",
+    text: "You showed up when it mattered most. That means everything. Thank you.",
+  },
+  {
+    id: "p4",
+    text: "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you.",
+  },
+  {
+    id: "p5",
+    text: "This is a small thank you for the quiet impact you’ve had on my life.",
+  },
+];
+
 function moneyToCents(dollars: number) {
   const cents = Math.round((Number(dollars) || 0) * 100);
   return Number.isFinite(cents) ? cents : 0;
@@ -97,7 +120,9 @@ function waitForTurnstile(maxMs: number) {
 function countTurnstileIframes() {
   const iframes = Array.from(document.querySelectorAll("iframe"));
   return iframes.filter((f) =>
-    String((f as HTMLIFrameElement).src || "").includes("challenges.cloudflare.com")
+    String((f as HTMLIFrameElement).src || "").includes(
+      "challenges.cloudflare.com"
+    )
   ).length;
 }
 
@@ -122,7 +147,10 @@ export default function CreateGiftForm() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
   const [amountDollars, setAmountDollars] = useState<string>("");
+
   const [message, setMessage] = useState<string>("");
+  const [presetIdx, setPresetIdx] = useState<number>(0);
+  const [messageTouched, setMessageTouched] = useState<boolean>(false);
 
   const [token, setToken] = useState<string>("");
   const [turnstileReady, setTurnstileReady] = useState<boolean>(false);
@@ -164,7 +192,8 @@ export default function CreateGiftForm() {
     const emailOk = hasEmail ? isEmail(re) : false;
     const phoneOk = hasPhone ? isE164Phone(rp) : false;
 
-    const deliveryOk = (hasEmail && emailOk) || (!hasEmail && hasPhone && phoneOk);
+    const deliveryOk =
+      (hasEmail && emailOk) || (!hasEmail && hasPhone && phoneOk);
 
     return (
       !submitting &&
@@ -196,6 +225,27 @@ export default function CreateGiftForm() {
     setError("");
     setFieldError("");
   }
+
+  function clampPresetIndex(i: number) {
+    const n = PRESET_MESSAGES.length;
+    if (n <= 0) return 0;
+    return ((i % n) + n) % n;
+  }
+
+  function selectPreset(i: number) {
+    const idx = clampPresetIndex(i);
+    setPresetIdx(idx);
+    setMessageTouched(false);
+    setMessage(PRESET_MESSAGES[idx]?.text || "");
+  }
+
+  useEffect(() => {
+    // Initialize message with first preset on first mount
+    if (!messageTouched && !message.trim()) {
+      selectPreset(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -307,11 +357,13 @@ export default function CreateGiftForm() {
         },
         "expired-callback": () => {
           setToken("");
-          if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
+          if (errorLockRef.current !== "server")
+            errorLockRef.current = "turnstile";
         },
         "timeout-callback": () => {
           setToken("");
-          if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
+          if (errorLockRef.current !== "server")
+            errorLockRef.current = "turnstile";
         },
         "error-callback": () => {
           setToken("");
@@ -410,12 +462,14 @@ export default function CreateGiftForm() {
       setErrorWithLock("Please enter a valid amount.", "none");
       return;
     }
+
     if (!m) {
       setSubmitting(false);
       setFieldError("message");
       setErrorWithLock("Please write a short message.", "none");
       return;
     }
+
     if (!TURNSTILE_SITE_KEY) {
       setSubmitting(false);
       setFieldError("turnstile");
@@ -425,6 +479,7 @@ export default function CreateGiftForm() {
       );
       return;
     }
+
     if (!token) {
       setSubmitting(false);
       setFieldError("turnstile");
@@ -485,7 +540,8 @@ export default function CreateGiftForm() {
       setRecipientEmail("");
       setRecipientPhone("");
       setAmountDollars("");
-      setMessage("");
+
+      selectPreset(0);
 
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
@@ -515,6 +571,8 @@ export default function CreateGiftForm() {
 
   const showSoftTurnstileHint =
     turnstileReady && turnstileBlocked && !token && fieldError !== "turnstile";
+
+  const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[0];
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -580,7 +638,9 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-900 mb-2">Gift Amount</div>
+            <div className="text-sm font-medium text-slate-900 mb-2">
+              Gift Amount
+            </div>
             <div className="flex items-center gap-3">
               <input
                 value={amountDollars}
@@ -599,10 +659,88 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
+          {/* -------------------- PRESET CAROUSEL -------------------- */}
+          <div>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <div className="text-sm font-medium text-slate-900">
+                Choose a message
+              </div>
+              <div className="text-xs text-slate-500">
+                {presetIdx + 1}/{PRESET_MESSAGES.length}
+              </div>
+            </div>
+
+            <div className="flex items-stretch gap-2">
+              <button
+                type="button"
+                aria-label="Previous message"
+                onClick={() => selectPreset(presetIdx - 1)}
+                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50"
+              >
+                ‹
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMessageTouched(false);
+                  setMessage(currentPreset?.text || "");
+                }}
+                className={classNames(
+                  "flex-1 text-left rounded-xl border px-3 py-3 bg-white transition",
+                  "border-slate-300 hover:bg-slate-50"
+                )}
+              >
+                <div className="text-xs text-slate-500 mb-1">Preset</div>
+                <div className="text-sm text-slate-900 leading-snug">
+                  {currentPreset?.text}
+                </div>
+              </button>
+
+              <button
+                type="button"
+                aria-label="Next message"
+                onClick={() => selectPreset(presetIdx + 1)}
+                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50"
+              >
+                ›
+              </button>
+            </div>
+
+            <div className="mt-2 flex flex-wrap gap-2">
+              {PRESET_MESSAGES.map((p, i) => {
+                const active = i === presetIdx;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => selectPreset(i)}
+                    className={classNames(
+                      "px-2 py-1 rounded-full text-xs border transition",
+                      active
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    )}
+                    aria-label={`Select preset ${i + 1}`}
+                  >
+                    {i + 1}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-2 text-[11px] text-slate-500">
+              Tip: pick a preset, then tweak it below if you want.
+            </div>
+          </div>
+
           <div>
             <textarea
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => {
+                setMessageTouched(true);
+                setMessage(e.target.value);
+              }}
               rows={5}
               aria-label="Message"
               placeholder="Message"
@@ -617,7 +755,9 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-900 mb-2">Human check</div>
+            <div className="text-sm font-medium text-slate-900 mb-2">
+              Human check
+            </div>
 
             {showSoftTurnstileHint ? (
               <div className="mb-2 text-xs text-slate-500">
@@ -631,7 +771,9 @@ export default function CreateGiftForm() {
               ref={widgetContainerRef}
               className={classNames(
                 "min-h-[65px] rounded-xl border bg-white flex items-center justify-center overflow-hidden",
-                fieldError === "turnstile" ? "border-red-400" : "border-slate-400/70"
+                fieldError === "turnstile"
+                  ? "border-red-400"
+                  : "border-slate-400/70"
               )}
             />
 
@@ -676,12 +818,19 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent!</div>
               <div className="break-all">
                 Claim link:{" "}
-                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
+                <a
+                  className="underline"
+                  href={result.claimUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   {result.claimUrl}
                 </a>
               </div>
               {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+                <div className="mt-2 text-emerald-900/80">
+                  Delivery note: {result.deliveryError}
+                </div>
               ) : null}
             </div>
           ) : null}
