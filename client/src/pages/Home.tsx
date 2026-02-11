@@ -14,11 +14,10 @@ export default function Home() {
   return (
     <div
       className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
-      style={{
-        backgroundImage: "url('/images/hero-background.png')",
-      }}
+      style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
-      <div className="min-h-screen bg-black/40 backdrop-blur-sm">
+      {/* overlay (NO blur) */}
+      <div className="min-h-screen bg-black/40">
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div
             className={[
