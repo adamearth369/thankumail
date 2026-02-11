@@ -14,12 +14,12 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-06_003";
+const VERSION = "routes_v2026-02-10_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_gap_no_override_v1_plus_timewarp_plus_return_block_v1_plus_admin_test_create_v2_plus_domain_block_v1";
+  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_keep_legacy_delivery_method";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -37,6 +37,21 @@ function safeStr(v: any) {
 function toMs(d: any) {
   const t = d instanceof Date ? d.getTime() : new Date(d).getTime();
   return Number.isFinite(t) ? t : 0;
+}
+
+/* -------------------- PRESET MESSAGES (LOCKED v1) -------------------- */
+const PRESET_MESSAGES = [
+  "I just wanted you to know how much I appreciate you. Thank you for being you.",
+  "Your support made a bigger difference than you realize. I’m truly grateful.",
+  "You showed up when it mattered most. That means everything. Thank you.",
+  "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you.",
+  "This is a small thank you for the quiet impact you’ve had on my life.",
+];
+
+function presetMessageById(id: number) {
+  const i = Number(id);
+  if (!Number.isInteger(i) || i < 1 || i > PRESET_MESSAGES.length) return null;
+  return PRESET_MESSAGES[i - 1];
 }
 
 /* -------------------- CLAIM SITE BASE URL -------------------- */
@@ -99,15 +114,13 @@ function isE164(s: string) {
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
 }
+function toInt(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : NaN;
+}
 
 /* -------------------- BLOCKED EMAIL DOMAINS -------------------- */
-const BLOCKED_EMAIL_DOMAINS = new Set([
-  "domain.com",
-  "example.com",
-  "test.com",
-  "mailinator.com",
-  "10minutemail.com",
-]);
+const BLOCKED_EMAIL_DOMAINS = new Set(["domain.com", "example.com", "test.com", "mailinator.com", "10minutemail.com"]);
 
 function isBlockedEmailDomain(email: string) {
   const e = String(email || "").trim().toLowerCase();
@@ -117,20 +130,117 @@ function isBlockedEmailDomain(email: string) {
   return BLOCKED_EMAIL_DOMAINS.has(domain);
 }
 
-/* -------------------- VALIDATION -------------------- */
-const CreateGiftSchema = z.object({
-  senderEmail: z.string().email().optional().or(z.literal("")),
-  recipientEmail: z.string().email().optional().or(z.literal("")),
-  recipientPhone: z
-    .string()
-    .optional()
-    .or(z.literal(""))
-    .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
-  message: z.string().min(1).max(2000),
-  amount: z.number().int().min(1000).max(100000),
-  turnstileToken: z.string().optional().or(z.literal("")),
-  debugBypassLimits: z.string().optional().or(z.literal("")),
-});
+/* -------------------- VALIDATION (LOCKED SCOPE) -------------------- */
+const CreateGiftSchema = z
+  .object({
+    senderEmail: z.string().email().optional().or(z.literal("")),
+
+    // Locked: guest is email-only; registered may still support phone
+    recipientEmail: z.string().email().optional().or(z.literal("")),
+    recipientPhone: z
+      .string()
+      .optional()
+      .or(z.literal(""))
+      .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
+
+    // NEW
+    messageMode: z.enum(["preset", "custom"]).default("preset"),
+    presetMessageId: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
+    message: z.string().optional().or(z.literal("")).default(""),
+
+    // NEW: optional, cents
+    amount: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
+
+    turnstileToken: z.string().optional().or(z.literal("")),
+    debugBypassLimits: z.string().optional().or(z.literal("")),
+  })
+  .superRefine((val: any, ctx) => {
+    const mode = String(val?.messageMode || "preset");
+
+    const hasEmail = !!String(val?.recipientEmail || "").trim();
+    const hasPhone = !!String(val?.recipientPhone || "").trim();
+
+    if (!hasEmail && !hasPhone) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide a recipient email or phone",
+        path: ["recipient"],
+      });
+    }
+
+    if (mode === "preset") {
+      const pid = toInt(val?.presetMessageId);
+      if (!Number.isInteger(pid) || pid < 1 || pid > 5) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Choose a preset message (1–5)",
+          path: ["presetMessageId"],
+        });
+      }
+
+      // Locked: guest preset is email-only
+      if (hasPhone) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Guest Thankümail is email-only",
+          path: ["recipientPhone"],
+        });
+      }
+
+      // Locked: guest has no gift certificate
+      const amtRaw = val?.amount;
+      const amt = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
+      if (amt !== null && Number.isFinite(amt) && amt > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Guest Thankümail does not include a gift amount",
+          path: ["amount"],
+        });
+      }
+    } else {
+      // custom
+      const msg = String(val?.message ?? "").trim();
+      if (!msg) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Message is required",
+          path: ["message"],
+        });
+      }
+      if (msg.length > 280) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Message must be 280 characters or less",
+          path: ["message"],
+        });
+      }
+
+      // registered: if amount provided, must be >= $25
+      const amtRaw = val?.amount;
+      const amt = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
+      if (amt !== null) {
+        if (!Number.isFinite(amt) || amt <= 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Amount must be a positive number of cents",
+            path: ["amount"],
+          });
+        } else if (amt < 2500) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Minimum amount is $25",
+            path: ["amount"],
+          });
+        } else if (amt > 100000) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Maximum amount is $1000",
+            path: ["amount"],
+          });
+        }
+      }
+    }
+  });
 
 const ClaimSchema = z.object({
   turnstileToken: z.string().optional().or(z.literal("")),
@@ -305,13 +415,13 @@ function queueGiftDelivery(opts: {
   req: Request;
   publicId: string;
   claimUrl: string;
-  amount: number;
+  amountCents: number;
   senderEmail: string | null;
   recipientEmail: string;
   recipientPhone: string;
   message: string;
 }) {
-  const { req, publicId, claimUrl, amount, senderEmail, recipientEmail, recipientPhone, message } = opts;
+  const { req, publicId, claimUrl, amountCents, senderEmail, recipientEmail, recipientPhone, message } = opts;
 
   void (async () => {
     const start = Date.now();
@@ -321,6 +431,7 @@ function queueGiftDelivery(opts: {
       hasPhone: !!recipientPhone,
       toEmailDomain: recipientEmail ? recipientEmail.split("@")[1] || "" : "",
       toPhone: recipientPhone ? recipientPhone.slice(0, 4) + "…" : "",
+      amountCents,
     });
 
     let emailOk: boolean | null = null;
@@ -334,7 +445,7 @@ function queueGiftDelivery(opts: {
           to: recipientEmail,
           publicId,
           claimUrl,
-          amountCents: amount,
+          amountCents,
           senderEmail: senderEmail || undefined,
           message,
         } as any);
@@ -360,7 +471,7 @@ function queueGiftDelivery(opts: {
           to: recipientPhone,
           publicId,
           claimUrl,
-          amountCents: amount,
+          amountCents,
           senderEmail: senderEmail || undefined,
           message,
         } as any);
@@ -453,10 +564,14 @@ export function registerRoutes(app: Express): Server {
     const deliver = !!parsed.data.deliver;
 
     if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
       return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
@@ -481,6 +596,8 @@ export function registerRoutes(app: Express): Server {
         senderEmail,
         recipientEmail: recipientEmail || null,
         recipientPhone: recipientPhone || null,
+        messageMode: "custom",
+        presetMessageId: null,
         message,
         amount,
         isClaimed: false,
@@ -493,7 +610,16 @@ export function registerRoutes(app: Express): Server {
       logEvent("admin_test_create_gift_ok", { publicId, deliver });
 
       if (deliver) {
-        queueGiftDelivery({ req, publicId, claimUrl, amount, senderEmail, recipientEmail, recipientPhone, message });
+        queueGiftDelivery({
+          req,
+          publicId,
+          claimUrl,
+          amountCents: amount,
+          senderEmail,
+          recipientEmail,
+          recipientPhone,
+          message,
+        });
       }
 
       return res.json({ ok: true, publicId, claimUrl, amount, deliver, version: VERSION, commit: COMMIT });
@@ -575,11 +701,15 @@ export function registerRoutes(app: Express): Server {
         return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
       if (gift.returnedToSenderAt) {
-        return res.status(409).json({ ok: false, error: "Already returned to sender", code: "ALREADY_RETURNED", version: VERSION, commit: COMMIT });
+        return res
+          .status(409)
+          .json({ ok: false, error: "Already returned to sender", code: "ALREADY_RETURNED", version: VERSION, commit: COMMIT });
       }
       const reminderCount = Number(gift.reminderCount || 0);
       if (reminderCount >= REMINDER_MAX) {
-        return res.status(409).json({ ok: false, error: "Reminder max already reached", code: "REMINDER_MAX_REACHED", version: VERSION, commit: COMMIT });
+        return res
+          .status(409)
+          .json({ ok: false, error: "Reminder max already reached", code: "REMINDER_MAX_REACHED", version: VERSION, commit: COMMIT });
       }
 
       const gapMs = getReminderGapMs();
@@ -619,10 +749,14 @@ export function registerRoutes(app: Express): Server {
     const markClaimed = !!parsed.data.markClaimed;
 
     if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
       return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
@@ -648,6 +782,8 @@ export function registerRoutes(app: Express): Server {
         senderEmail,
         recipientEmail: recipientEmail || null,
         recipientPhone: recipientPhone || null,
+        messageMode: "custom",
+        presetMessageId: null,
         message,
         amount,
         isClaimed: markClaimed,
@@ -932,10 +1068,19 @@ export function registerRoutes(app: Express): Server {
     const ip = getClientIp(req);
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
+
     const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
     const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
-    const message = safeStr(parsed.data.message);
-    const amount = Number(parsed.data.amount);
+
+    const messageMode = (safeStr((parsed.data as any).messageMode) || "preset") as "preset" | "custom";
+    const presetIdRaw = (parsed.data as any).presetMessageId;
+    const presetId = presetIdRaw === null || presetIdRaw === undefined || presetIdRaw === "" ? null : toInt(presetIdRaw);
+
+    const rawMessage = safeStr((parsed.data as any).message);
+
+    const amtRaw = (parsed.data as any).amount;
+    const amountCents =
+      amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
 
     if (!recipientEmail && !recipientPhone) {
       return res.status(400).json({ error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
@@ -957,6 +1102,85 @@ export function registerRoutes(app: Express): Server {
 
     if (recipientPhone && !isE164(recipientPhone)) {
       return res.status(400).json({ error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+    }
+
+    // Server-authoritative message selection
+    let finalMessage = "";
+    let finalPresetId: number | null = null;
+
+    if (messageMode === "preset") {
+      const presetMsg = presetMessageById(Number(presetId));
+      if (!presetMsg) {
+        return res.status(400).json({
+          error: "Choose a preset message (1–5)",
+          field: "presetMessageId",
+          code: "PRESET_REQUIRED",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+      finalMessage = presetMsg;
+      finalPresetId = Number(presetId);
+    } else {
+      finalMessage = String(rawMessage || "").trim();
+      if (!finalMessage) {
+        return res.status(400).json({ error: "Message is required", field: "message", code: "MESSAGE_REQUIRED", version: VERSION, commit: COMMIT });
+      }
+      if (finalMessage.length > 280) {
+        return res.status(400).json({
+          error: "Message must be 280 characters or less",
+          field: "message",
+          code: "MESSAGE_TOO_LONG",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+    }
+
+    // Locked scope enforcement (defense-in-depth)
+    const isGuest = messageMode === "preset" && (amountCents === null || amountCents === 0);
+
+    if (isGuest) {
+      if (!recipientEmail) {
+        return res.status(400).json({
+          error: "Guest Thankümail requires recipient email",
+          field: "recipientEmail",
+          code: "GUEST_EMAIL_REQUIRED",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+      if (recipientPhone) {
+        return res.status(400).json({
+          error: "Guest Thankümail is email-only",
+          field: "recipientPhone",
+          code: "GUEST_EMAIL_ONLY",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+      if (amountCents && amountCents > 0) {
+        return res.status(400).json({
+          error: "Guest Thankümail does not include a gift amount",
+          field: "amount",
+          code: "GUEST_NO_AMOUNT",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+    } else {
+      // registered-like: if amount provided, enforce min $25
+      if (amountCents !== null) {
+        if (!Number.isFinite(amountCents) || amountCents <= 0) {
+          return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
+        }
+        if (amountCents < 2500) {
+          return res.status(400).json({ error: "Minimum amount is $25", field: "amount", code: "AMOUNT_MIN", version: VERSION, commit: COMMIT });
+        }
+        if (amountCents > 100000) {
+          return res.status(400).json({ error: "Maximum amount is $1000", field: "amount", code: "AMOUNT_MAX", version: VERSION, commit: COMMIT });
+        }
+      }
     }
 
     const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
@@ -1020,6 +1244,7 @@ export function registerRoutes(app: Express): Server {
       }
     }
 
+    // Duplicate suppression: only relevant for SMS mode (registered-like)
     if (recipientPhone) {
       const cutoffMs = Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000;
 
@@ -1033,8 +1258,7 @@ export function registerRoutes(app: Express): Server {
             .where(
               and(
                 eq((gifts as any).recipientPhone, recipientPhone),
-                eq(gifts.message, message),
-                eq(gifts.amount, amount),
+                eq(gifts.message, finalMessage),
                 eq(gifts.isClaimed, false),
               ),
             );
@@ -1046,7 +1270,7 @@ export function registerRoutes(app: Express): Server {
           rows = await db
             .select()
             .from(gifts)
-            .where(and(eq((gifts as any).senderEmail, senderEmail), eq(gifts.message, message), eq(gifts.amount, amount), eq(gifts.isClaimed, false)));
+            .where(and(eq((gifts as any).senderEmail, senderEmail), eq(gifts.message, finalMessage), eq(gifts.isClaimed, false)));
         }
 
         const recent = (rows || [])
@@ -1061,7 +1285,9 @@ export function registerRoutes(app: Express): Server {
             ok: true,
             publicId: existing.publicId,
             claimUrl: existingClaimUrl,
-            amount,
+            amount: existing.amount ?? null,
+            messageMode: (existing as any).messageMode || "custom",
+            presetMessageId: (existing as any).presetMessageId ?? null,
             deliveryOk: true,
             emailSent: false,
             smsQueued: false,
@@ -1083,8 +1309,15 @@ export function registerRoutes(app: Express): Server {
         senderEmail,
         recipientEmail: recipientEmail || null,
         recipientPhone: recipientPhone || null,
-        message,
-        amount,
+
+        messageMode,
+        presetMessageId: finalPresetId,
+
+        message: finalMessage,
+
+        // guest message-only => null
+        amount: amountCents && amountCents > 0 ? amountCents : null,
+
         isClaimed: false,
         reminderCount: 0,
         lastReminderSentAt: null,
@@ -1092,13 +1325,25 @@ export function registerRoutes(app: Express): Server {
         claimedAt: null,
       } as any);
 
-      queueGiftDelivery({ req, publicId, claimUrl, amount, senderEmail, recipientEmail, recipientPhone, message });
+      // delivery: pass amountCents=0 for message-only
+      queueGiftDelivery({
+        req,
+        publicId,
+        claimUrl,
+        amountCents: amountCents && amountCents > 0 ? amountCents : 0,
+        senderEmail,
+        recipientEmail,
+        recipientPhone,
+        message: finalMessage,
+      });
 
       return res.json({
         ok: true,
         publicId,
         claimUrl,
-        amount,
+        amount: amountCents && amountCents > 0 ? amountCents : null,
+        messageMode,
+        presetMessageId: finalPresetId,
         deliveryOk: true,
         emailSent: !!recipientEmail,
         smsQueued: !!recipientPhone,
@@ -1118,14 +1363,16 @@ export function registerRoutes(app: Express): Server {
 
     try {
       const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
-      const gift = rows?.[0];
+      const gift: any = rows?.[0];
       if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
 
       return res.json({
         ok: true,
         publicId: gift.publicId,
+        messageMode: gift.messageMode || "custom",
+        presetMessageId: gift.presetMessageId ?? null,
         message: gift.message,
-        amount: gift.amount,
+        amount: gift.amount ?? null,
         isClaimed: gift.isClaimed,
         createdAt: gift.createdAt,
         claimedAt: gift.claimedAt,
@@ -1155,7 +1402,7 @@ export function registerRoutes(app: Express): Server {
 
     try {
       const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
-      const gift = rows?.[0];
+      const gift: any = rows?.[0];
       if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
 
       if (gift.returnedToSenderAt) {
