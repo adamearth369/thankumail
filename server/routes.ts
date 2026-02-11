@@ -14,12 +14,12 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-10_001";
+const VERSION = "routes_v2026-02-11_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_keep_legacy_delivery_method";
+  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_hard_reject_guest_amount_and_message";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -130,12 +130,28 @@ function isBlockedEmailDomain(email: string) {
   return BLOCKED_EMAIL_DOMAINS.has(domain);
 }
 
+/* -------------------- RAW PAYLOAD GUARD (DEFENSE-IN-DEPTH) -------------------- */
+/**
+ * Zod may coerce/ignore unknown fields; we want to *hard reject*
+ * guest-mode attempts that include forbidden keys.
+ */
+function hasOwn(obj: any, key: string) {
+  return !!obj && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
+}
+function rawContainsForbiddenGuestKeys(raw: any) {
+  // For guests, any appearance of amount or message is forbidden (even empty string),
+  // because old cached clients may send it and we want to block the mismatch loudly.
+  const hasAmount = hasOwn(raw, "amount");
+  const hasMessage = hasOwn(raw, "message");
+  return { hasAmount, hasMessage, forbidden: hasAmount || hasMessage };
+}
+
 /* -------------------- VALIDATION (LOCKED SCOPE) -------------------- */
 const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email().optional().or(z.literal("")),
 
-    // Locked: guest is email-only; registered may still support phone
+    // Delivery targets (at least one required at API layer)
     recipientEmail: z.string().email().optional().or(z.literal("")),
     recipientPhone: z
       .string()
@@ -143,12 +159,14 @@ const CreateGiftSchema = z
       .or(z.literal(""))
       .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
 
-    // NEW
+    // Mode
     messageMode: z.enum(["preset", "custom"]).default("preset"),
     presetMessageId: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
+
+    // message optional at schema level; enforced in superRefine for custom
     message: z.string().optional().or(z.literal("")).default(""),
 
-    // NEW: optional, cents
+    // amount optional, cents
     amount: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
 
     turnstileToken: z.string().optional().or(z.literal("")),
@@ -1060,7 +1078,9 @@ export function registerRoutes(app: Express): Server {
 
   /* -------------------- GIFTS: CREATE -------------------- */
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
-    const parsed = CreateGiftSchema.safeParse(req.body || {});
+    const rawBody: any = req.body || {};
+
+    const parsed = CreateGiftSchema.safeParse(rawBody);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
@@ -1079,8 +1099,7 @@ export function registerRoutes(app: Express): Server {
     const rawMessage = safeStr((parsed.data as any).message);
 
     const amtRaw = (parsed.data as any).amount;
-    const amountCents =
-      amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
+    const amountCents = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
 
     if (!recipientEmail && !recipientPhone) {
       return res.status(400).json({ error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
@@ -1104,11 +1123,38 @@ export function registerRoutes(app: Express): Server {
       return res.status(400).json({ error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
 
-    // Server-authoritative message selection
+    // -------------------- SERVER-AUTHORITATIVE MESSAGE --------------------
     let finalMessage = "";
     let finalPresetId: number | null = null;
 
     if (messageMode === "preset") {
+      // HARD REJECT: old clients sending forbidden keys
+      const forbidden = rawContainsForbiddenGuestKeys(rawBody);
+      if (forbidden.forbidden) {
+        const issues: any[] = [];
+        if (forbidden.hasAmount) {
+          issues.push({
+            code: "custom",
+            message: "Guest Thankümail does not include a gift amount",
+            path: ["amount"],
+          });
+        }
+        if (forbidden.hasMessage) {
+          issues.push({
+            code: "custom",
+            message: "Guest Thankümail message is preset-only",
+            path: ["message"],
+          });
+        }
+        return res.status(400).json({
+          error: "Invalid payload",
+          issues,
+          code: "GUEST_FORBIDDEN_FIELDS",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+
       const presetMsg = presetMessageById(Number(presetId));
       if (!presetMsg) {
         return res.status(400).json({
@@ -1121,26 +1167,8 @@ export function registerRoutes(app: Express): Server {
       }
       finalMessage = presetMsg;
       finalPresetId = Number(presetId);
-    } else {
-      finalMessage = String(rawMessage || "").trim();
-      if (!finalMessage) {
-        return res.status(400).json({ error: "Message is required", field: "message", code: "MESSAGE_REQUIRED", version: VERSION, commit: COMMIT });
-      }
-      if (finalMessage.length > 280) {
-        return res.status(400).json({
-          error: "Message must be 280 characters or less",
-          field: "message",
-          code: "MESSAGE_TOO_LONG",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-    }
 
-    // Locked scope enforcement (defense-in-depth)
-    const isGuest = messageMode === "preset" && (amountCents === null || amountCents === 0);
-
-    if (isGuest) {
+      // Guest: email-only, no amount, no phone
       if (!recipientEmail) {
         return res.status(400).json({
           error: "Guest Thankümail requires recipient email",
@@ -1169,7 +1197,22 @@ export function registerRoutes(app: Express): Server {
         });
       }
     } else {
-      // registered-like: if amount provided, enforce min $25
+      // custom (registered path)
+      finalMessage = String(rawMessage || "").trim();
+      if (!finalMessage) {
+        return res.status(400).json({ error: "Message is required", field: "message", code: "MESSAGE_REQUIRED", version: VERSION, commit: COMMIT });
+      }
+      if (finalMessage.length > 280) {
+        return res.status(400).json({
+          error: "Message must be 280 characters or less",
+          field: "message",
+          code: "MESSAGE_TOO_LONG",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+
+      // registered: if amount provided, enforce min $25
       if (amountCents !== null) {
         if (!Number.isFinite(amountCents) || amountCents <= 0) {
           return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
@@ -1183,6 +1226,7 @@ export function registerRoutes(app: Express): Server {
       }
     }
 
+    // -------------------- TURNSTILE --------------------
     const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
     if (!t.ok) {
       const codes = t.codes || [];
@@ -1197,6 +1241,7 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
+    // -------------------- LIMITS --------------------
     const bypassLimits = canBypassLimits(parsed.data);
     if (!bypassLimits) {
       const ipLim = enforceIpDailyLimit(ip, DAILY_LIMIT_IP);
