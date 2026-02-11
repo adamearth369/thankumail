@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/pages/Home.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useState } from "react";
 import CreateGiftForm from "../components/CreateGiftForm";
 
@@ -16,17 +13,13 @@ export default function Home() {
 
   return (
     <div
-      className="min-h-screen text-white"
+      className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
       style={{
-        backgroundImage: "url(/images/hero-background.png)",
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        backgroundRepeat: "no-repeat",
+        backgroundImage: "url('/images/hero-background.png')",
       }}
     >
-      {/* soft dark overlay for readability */}
-      <div className="min-h-screen bg-black/40">
-        <main id="send" className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+      <div className="min-h-screen bg-black/40 backdrop-blur-sm">
+        <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div
             className={[
               "flex flex-col items-center text-center transition-all duration-700 ease-out",
@@ -46,7 +39,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-8 rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-tm-charcoal">
+          <div className="mt-8 rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
             <CreateGiftForm />
           </div>
 
