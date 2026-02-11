@@ -57,28 +57,28 @@ const API_BASE = "https://api.thankumail.com";
 const TURNSTILE_SCRIPT_SRC =
   "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
-// fallback key (since your live bundle clearly contains it)
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
-const PRESET_MESSAGES: Array<{ id: string; text: string }> = [
+// IMPORTANT: backend expects presetMessageId in [1..5] (not p1..p5)
+const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
   {
-    id: "p1",
+    id: 1,
     text: "I just wanted you to know how much I appreciate you. Thank you for being you.",
   },
   {
-    id: "p2",
+    id: 2,
     text: "Your support made a bigger difference than you realize. I’m truly grateful.",
   },
   {
-    id: "p3",
+    id: 3,
     text: "You showed up when it mattered most. That means everything. Thank you.",
   },
   {
-    id: "p4",
+    id: 4,
     text: "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you.",
   },
   {
-    id: "p5",
+    id: 5,
     text: "This is a small thank you for the quiet impact you’ve had on my life.",
   },
 ];
@@ -162,12 +162,13 @@ export default function CreateGiftForm() {
   const canSubmit = useMemo(() => {
     const s = senderEmail.trim();
     const re = recipientEmail.trim();
+    const presetOk = presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length;
 
     return (
       !submitting &&
       isEmail(s) &&
       isEmail(re) &&
-      (presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length) &&
+      presetOk &&
       token.length >= 20 &&
       TURNSTILE_SITE_KEY.length > 0
     );
@@ -201,7 +202,10 @@ export default function CreateGiftForm() {
     async function ensureTurnstile() {
       if (!TURNSTILE_SITE_KEY) {
         setTurnstileReady(false);
-        setErrorWithLock("Verification is not configured (missing site key).", "turnstile");
+        setErrorWithLock(
+          "Verification is not configured (missing site key).",
+          "turnstile"
+        );
         return;
       }
 
@@ -217,7 +221,10 @@ export default function CreateGiftForm() {
         script.onerror = () => {
           if (cancelled) return;
           setTurnstileReady(false);
-          setErrorWithLock("Verification failed to load. Please refresh and try again.", "turnstile");
+          setErrorWithLock(
+            "Verification failed to load. Please refresh and try again.",
+            "turnstile"
+          );
         };
 
         document.head.appendChild(script);
@@ -228,7 +235,10 @@ export default function CreateGiftForm() {
 
       setTurnstileReady(ok);
       if (!ok) {
-        setErrorWithLock("Verification is taking too long to initialize. Please refresh and try again.", "turnstile");
+        setErrorWithLock(
+          "Verification is taking too long to initialize. Please refresh and try again.",
+          "turnstile"
+        );
       }
     }
 
@@ -297,7 +307,10 @@ export default function CreateGiftForm() {
       if (seq === renderSeqRef.current && typeof id === "string") widgetIdRef.current = id;
     } catch {
       if (errorLockRef.current !== "server") {
-        setErrorWithLock("Verification failed to initialize. Please refresh and try again.", "turnstile");
+        setErrorWithLock(
+          "Verification failed to initialize. Please refresh and try again.",
+          "turnstile"
+        );
       }
     }
   }
@@ -361,14 +374,7 @@ export default function CreateGiftForm() {
       return;
     }
 
-    // Guest locked payload:
-    // - messageMode: "preset"
-    // - presetMessageId: 1..5
-    // - recipientEmail required
-    // - NO recipientPhone
-    // - NO amount
-    // - message optional (server picks preset)
-    const presetMessageId = presetIdx + 1;
+    const presetMessageId = PRESET_MESSAGES[presetIdx]?.id ?? 1;
 
     try {
       const resp = await fetch(`${API_BASE}/api/gifts`, {
@@ -416,7 +422,6 @@ export default function CreateGiftForm() {
 
       fireConfettiBurst();
 
-      // keep sender for convenience; clear recipient
       setRecipientEmail("");
       setPresetIdx(0);
 
@@ -492,9 +497,7 @@ export default function CreateGiftForm() {
           {/* -------------------- PRESET CAROUSEL (LOCKED) -------------------- */}
           <div>
             <div className="flex items-center justify-between gap-3 mb-2">
-              <div className="text-sm font-medium text-slate-900">
-                Choose a message
-              </div>
+              <div className="text-sm font-medium text-slate-900">Choose a message</div>
               <div className="text-xs text-slate-500">
                 {presetIdx + 1}/{PRESET_MESSAGES.length}
               </div>
@@ -510,16 +513,9 @@ export default function CreateGiftForm() {
                 ‹
               </button>
 
-              <div
-                className={classNames(
-                  "flex-1 text-left rounded-xl border px-3 py-3 bg-white",
-                  "border-slate-300"
-                )}
-              >
+              <div className="flex-1 text-left rounded-xl border px-3 py-3 bg-white border-slate-300">
                 <div className="text-xs text-slate-500 mb-1">Preset</div>
-                <div className="text-sm text-slate-900 leading-snug">
-                  {currentPreset?.text}
-                </div>
+                <div className="text-sm text-slate-900 leading-snug">{currentPreset?.text}</div>
               </div>
 
               <button
@@ -556,33 +552,18 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-900 mb-2">
-              Human check
-            </div>
+            <div className="text-sm font-medium text-slate-900 mb-2">Human check</div>
 
             <div
               id="tm-turnstile"
               ref={widgetContainerRef}
               className={classNames(
                 "min-h-[65px] rounded-xl border bg-white flex items-center justify-center overflow-hidden",
-                fieldError === "turnstile"
-                  ? "border-red-400"
-                  : "border-slate-400/70"
+                fieldError === "turnstile" ? "border-red-400" : "border-slate-400/70"
               )}
             />
 
-            <div className="mt-2 flex items-center justify-between gap-2 text-xs text-slate-500">
-              <div>
-                Token:{" "}
-                {token ? (
-                  <span className="font-mono break-all">
-                    {token.slice(0, 24)}… ({token.length})
-                  </span>
-                ) : (
-                  <span className="font-mono">none</span>
-                )}
-              </div>
-
+            <div className="mt-2 flex items-center justify-end gap-2 text-xs text-slate-500">
               <button
                 type="button"
                 onClick={() => {
@@ -612,19 +593,12 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent!</div>
               <div className="break-all">
                 Claim link:{" "}
-                <a
-                  className="underline"
-                  href={result.claimUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
                   {result.claimUrl}
                 </a>
               </div>
               {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">
-                  Delivery note: {result.deliveryError}
-                </div>
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
               ) : null}
             </div>
           ) : null}
