@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -23,6 +20,9 @@ type CreateGiftOk = {
   smsQueued?: boolean;
   version?: string;
   deliveryError?: string;
+  messageMode?: "preset" | "custom";
+  presetMessageId?: number | null;
+  amount?: number | null;
 };
 
 type CreateGiftResponse = CreateGiftOk | ApiError;
@@ -57,6 +57,9 @@ const API_BASE = "https://api.thankumail.com";
 const TURNSTILE_SCRIPT_SRC =
   "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
+// fallback key (since your live bundle clearly contains it)
+const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
+
 const PRESET_MESSAGES: Array<{ id: string; text: string }> = [
   {
     id: "p1",
@@ -80,17 +83,8 @@ const PRESET_MESSAGES: Array<{ id: string; text: string }> = [
   },
 ];
 
-function moneyToCents(dollars: number) {
-  const cents = Math.round((Number(dollars) || 0) * 100);
-  return Number.isFinite(cents) ? cents : 0;
-}
-
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
-}
-
-function isE164Phone(s: string) {
-  return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
 function classNames(...xs: Array<string | false | undefined | null>) {
@@ -117,15 +111,6 @@ function waitForTurnstile(maxMs: number) {
   });
 }
 
-function countTurnstileIframes() {
-  const iframes = Array.from(document.querySelectorAll("iframe"));
-  return iframes.filter((f) =>
-    String((f as HTMLIFrameElement).src || "").includes(
-      "challenges.cloudflare.com"
-    )
-  ).length;
-}
-
 function isTurnstileErrorCode(code?: string) {
   const c = String(code || "").toUpperCase();
   return c === "TURNSTILE_FAILED";
@@ -143,18 +128,14 @@ function fireConfettiBurst() {
 }
 
 export default function CreateGiftForm() {
+  // Guest scope: email-only + preset-only + no amount
   const [senderEmail, setSenderEmail] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
-  const [recipientPhone, setRecipientPhone] = useState("");
-  const [amountDollars, setAmountDollars] = useState<string>("");
 
-  const [message, setMessage] = useState<string>("");
   const [presetIdx, setPresetIdx] = useState<number>(0);
-  const [messageTouched, setMessageTouched] = useState<boolean>(false);
 
   const [token, setToken] = useState<string>("");
   const [turnstileReady, setTurnstileReady] = useState<boolean>(false);
-  const [turnstileBlocked, setTurnstileBlocked] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   const [error, setError] = useState<string>("");
@@ -166,54 +147,31 @@ export default function CreateGiftForm() {
   const renderSeqRef = useRef<number>(0);
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
 
-  const TURNSTILE_SITE_KEY = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY
-    ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
-    : "";
+  const TURNSTILE_SITE_KEY = useMemo(() => {
+    const envKey = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY
+      ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
+      : "";
+    return (envKey || FALLBACK_TURNSTILE_SITE_KEY || "").trim();
+  }, []);
 
   const wordmark = useMemo(() => {
     const dia = "\u0308";
     return `thanku${dia}mail`;
   }, []);
 
-  const cents = useMemo(() => {
-    const raw = String(amountDollars || "").trim();
-    const cleaned = raw.replace(/[^0-9.]/g, "");
-    return moneyToCents(Number(cleaned));
-  }, [amountDollars]);
-
   const canSubmit = useMemo(() => {
     const s = senderEmail.trim();
     const re = recipientEmail.trim();
-    const rp = recipientPhone.trim();
-
-    const hasEmail = Boolean(re);
-    const hasPhone = Boolean(rp);
-
-    const emailOk = hasEmail ? isEmail(re) : false;
-    const phoneOk = hasPhone ? isE164Phone(rp) : false;
-
-    const deliveryOk =
-      (hasEmail && emailOk) || (!hasEmail && hasPhone && phoneOk);
 
     return (
       !submitting &&
       isEmail(s) &&
-      deliveryOk &&
-      cents >= 1 &&
-      message.trim().length >= 1 &&
+      isEmail(re) &&
+      (presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length) &&
       token.length >= 20 &&
       TURNSTILE_SITE_KEY.length > 0
     );
-  }, [
-    submitting,
-    senderEmail,
-    recipientEmail,
-    recipientPhone,
-    cents,
-    message,
-    token,
-    TURNSTILE_SITE_KEY,
-  ]);
+  }, [submitting, senderEmail, recipientEmail, presetIdx, token, TURNSTILE_SITE_KEY]);
 
   function setErrorWithLock(msg: string, lock: "none" | "server" | "turnstile") {
     errorLockRef.current = lock;
@@ -235,17 +193,7 @@ export default function CreateGiftForm() {
   function selectPreset(i: number) {
     const idx = clampPresetIndex(i);
     setPresetIdx(idx);
-    setMessageTouched(false);
-    setMessage(PRESET_MESSAGES[idx]?.text || "");
   }
-
-  useEffect(() => {
-    // Initialize message with first preset on first mount
-    if (!messageTouched && !message.trim()) {
-      selectPreset(0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -253,10 +201,7 @@ export default function CreateGiftForm() {
     async function ensureTurnstile() {
       if (!TURNSTILE_SITE_KEY) {
         setTurnstileReady(false);
-        setErrorWithLock(
-          "Verification is not configured (missing site key).",
-          "turnstile"
-        );
+        setErrorWithLock("Verification is not configured (missing site key).", "turnstile");
         return;
       }
 
@@ -272,10 +217,7 @@ export default function CreateGiftForm() {
         script.onerror = () => {
           if (cancelled) return;
           setTurnstileReady(false);
-          setErrorWithLock(
-            "Verification failed to load. Please refresh and try again.",
-            "turnstile"
-          );
+          setErrorWithLock("Verification failed to load. Please refresh and try again.", "turnstile");
         };
 
         document.head.appendChild(script);
@@ -286,10 +228,7 @@ export default function CreateGiftForm() {
 
       setTurnstileReady(ok);
       if (!ok) {
-        setErrorWithLock(
-          "Verification is taking too long to initialize. Please refresh and try again.",
-          "turnstile"
-        );
+        setErrorWithLock("Verification is taking too long to initialize. Please refresh and try again.", "turnstile");
       }
     }
 
@@ -320,27 +259,10 @@ export default function CreateGiftForm() {
     if (!window.turnstile?.render) return;
     if (!TURNSTILE_SITE_KEY) return;
 
-    setTurnstileBlocked(false);
     setToken("");
-
     el.innerHTML = "";
 
     const seq = ++renderSeqRef.current;
-
-    const start = Date.now();
-    const poll = () => {
-      if (seq !== renderSeqRef.current) return;
-      const tmIframes = countTurnstileIframes();
-      if (tmIframes > 0) {
-        setTurnstileBlocked(false);
-        return;
-      }
-      if (Date.now() - start >= 5200) {
-        setTurnstileBlocked(true);
-        return;
-      }
-      setTimeout(poll, 400);
-    };
 
     try {
       const id = window.turnstile.render(el, {
@@ -357,13 +279,11 @@ export default function CreateGiftForm() {
         },
         "expired-callback": () => {
           setToken("");
-          if (errorLockRef.current !== "server")
-            errorLockRef.current = "turnstile";
+          if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
         },
         "timeout-callback": () => {
           setToken("");
-          if (errorLockRef.current !== "server")
-            errorLockRef.current = "turnstile";
+          if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
         },
         "error-callback": () => {
           setToken("");
@@ -374,15 +294,10 @@ export default function CreateGiftForm() {
         "refresh-timeout": "auto",
       });
 
-      if (typeof id === "string") widgetIdRef.current = id;
-
-      setTimeout(poll, 250);
+      if (seq === renderSeqRef.current && typeof id === "string") widgetIdRef.current = id;
     } catch {
       if (errorLockRef.current !== "server") {
-        setErrorWithLock(
-          "Verification failed to initialize. Please refresh and try again.",
-          "turnstile"
-        );
+        setErrorWithLock("Verification failed to initialize. Please refresh and try again.", "turnstile");
       }
     }
   }
@@ -417,16 +332,6 @@ export default function CreateGiftForm() {
 
     const s = senderEmail.trim();
     const re = recipientEmail.trim();
-    const rpRaw = recipientPhone.trim();
-    const m = message.trim();
-
-    const hasEmail = Boolean(re);
-    const hasPhone = Boolean(rpRaw);
-
-    const emailOk = hasEmail ? isEmail(re) : false;
-    const phoneOk = hasPhone ? isE164Phone(rpRaw) : false;
-
-    const phoneToSend = phoneOk ? rpRaw : undefined;
 
     if (!isEmail(s)) {
       setSubmitting(false);
@@ -435,48 +340,17 @@ export default function CreateGiftForm() {
       return;
     }
 
-    if (!hasEmail && !hasPhone) {
-      setSubmitting(false);
-      setFieldError("recipient");
-      setErrorWithLock("Please enter a recipient email or phone number.", "none");
-      return;
-    }
-
-    if (hasEmail && !emailOk) {
+    if (!isEmail(re)) {
       setSubmitting(false);
       setFieldError("recipientEmail");
       setErrorWithLock("Please enter a valid recipient email.", "none");
       return;
     }
 
-    if (!hasEmail && hasPhone && !phoneOk) {
-      setSubmitting(false);
-      setFieldError("recipientPhone");
-      setErrorWithLock("Phone must be in E.164 format (e.g. +16043691517).", "none");
-      return;
-    }
-
-    if (cents < 1) {
-      setSubmitting(false);
-      setFieldError("amount");
-      setErrorWithLock("Please enter a valid amount.", "none");
-      return;
-    }
-
-    if (!m) {
-      setSubmitting(false);
-      setFieldError("message");
-      setErrorWithLock("Please write a short message.", "none");
-      return;
-    }
-
     if (!TURNSTILE_SITE_KEY) {
       setSubmitting(false);
       setFieldError("turnstile");
-      setErrorWithLock(
-        "Verification is not configured. Please contact support.",
-        "turnstile"
-      );
+      setErrorWithLock("Verification is not configured. Please contact support.", "turnstile");
       return;
     }
 
@@ -487,16 +361,24 @@ export default function CreateGiftForm() {
       return;
     }
 
+    // Guest locked payload:
+    // - messageMode: "preset"
+    // - presetMessageId: 1..5
+    // - recipientEmail required
+    // - NO recipientPhone
+    // - NO amount
+    // - message optional (server picks preset)
+    const presetMessageId = presetIdx + 1;
+
     try {
       const resp = await fetch(`${API_BASE}/api/gifts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           senderEmail: s,
-          recipientEmail: emailOk ? re : undefined,
-          recipientPhone: phoneToSend,
-          message: m,
-          amount: cents,
+          recipientEmail: re,
+          messageMode: "preset",
+          presetMessageId,
           turnstileToken: token,
         }),
       });
@@ -511,9 +393,7 @@ export default function CreateGiftForm() {
       if (!resp.ok || !data?.ok) {
         const err = parseApiError(data || { error: "Request failed" });
         const code = String(err.code || "");
-        const lock: "server" | "turnstile" = isTurnstileErrorCode(code)
-          ? "turnstile"
-          : "server";
+        const lock: "server" | "turnstile" = isTurnstileErrorCode(code) ? "turnstile" : "server";
 
         setErrorWithLock(err.error || "Request failed", lock);
         setFieldError(err.field || "");
@@ -536,12 +416,9 @@ export default function CreateGiftForm() {
 
       fireConfettiBurst();
 
-      setSenderEmail("");
+      // keep sender for convenience; clear recipient
       setRecipientEmail("");
-      setRecipientPhone("");
-      setAmountDollars("");
-
-      selectPreset(0);
+      setPresetIdx(0);
 
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
@@ -569,9 +446,6 @@ export default function CreateGiftForm() {
   const inputBase =
     "w-full rounded-xl border px-3 py-2 outline-none bg-white text-slate-900 placeholder:text-slate-400 border-slate-400/70 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10";
 
-  const showSoftTurnstileHint =
-    turnstileReady && turnstileBlocked && !token && fieldError !== "turnstile";
-
   const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[0];
 
   return (
@@ -598,68 +472,24 @@ export default function CreateGiftForm() {
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <input
-                value={recipientEmail}
-                onChange={(e) => setRecipientEmail(e.target.value)}
-                type="email"
-                autoComplete="email"
-                aria-label="Receivers email"
-                placeholder="Receivers email"
-                className={classNames(
-                  inputBase,
-                  fieldError === "recipientEmail"
-                    ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                    : ""
-                )}
-              />
-            </div>
-
-            <div>
-              <input
-                value={recipientPhone}
-                onChange={(e) => setRecipientPhone(e.target.value)}
-                type="tel"
-                autoComplete="tel"
-                aria-label="Recipient phone"
-                placeholder="Recipient phone (optional)"
-                className={classNames(
-                  inputBase,
-                  fieldError === "recipientPhone"
-                    ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                    : ""
-                )}
-              />
-              <div className="mt-1 text-[11px] text-slate-500">
-                Format: <span className="font-mono">+12223334444</span>
-              </div>
-            </div>
-          </div>
-
           <div>
-            <div className="text-sm font-medium text-slate-900 mb-2">
-              Gift Amount
-            </div>
-            <div className="flex items-center gap-3">
-              <input
-                value={amountDollars}
-                onChange={(e) => setAmountDollars(e.target.value)}
-                inputMode="decimal"
-                aria-label="Gift amount"
-                placeholder="$25 (USD)"
-                className={classNames(
-                  "w-44",
-                  inputBase,
-                  fieldError === "amount"
-                    ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                    : ""
-                )}
-              />
-            </div>
+            <input
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              type="email"
+              autoComplete="email"
+              aria-label="Recipient email"
+              placeholder="Recipient email"
+              className={classNames(
+                inputBase,
+                fieldError === "recipientEmail"
+                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                  : ""
+              )}
+            />
           </div>
 
-          {/* -------------------- PRESET CAROUSEL -------------------- */}
+          {/* -------------------- PRESET CAROUSEL (LOCKED) -------------------- */}
           <div>
             <div className="flex items-center justify-between gap-3 mb-2">
               <div className="text-sm font-medium text-slate-900">
@@ -680,22 +510,17 @@ export default function CreateGiftForm() {
                 ‹
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setMessageTouched(false);
-                  setMessage(currentPreset?.text || "");
-                }}
+              <div
                 className={classNames(
-                  "flex-1 text-left rounded-xl border px-3 py-3 bg-white transition",
-                  "border-slate-300 hover:bg-slate-50"
+                  "flex-1 text-left rounded-xl border px-3 py-3 bg-white",
+                  "border-slate-300"
                 )}
               >
                 <div className="text-xs text-slate-500 mb-1">Preset</div>
                 <div className="text-sm text-slate-900 leading-snug">
                   {currentPreset?.text}
                 </div>
-              </button>
+              </div>
 
               <button
                 type="button"
@@ -728,43 +553,12 @@ export default function CreateGiftForm() {
                 );
               })}
             </div>
-
-            <div className="mt-2 text-[11px] text-slate-500">
-              Tip: pick a preset, then tweak it below if you want.
-            </div>
-          </div>
-
-          <div>
-            <textarea
-              value={message}
-              onChange={(e) => {
-                setMessageTouched(true);
-                setMessage(e.target.value);
-              }}
-              rows={5}
-              aria-label="Message"
-              placeholder="Message"
-              className={classNames(
-                "w-full resize-none",
-                inputBase,
-                fieldError === "message"
-                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                  : ""
-              )}
-            />
           </div>
 
           <div>
             <div className="text-sm font-medium text-slate-900 mb-2">
               Human check
             </div>
-
-            {showSoftTurnstileHint ? (
-              <div className="mb-2 text-xs text-slate-500">
-                If verification doesn’t appear, allow{" "}
-                <span className="font-medium">challenges.cloudflare.com</span> or refresh.
-              </div>
-            ) : null}
 
             <div
               id="tm-turnstile"
