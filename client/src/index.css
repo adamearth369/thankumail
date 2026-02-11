@@ -82,20 +82,7 @@
   body {
     margin: 0;
     font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
-    background:
-      radial-gradient(
-        circle at 50% 10%,
-        rgba(109, 40, 217, 0.35),
-        rgba(139, 92, 246, 0.25) 35%,
-        transparent 70%
-      ),
-      linear-gradient(
-        180deg,
-        #ede9fe 0%,
-        #ddd6fe 35%,
-        #f5f3ff 60%,
-        #ffffff 100%
-      );
+    background: #ffffff;
     background-attachment: fixed;
     color: var(--tm-charcoal);
   }
