@@ -4,7 +4,7 @@ import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-01-31_006";
+const INDEX_VERSION = "api_index_v2026-02-11_001";
 
 /* -------------------- APP -------------------- */
 const app: Express = express();
@@ -41,7 +41,7 @@ app.get("/health", (_req, res) => {
 });
 
 /* -------------------- API ROUTES FIRST -------------------- */
-const httpServer = registerRoutes(app);
+registerRoutes(app);
 
 /* -------------------- STATIC + SPA FALLBACK -------------------- */
 const publicDir = path.join(process.cwd(), "dist", "public");
@@ -73,7 +73,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 /* -------------------- LISTEN (RENDER) -------------------- */
-const PORT = Number(process.env.PORT || 5000);
-httpServer.listen(PORT, "0.0.0.0", () => {
+const PORT = Number(process.env.PORT || 10000);
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`listening on ${PORT} (${INDEX_VERSION})`);
 });
