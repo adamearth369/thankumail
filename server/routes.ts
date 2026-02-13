@@ -14,7 +14,7 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-11_001";
+const VERSION = "routes_v2026-02-11_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -37,6 +37,19 @@ function safeStr(v: any) {
 function toMs(d: any) {
   const t = d instanceof Date ? d.getTime() : new Date(d).getTime();
   return Number.isFinite(t) ? t : 0;
+}
+
+/* -------------------- AUTH (TEMP STUB FOR REGISTERED) -------------------- */
+/**
+ * TEMP: "registered" is indicated by header `x-user-id`.
+ * Frontend does not send this yet. This allows deterministic backend gating now.
+ */
+function getUserId(req: Request) {
+  const v = safeStr(req.headers["x-user-id"]).trim();
+  return v || null;
+}
+function isRegistered(req: Request) {
+  return !!getUserId(req);
 }
 
 /* -------------------- PRESET MESSAGES (LOCKED v1) -------------------- */
@@ -131,16 +144,10 @@ function isBlockedEmailDomain(email: string) {
 }
 
 /* -------------------- RAW PAYLOAD GUARD (DEFENSE-IN-DEPTH) -------------------- */
-/**
- * Zod may coerce/ignore unknown fields; we want to *hard reject*
- * guest-mode attempts that include forbidden keys.
- */
 function hasOwn(obj: any, key: string) {
   return !!obj && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
 }
 function rawContainsForbiddenGuestKeys(raw: any) {
-  // For guests, any appearance of amount or message is forbidden (even empty string),
-  // because old cached clients may send it and we want to block the mismatch loudly.
   const hasAmount = hasOwn(raw, "amount");
   const hasMessage = hasOwn(raw, "message");
   return { hasAmount, hasMessage, forbidden: hasAmount || hasMessage };
@@ -151,7 +158,6 @@ const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email().optional().or(z.literal("")),
 
-    // Delivery targets (at least one required at API layer)
     recipientEmail: z.string().email().optional().or(z.literal("")),
     recipientPhone: z
       .string()
@@ -159,14 +165,10 @@ const CreateGiftSchema = z
       .or(z.literal(""))
       .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
 
-    // Mode
     messageMode: z.enum(["preset", "custom"]).default("preset"),
     presetMessageId: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
 
-    // message optional at schema level; enforced in superRefine for custom
     message: z.string().optional().or(z.literal("")).default(""),
-
-    // amount optional, cents
     amount: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
 
     turnstileToken: z.string().optional().or(z.literal("")),
@@ -195,67 +197,47 @@ const CreateGiftSchema = z
           path: ["presetMessageId"],
         });
       }
+      return;
+    }
 
-      // Locked: guest preset is email-only
-      if (hasPhone) {
+    // custom (registered path; auth enforced in route)
+    const msg = String(val?.message ?? "").trim();
+    if (!msg) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Message is required",
+        path: ["message"],
+      });
+    }
+    if (msg.length > 280) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Message must be 280 characters or less",
+        path: ["message"],
+      });
+    }
+
+    const amtRaw = val?.amount;
+    const amt = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
+    if (amt !== null) {
+      if (!Number.isFinite(amt) || amt <= 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Guest Thankümail is email-only",
-          path: ["recipientPhone"],
-        });
-      }
-
-      // Locked: guest has no gift certificate
-      const amtRaw = val?.amount;
-      const amt = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
-      if (amt !== null && Number.isFinite(amt) && amt > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Guest Thankümail does not include a gift amount",
+          message: "Amount must be a positive number of cents",
           path: ["amount"],
         });
-      }
-    } else {
-      // custom
-      const msg = String(val?.message ?? "").trim();
-      if (!msg) {
+      } else if (amt < 2500) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Message is required",
-          path: ["message"],
+          message: "Minimum amount is $25",
+          path: ["amount"],
         });
-      }
-      if (msg.length > 280) {
+      } else if (amt > 100000) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Message must be 280 characters or less",
-          path: ["message"],
+          message: "Maximum amount is $1000",
+          path: ["amount"],
         });
-      }
-
-      // registered: if amount provided, must be >= $25
-      const amtRaw = val?.amount;
-      const amt = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
-      if (amt !== null) {
-        if (!Number.isFinite(amt) || amt <= 0) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "Amount must be a positive number of cents",
-            path: ["amount"],
-          });
-        } else if (amt < 2500) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "Minimum amount is $25",
-            path: ["amount"],
-          });
-        } else if (amt > 100000) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "Maximum amount is $1000",
-            path: ["amount"],
-          });
-        }
       }
     }
   });
@@ -423,7 +405,7 @@ function corsForApi(req: Request, res: any) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-admin-token");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-admin-token, x-user-id");
     res.setHeader("Access-Control-Max-Age", "600");
   }
 }
@@ -559,6 +541,9 @@ export function registerRoutes(app: Express): Server {
       reminderSendingEnabled: REMINDER_SENDING_ENABLED,
       routesMarker: ROUTES_MARKER,
       testingAdminToolsEnabled: ENABLE_TESTING_ADMIN_TOOLS,
+
+      // auth info (temporary)
+      registeredAuthMode: "x-user-id (temporary)",
     });
   });
 
@@ -1079,6 +1064,7 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- GIFTS: CREATE -------------------- */
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
     const rawBody: any = req.body || {};
+    const registered = isRegistered(req);
 
     const parsed = CreateGiftSchema.safeParse(rawBody);
     if (!parsed.success) {
@@ -1123,36 +1109,54 @@ export function registerRoutes(app: Express): Server {
       return res.status(400).json({ error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
 
+    // Locked scope for now: email-only delivery (guest + registered)
+    if (recipientPhone) {
+      return res.status(400).json({
+        error: "SMS delivery is not enabled in the current scope",
+        field: "recipientPhone",
+        code: "SMS_DISABLED_SCOPE",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    // -------------------- AUTH GATE (REGISTERED FEATURES) --------------------
+    const wantsRegisteredFeatures =
+      messageMode === "custom" || (amountCents !== null && Number.isFinite(amountCents) && amountCents > 0);
+
+    if (wantsRegisteredFeatures && !registered) {
+      return res.status(401).json({
+        error: "Authentication required",
+        code: "AUTH_REQUIRED",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
     // -------------------- SERVER-AUTHORITATIVE MESSAGE --------------------
     let finalMessage = "";
     let finalPresetId: number | null = null;
 
     if (messageMode === "preset") {
-      // HARD REJECT: old clients sending forbidden keys
-      const forbidden = rawContainsForbiddenGuestKeys(rawBody);
-      if (forbidden.forbidden) {
-        const issues: any[] = [];
-        if (forbidden.hasAmount) {
-          issues.push({
-            code: "custom",
-            message: "Guest Thankümail does not include a gift amount",
-            path: ["amount"],
+      // Guest: hard reject forbidden keys (old cached clients)
+      if (!registered) {
+        const forbidden = rawContainsForbiddenGuestKeys(rawBody);
+        if (forbidden.forbidden) {
+          const issues: any[] = [];
+          if (forbidden.hasAmount) {
+            issues.push({ code: "custom", message: "Guest Thankümail does not include a gift amount", path: ["amount"] });
+          }
+          if (forbidden.hasMessage) {
+            issues.push({ code: "custom", message: "Guest Thankümail message is preset-only", path: ["message"] });
+          }
+          return res.status(400).json({
+            error: "Invalid payload",
+            issues,
+            code: "GUEST_FORBIDDEN_FIELDS",
+            version: VERSION,
+            commit: COMMIT,
           });
         }
-        if (forbidden.hasMessage) {
-          issues.push({
-            code: "custom",
-            message: "Guest Thankümail message is preset-only",
-            path: ["message"],
-          });
-        }
-        return res.status(400).json({
-          error: "Invalid payload",
-          issues,
-          code: "GUEST_FORBIDDEN_FIELDS",
-          version: VERSION,
-          commit: COMMIT,
-        });
       }
 
       const presetMsg = presetMessageById(Number(presetId));
@@ -1168,36 +1172,42 @@ export function registerRoutes(app: Express): Server {
       finalMessage = presetMsg;
       finalPresetId = Number(presetId);
 
-      // Guest: email-only, no amount, no phone
-      if (!recipientEmail) {
-        return res.status(400).json({
-          error: "Guest Thankümail requires recipient email",
-          field: "recipientEmail",
-          code: "GUEST_EMAIL_REQUIRED",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-      if (recipientPhone) {
-        return res.status(400).json({
-          error: "Guest Thankümail is email-only",
-          field: "recipientPhone",
-          code: "GUEST_EMAIL_ONLY",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-      if (amountCents && amountCents > 0) {
-        return res.status(400).json({
-          error: "Guest Thankümail does not include a gift amount",
-          field: "amount",
-          code: "GUEST_NO_AMOUNT",
-          version: VERSION,
-          commit: COMMIT,
-        });
+      // Guest: email-only + no amount
+      if (!registered) {
+        if (!recipientEmail) {
+          return res.status(400).json({
+            error: "Guest Thankümail requires recipient email",
+            field: "recipientEmail",
+            code: "GUEST_EMAIL_REQUIRED",
+            version: VERSION,
+            commit: COMMIT,
+          });
+        }
+        if (amountCents && amountCents > 0) {
+          return res.status(400).json({
+            error: "Guest Thankümail does not include a gift amount",
+            field: "amount",
+            code: "GUEST_NO_AMOUNT",
+            version: VERSION,
+            commit: COMMIT,
+          });
+        }
+      } else {
+        // Registered: if amount included, enforce min $25
+        if (amountCents !== null) {
+          if (!Number.isFinite(amountCents) || amountCents <= 0) {
+            return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
+          }
+          if (amountCents < 2500) {
+            return res.status(400).json({ error: "Minimum amount is $25", field: "amount", code: "AMOUNT_MIN", version: VERSION, commit: COMMIT });
+          }
+          if (amountCents > 100000) {
+            return res.status(400).json({ error: "Maximum amount is $1000", field: "amount", code: "AMOUNT_MAX", version: VERSION, commit: COMMIT });
+          }
+        }
       }
     } else {
-      // custom (registered path)
+      // custom (registered)
       finalMessage = String(rawMessage || "").trim();
       if (!finalMessage) {
         return res.status(400).json({ error: "Message is required", field: "message", code: "MESSAGE_REQUIRED", version: VERSION, commit: COMMIT });
@@ -1212,7 +1222,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // registered: if amount provided, enforce min $25
       if (amountCents !== null) {
         if (!Number.isFinite(amountCents) || amountCents <= 0) {
           return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
@@ -1289,7 +1298,7 @@ export function registerRoutes(app: Express): Server {
       }
     }
 
-    // Duplicate suppression: only relevant for SMS mode (registered-like)
+    // Duplicate suppression: only relevant for SMS (currently disabled), keep code inert
     if (recipientPhone) {
       const cutoffMs = Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000;
 
@@ -1300,13 +1309,7 @@ export function registerRoutes(app: Express): Server {
           rows = await db
             .select()
             .from(gifts)
-            .where(
-              and(
-                eq((gifts as any).recipientPhone, recipientPhone),
-                eq(gifts.message, finalMessage),
-                eq(gifts.isClaimed, false),
-              ),
-            );
+            .where(and(eq((gifts as any).recipientPhone, recipientPhone), eq(gifts.message, finalMessage), eq(gifts.isClaimed, false)));
         } catch {
           rows = [];
         }
@@ -1360,7 +1363,6 @@ export function registerRoutes(app: Express): Server {
 
         message: finalMessage,
 
-        // guest message-only => null
         amount: amountCents && amountCents > 0 ? amountCents : null,
 
         isClaimed: false,
@@ -1370,7 +1372,6 @@ export function registerRoutes(app: Express): Server {
         claimedAt: null,
       } as any);
 
-      // delivery: pass amountCents=0 for message-only
       queueGiftDelivery({
         req,
         publicId,
@@ -1486,7 +1487,10 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      await db.update(gifts).set({ isClaimed: true, claimedAt: new Date() }).where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
+      await db
+        .update(gifts)
+        .set({ isClaimed: true, claimedAt: new Date() })
+        .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
 
       return res.json({ ok: true, version: VERSION, commit: COMMIT });
     } catch (e: any) {
