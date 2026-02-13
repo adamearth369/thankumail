@@ -14,7 +14,7 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-11_002";
+const VERSION = "routes_v2026-02-11_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -541,8 +541,6 @@ export function registerRoutes(app: Express): Server {
       reminderSendingEnabled: REMINDER_SENDING_ENABLED,
       routesMarker: ROUTES_MARKER,
       testingAdminToolsEnabled: ENABLE_TESTING_ADMIN_TOOLS,
-
-      // auth info (temporary)
       registeredAuthMode: "x-user-id (temporary)",
     });
   });
@@ -554,9 +552,7 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminTestCreateGiftSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
@@ -567,14 +563,10 @@ export function registerRoutes(app: Express): Server {
     const deliver = !!parsed.data.deliver;
 
     if (!recipientEmail && !recipientPhone) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
       return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
@@ -641,9 +633,7 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminGiftResetSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const publicId = safeStr(parsed.data.publicId).trim();
@@ -689,9 +679,7 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminAdvanceReminderTimeSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const publicId = safeStr(parsed.data.publicId).trim();
@@ -704,15 +692,11 @@ export function registerRoutes(app: Express): Server {
         return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
       if (gift.returnedToSenderAt) {
-        return res
-          .status(409)
-          .json({ ok: false, error: "Already returned to sender", code: "ALREADY_RETURNED", version: VERSION, commit: COMMIT });
+        return res.status(409).json({ ok: false, error: "Already returned to sender", code: "ALREADY_RETURNED", version: VERSION, commit: COMMIT });
       }
       const reminderCount = Number(gift.reminderCount || 0);
       if (reminderCount >= REMINDER_MAX) {
-        return res
-          .status(409)
-          .json({ ok: false, error: "Reminder max already reached", code: "REMINDER_MAX_REACHED", version: VERSION, commit: COMMIT });
+        return res.status(409).json({ ok: false, error: "Reminder max already reached", code: "REMINDER_MAX_REACHED", version: VERSION, commit: COMMIT });
       }
 
       const gapMs = getReminderGapMs();
@@ -739,9 +723,7 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminGiftSeedSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
@@ -752,14 +734,10 @@ export function registerRoutes(app: Express): Server {
     const markClaimed = !!parsed.data.markClaimed;
 
     if (!recipientEmail && !recipientPhone) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
       return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
@@ -1120,14 +1098,13 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // -------------------- AUTH GATE (REGISTERED FEATURES) --------------------
-    const wantsRegisteredFeatures =
-      messageMode === "custom" || (amountCents !== null && Number.isFinite(amountCents) && amountCents > 0);
-
-    if (wantsRegisteredFeatures && !registered) {
-      return res.status(401).json({
-        error: "Authentication required",
-        code: "AUTH_REQUIRED",
+    // -------------------- GUEST MODE HARD LOCK --------------------
+    // If not registered, ONLY preset mode is allowed (avoid confusing AUTH_REQUIRED for guests).
+    if (!registered && messageMode !== "preset") {
+      return res.status(400).json({
+        error: "Guest Thankümail is preset-only",
+        field: "messageMode",
+        code: "GUEST_PRESET_ONLY",
         version: VERSION,
         commit: COMMIT,
       });
@@ -1172,7 +1149,7 @@ export function registerRoutes(app: Express): Server {
       finalMessage = presetMsg;
       finalPresetId = Number(presetId);
 
-      // Guest: email-only + no amount
+      // Guest: email required + no amount
       if (!registered) {
         if (!recipientEmail) {
           return res.status(400).json({
@@ -1183,7 +1160,7 @@ export function registerRoutes(app: Express): Server {
             commit: COMMIT,
           });
         }
-        if (amountCents && amountCents > 0) {
+        if (amountCents !== null && Number.isFinite(amountCents) && amountCents > 0) {
           return res.status(400).json({
             error: "Guest Thankümail does not include a gift amount",
             field: "amount",
@@ -1193,8 +1170,11 @@ export function registerRoutes(app: Express): Server {
           });
         }
       } else {
-        // Registered: if amount included, enforce min $25
-        if (amountCents !== null) {
+        // Registered: if amount included, enforce auth + min $25
+        if (amountCents !== null && Number.isFinite(amountCents) && amountCents > 0) {
+          if (!registered) {
+            return res.status(401).json({ error: "Authentication required", code: "AUTH_REQUIRED", version: VERSION, commit: COMMIT });
+          }
           if (!Number.isFinite(amountCents) || amountCents <= 0) {
             return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
           }
@@ -1208,6 +1188,15 @@ export function registerRoutes(app: Express): Server {
       }
     } else {
       // custom (registered)
+      if (!registered) {
+        return res.status(401).json({
+          error: "Authentication required",
+          code: "AUTH_REQUIRED",
+          version: VERSION,
+          commit: COMMIT,
+        });
+      }
+
       finalMessage = String(rawMessage || "").trim();
       if (!finalMessage) {
         return res.status(400).json({ error: "Message is required", field: "message", code: "MESSAGE_REQUIRED", version: VERSION, commit: COMMIT });
