@@ -8,6 +8,7 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
+const CLAIM_UI_MARKER = "claim_ui_v2026-02-13_001";
 
 function getPublicIdFromPath() {
   const parts = window.location.pathname.split("/").filter(Boolean);
@@ -41,7 +42,6 @@ function friendlyError(msg: string) {
   const m = String(msg || "");
   if (!m) return "";
 
-  // IMPORTANT: invalid/expired must always win over verification/captcha wording
   if (
     /not found/i.test(m) ||
     /invalid or expired/i.test(m) ||
@@ -52,7 +52,7 @@ function friendlyError(msg: string) {
   }
 
   if (/already claimed/i.test(m)) return "This thankÜmail has already been claimed.";
-  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — we’re finalizing your gift.";
+  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — we’re finalizing your thankÜmail.";
 
   if (/TURNSTILE_FAILED/i.test(m) || /captcha/i.test(m) || /verification/i.test(m)) {
     return "Verification expired or failed — please verify again.";
@@ -95,20 +95,16 @@ export default function Claim() {
   const [gift, setGift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  // Claim flow
   const [claiming, setClaiming] = useState(false);
-  const [armed, setArmed] = useState(false); // when true: countdown -> auto-claim
+  const [armed, setArmed] = useState(false);
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
 
-  // UI state
   const [error, setError] = useState("");
   const [ok, setOk] = useState(false);
   const [alreadyClaimed, setAlreadyClaimed] = useState(false);
 
-  // Invalid-link latch (prevents Turnstile from ever overriding invalid/expired)
   const invalidRef = useRef<boolean>(false);
 
-  // Turnstile
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
   const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey);
@@ -116,15 +112,14 @@ export default function Claim() {
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
 
-  // Confetti once per successful claim
   const confettiFiredRef = useRef<boolean>(false);
 
-  // IMPORTANT: don't boot Turnstile until the gift exists (prevents invalid-token showing captcha errors)
   const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
   const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
 
+  // IMPORTANT: guest thankÜmail has amount = null; do NOT show $0.00 ever
   const amountCents = useMemo(() => {
     const v = gift?.amount;
     if (v === null || v === undefined || v === "") return 0;
@@ -150,7 +145,6 @@ export default function Claim() {
     setError(invalidLinkMessage());
   }
 
-  // Fire confetti exactly once when we transition into success
   useEffect(() => {
     if (!ok) return;
     if (confettiFiredRef.current) return;
@@ -158,7 +152,6 @@ export default function Claim() {
     fireConfettiBurst();
   }, [ok]);
 
-  // Load gift (ALWAYS from production API)
   useEffect(() => {
     async function loadGift() {
       setLoading(true);
@@ -175,7 +168,7 @@ export default function Claim() {
 
         if (!r.ok) {
           const code = String(j?.code || "");
-          const msg = String(j?.error || "Failed to load gift");
+          const msg = String(j?.error || "Failed to load thankÜmail");
           if (isInvalidLinkSignal(r.status, code, msg)) {
             lockInvalidLink();
             return;
@@ -187,7 +180,7 @@ export default function Claim() {
         setAlreadyClaimed(Boolean(j?.isClaimed));
         setError("");
       } catch (e: any) {
-        const msg = String(e?.message || "Failed to load gift");
+        const msg = String(e?.message || "Failed to load thankÜmail");
         if (
           /not found/i.test(msg) ||
           /invalid or expired/i.test(msg) ||
@@ -205,7 +198,6 @@ export default function Claim() {
     loadGift();
   }, [publicId]);
 
-  // If already claimed, make UI deterministic
   useEffect(() => {
     if (!alreadyClaimed) return;
     setRetryAfterSec(null);
@@ -215,7 +207,6 @@ export default function Claim() {
     setCaptchaReady(!siteKey ? true : false);
   }, [alreadyClaimed, siteKey]);
 
-  // Countdown tick
   useEffect(() => {
     if (retryAfterSec === null) return;
     if (retryAfterSec <= 0) return;
@@ -241,7 +232,6 @@ export default function Claim() {
     setCaptchaReady(false);
   }
 
-  // When captcha is hidden/shown, keep deterministic render state
   useEffect(() => {
     if (!siteKey) return;
 
@@ -260,7 +250,6 @@ export default function Claim() {
     setTurnstileBooting(true);
   }, [siteKey, shouldShowCaptcha]);
 
-  // Load Turnstile script (once)
   useEffect(() => {
     if (!siteKey) {
       setTurnstileBooting(false);
@@ -299,7 +288,6 @@ export default function Claim() {
     document.body.appendChild(script);
   }, [siteKey, shouldShowCaptcha]);
 
-  // Render Turnstile when ready (retry loop)
   useEffect(() => {
     if (!siteKey) return;
     if (!shouldShowCaptcha) return;
@@ -376,7 +364,6 @@ export default function Claim() {
     return { r, j };
   }
 
-  // Auto-claim when armed and countdown completes
   useEffect(() => {
     if (!armed) return;
     if (!canAttemptClaim) return;
@@ -441,7 +428,7 @@ export default function Claim() {
     if (!canAttemptClaim) return;
 
     if (waitingOnDelay) {
-      setError("One moment — we’re finalizing your gift.");
+      setError("One moment — we’re finalizing your thankÜmail.");
       return;
     }
 
@@ -524,12 +511,12 @@ export default function Claim() {
   const statusLine = alreadyClaimed
     ? "This thankÜmail has already been claimed."
     : waitingOnDelay || armed
-      ? "You’re verified. We’re securing the gift — it will complete automatically."
+      ? "You’re verified. It will complete automatically."
       : "";
 
   if (loading) {
     return (
-      <div className="min-h-[70vh] flex items-center justify-center px-6">
+      <div className="min-h-[70vh] flex items-center justify-center px-6" data-claim-marker={CLAIM_UI_MARKER}>
         <div className="w-full max-w-md rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
           <div className="text-sm text-tm-charcoal/60 mb-2">thankÜmail</div>
           <div className="font-outfit text-2xl text-tm-charcoal">Loading…</div>
@@ -541,7 +528,7 @@ export default function Claim() {
 
   if ((error && !gift) || invalidRef.current) {
     return (
-      <div className="min-h-[70vh] flex items-center justify-center px-6">
+      <div className="min-h-[70vh] flex items-center justify-center px-6" data-claim-marker={CLAIM_UI_MARKER}>
         <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50 p-6">
           <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankÜmail</div>
           <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
@@ -550,10 +537,9 @@ export default function Claim() {
     );
   }
 
-  // SUCCESS
   if (ok) {
     return (
-      <div className="min-h-[70vh] flex items-start justify-center px-6 py-10">
+      <div className="min-h-[70vh] flex items-start justify-center px-6 py-10" data-claim-marker={CLAIM_UI_MARKER}>
         <div className="w-full max-w-xl">
           <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
             <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
@@ -584,15 +570,16 @@ export default function Claim() {
     );
   }
 
-  // CLAIM PAGE
   return (
-    <div className="min-h-[70vh] flex items-start justify-center px-6 py-10">
+    <div className="min-h-[70vh] flex items-start justify-center px-6 py-10" data-claim-marker={CLAIM_UI_MARKER}>
       <div className="w-full max-w-xl">
         <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
           <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
 
           <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">A note for you.</h1>
-          <p className="mt-2 text-tm-charcoal/70">Read the message first. {hasAmount ? "Claim when you’re ready." : "Complete when you’re ready."}</p>
+          <p className="mt-2 text-tm-charcoal/70">
+            Read the message first. {hasAmount ? "Claim when you’re ready." : "Complete when you’re ready."}
+          </p>
 
           {alreadyClaimed ? (
             <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -657,18 +644,20 @@ export default function Claim() {
             </button>
 
             {alreadyClaimed ? (
-              <div className="mt-3 text-xs text-tm-charcoal/60">If you believe this is a mistake, ask the sender to create a new thankÜmail.</div>
+              <div className="mt-3 text-xs text-tm-charcoal/60">
+                If you believe this is a mistake, ask the sender to create a new thankÜmail.
+              </div>
             ) : waitingOnDelay || armed ? (
               <div className="mt-3 text-xs text-tm-charcoal/60">No second click needed — this completes automatically.</div>
             ) : (
-              <div className="mt-3 text-xs text-tm-charcoal/60">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
+              <div className="mt-3 text-xs text-tm-charcoal/60">
+                If you weren’t expecting this, you can ignore it — nothing else is required.
+              </div>
             )}
           </div>
         </div>
 
-        <div className="mt-4 text-center text-xs text-tm-charcoal/50">
-          thankÜmail is about the message first — the gift is just the follow-through.
-        </div>
+        <div className="mt-4 text-center text-xs text-tm-charcoal/50">{CLAIM_UI_MARKER}</div>
       </div>
     </div>
   );
