@@ -119,24 +119,25 @@ export default function Claim() {
   // Confetti once per successful claim
   const confettiFiredRef = useRef<boolean>(false);
 
+  // IMPORTANT: don't boot Turnstile until the gift exists (prevents invalid-token showing captcha errors)
+  const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+  const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+
   const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
 
   const amountCents = useMemo(() => {
     const v = gift?.amount;
-    const n = typeof v === "number" ? v : v === null || v === undefined || v === "" ? NaN : Number(v);
-    return Number.isFinite(n) ? Math.trunc(n) : NaN;
+    if (v === null || v === undefined || v === "") return 0;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
   }, [gift]);
 
-  const hasAmount = useMemo(() => Number.isFinite(amountCents) && amountCents > 0, [amountCents]);
+  const hasAmount = useMemo(() => amountCents > 0, [amountCents]);
 
   const amountDollars = useMemo(() => {
     if (!hasAmount) return "";
     return (amountCents / 100).toFixed(2);
-  }, [hasAmount, amountCents]);
-
-  // IMPORTANT: don't boot Turnstile until the gift exists (prevents invalid-token showing captcha errors)
-  const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
-  const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+  }, [amountCents, hasAmount]);
 
   function lockInvalidLink() {
     invalidRef.current = true;
@@ -513,17 +514,17 @@ export default function Claim() {
     (waitingOnDelay ? true : false) ||
     (armed ? true : false);
 
-  let buttonText = hasAmount ? "Claim gift" : "Confirm";
+  let buttonText = hasAmount ? "Claim gift" : "Complete";
   if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
   else if (waitingOnDelay) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (armed) buttonText = "Finalizing…";
   else if (claiming) buttonText = "Checking…";
-  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to continue";
+  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to complete";
 
   const statusLine = alreadyClaimed
     ? "This thankÜmail has already been claimed."
     : waitingOnDelay || armed
-      ? "You’re verified. We’re securing this — it will complete automatically."
+      ? "You’re verified. We’re securing the gift — it will complete automatically."
       : "";
 
   if (loading) {
@@ -558,7 +559,9 @@ export default function Claim() {
             <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
 
             <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">It’s yours.</h1>
-            <p className="mt-2 text-tm-charcoal/70">The note was the heart of it. The gift is the follow-through.</p>
+            <p className="mt-2 text-tm-charcoal/70">
+              {hasAmount ? "The note was the heart of it. The gift is the follow-through." : "The note was the heart of it."}
+            </p>
 
             <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
               <div className="text-xs uppercase tracking-wide text-tm-charcoal/60 mb-2">Message</div>
@@ -589,7 +592,7 @@ export default function Claim() {
           <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
 
           <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">A note for you.</h1>
-          <p className="mt-2 text-tm-charcoal/70">Read the message first. Claim when you’re ready.</p>
+          <p className="mt-2 text-tm-charcoal/70">Read the message first. {hasAmount ? "Claim when you’re ready." : "Complete when you’re ready."}</p>
 
           {alreadyClaimed ? (
             <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -611,7 +614,7 @@ export default function Claim() {
           <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-tm-charcoal">{hasAmount ? "Gift" : "Confirm"}</div>
+                <div className="text-sm font-semibold text-tm-charcoal">{hasAmount ? "Gift" : "Complete"}</div>
                 <div className="mt-1 text-xs text-tm-charcoal/60">
                   For safety, there’s a quick verification and a short pause before it finalizes.
                 </div>
@@ -647,24 +650,18 @@ export default function Claim() {
               disabled={buttonDisabled}
               className={cn(
                 "mt-4 w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
-                buttonDisabled
-                  ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
-                  : "bg-tm-amber text-tm-charcoal hover:opacity-95"
+                buttonDisabled ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed" : "bg-tm-amber text-tm-charcoal hover:opacity-95"
               )}
             >
               {buttonText}
             </button>
 
             {alreadyClaimed ? (
-              <div className="mt-3 text-xs text-tm-charcoal/60">
-                If you believe this is a mistake, ask the sender to create a new thankÜmail.
-              </div>
+              <div className="mt-3 text-xs text-tm-charcoal/60">If you believe this is a mistake, ask the sender to create a new thankÜmail.</div>
             ) : waitingOnDelay || armed ? (
               <div className="mt-3 text-xs text-tm-charcoal/60">No second click needed — this completes automatically.</div>
             ) : (
-              <div className="mt-3 text-xs text-tm-charcoal/60">
-                If you weren’t expecting this, you can ignore it — nothing else is required.
-              </div>
+              <div className="mt-3 text-xs text-tm-charcoal/60">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
             )}
           </div>
         </div>
