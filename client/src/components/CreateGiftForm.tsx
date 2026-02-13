@@ -60,10 +60,16 @@ const TURNSTILE_SCRIPT_SRC =
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 // IMPORTANT: backend expects presetMessageId in [1..5] (not p1..p5)
+Step 1 — Replace the preset list (CreateGiftForm.tsx)
+
+WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+WHAT TO REPLACE: the entire PRESET_MESSAGES constant (the block starting with const PRESET_MESSAGES...)
+
+// IMPORTANT: backend expects presetMessageId in [1..7]
 const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
   {
     id: 1,
-    text: "I just wanted you to know how much I appreciate you. Thank you for being you.",
+    text: "I just wanted you to know how much you are appreciated. Thank you for being you.",
   },
   {
     id: 2,
@@ -79,7 +85,15 @@ const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
   },
   {
     id: 5,
-    text: "This is a small thank you for the quiet impact you’ve had on my life.",
+    text: "You mattered more in that moment than you probably realized. Thank you.",
+  },
+  {
+    id: 6,
+    text: "What you did made a positive difference for those around you. I’m grateful. Thank you.",
+  },
+  {
+    id: 7,
+    text: "What you did stayed with me. This is my way of saying thank you.",
   },
 ];
 

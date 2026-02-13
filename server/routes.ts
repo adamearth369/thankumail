@@ -14,12 +14,12 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-11_003";
+const VERSION = "routes_v2026-02-13_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_hard_reject_guest_amount_and_message";
+  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_hard_reject_guest_amount_and_message_preset7";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -54,11 +54,13 @@ function isRegistered(req: Request) {
 
 /* -------------------- PRESET MESSAGES (LOCKED v1) -------------------- */
 const PRESET_MESSAGES = [
-  "I just wanted you to know how much I appreciate you. Thank you for being you.",
+  "I just wanted you to know how much you are appreciated. Thank you for being you.",
   "Your support made a bigger difference than you realize. I’m truly grateful.",
   "You showed up when it mattered most. That means everything. Thank you.",
   "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you.",
-  "This is a small thank you for the quiet impact you’ve had on my life.",
+  "You mattered more in that moment than you probably realized. Thank you.",
+  "What you did made a positive difference for those around you. I’m grateful. Thank you.",
+  "What you did stayed with me. This is my way of saying thank you.",
 ];
 
 function presetMessageById(id: number) {
@@ -190,10 +192,10 @@ const CreateGiftSchema = z
 
     if (mode === "preset") {
       const pid = toInt(val?.presetMessageId);
-      if (!Number.isInteger(pid) || pid < 1 || pid > 5) {
+      if (!Number.isInteger(pid) || pid < 1 || pid > 7) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Choose a preset message (1–5)",
+          message: "Choose a preset message (1–7)",
           path: ["presetMessageId"],
         });
       }
@@ -1139,7 +1141,7 @@ export function registerRoutes(app: Express): Server {
       const presetMsg = presetMessageById(Number(presetId));
       if (!presetMsg) {
         return res.status(400).json({
-          error: "Choose a preset message (1–5)",
+          error: "Choose a preset message (1–7)",
           field: "presetMessageId",
           code: "PRESET_REQUIRED",
           version: VERSION,
