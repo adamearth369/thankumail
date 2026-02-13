@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -58,12 +61,6 @@ const TURNSTILE_SCRIPT_SRC =
   "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
-
-// IMPORTANT: backend expects presetMessageId in [1..5] (not p1..p5)
-Step 1 — Replace the preset list (CreateGiftForm.tsx)
-
-WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-WHAT TO REPLACE: the entire PRESET_MESSAGES constant (the block starting with const PRESET_MESSAGES...)
 
 // IMPORTANT: backend expects presetMessageId in [1..7]
 const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
@@ -216,10 +213,7 @@ export default function CreateGiftForm() {
     async function ensureTurnstile() {
       if (!TURNSTILE_SITE_KEY) {
         setTurnstileReady(false);
-        setErrorWithLock(
-          "Verification is not configured (missing site key).",
-          "turnstile"
-        );
+        setErrorWithLock("Verification is not configured (missing site key).", "turnstile");
         return;
       }
 
@@ -235,10 +229,7 @@ export default function CreateGiftForm() {
         script.onerror = () => {
           if (cancelled) return;
           setTurnstileReady(false);
-          setErrorWithLock(
-            "Verification failed to load. Please refresh and try again.",
-            "turnstile"
-          );
+          setErrorWithLock("Verification failed to load. Please refresh and try again.", "turnstile");
         };
 
         document.head.appendChild(script);
@@ -321,10 +312,7 @@ export default function CreateGiftForm() {
       if (seq === renderSeqRef.current && typeof id === "string") widgetIdRef.current = id;
     } catch {
       if (errorLockRef.current !== "server") {
-        setErrorWithLock(
-          "Verification failed to initialize. Please refresh and try again.",
-          "turnstile"
-        );
+        setErrorWithLock("Verification failed to initialize. Please refresh and try again.", "turnstile");
       }
     }
   }
