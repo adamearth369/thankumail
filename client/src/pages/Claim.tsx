@@ -578,11 +578,6 @@ export default function Claim() {
               <div className="text-sm text-slate-500">thankümail</div>
 
               <h1 className="mt-2 font-outfit text-3xl text-slate-900">Received.</h1>
-              <p className="mt-2 text-slate-700">
-                {hasAmount
-                  ? "The note was the heart of it. The gift will finalize shortly."
-                  : "The note was the heart of it."}
-              </p>
 
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
                 <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Message</div>
@@ -606,7 +601,7 @@ export default function Claim() {
   if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (claiming) buttonText = "Checking…";
-  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
+  else if (shouldShowCaptcha && !captchaReady) buttonText = hasAmount ? (turnstileBooting ? "Loading verification…" : "Verify to claim") : "Accept thankümail";
 
   const buttonDisabled =
     !canAttemptClaim ||
