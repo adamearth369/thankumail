@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_004";
+const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_006";
 
 function getTurnstile(): any {
   return (window as any).turnstile;
@@ -50,7 +50,6 @@ function friendlyError(msg: string) {
   }
 
   if (/already claimed/i.test(m)) return "This thankÜmail has already been claimed.";
-  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — please try again shortly.";
 
   if (/TURNSTILE_FAILED/i.test(m) || /captcha/i.test(m) || /verification/i.test(m)) {
     return "Verification expired or failed — please verify again.";
@@ -94,14 +93,10 @@ export default function Claim() {
   const [loading, setLoading] = useState(true);
 
   const [claiming, setClaiming] = useState(false);
-  const [armed, setArmed] = useState(false);
 
   // For gift-amount flows only (shows countdown)
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
-
-  // For guest/no-amount flows (NO countdown UI)
-  const [autoRetryMs, setAutoRetryMs] = useState<number | null>(null);
-  const autoRetryTimerRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
 
   const [error, setError] = useState("");
   const [ok, setOk] = useState(false);
@@ -136,18 +131,16 @@ export default function Claim() {
   }, [amountCents, hasAmount]);
 
   const waitingOnDelay = useMemo(() => {
-    if (hasAmount) return retryAfterSec !== null && retryAfterSec > 0;
-    return !!autoRetryMs && autoRetryMs > 0;
-  }, [hasAmount, retryAfterSec, autoRetryMs]);
+    if (!hasAmount) return false;
+    return retryAfterSec !== null && retryAfterSec > 0;
+  }, [hasAmount, retryAfterSec]);
 
   function lockInvalidLink() {
     invalidRef.current = true;
     setGift(null);
     setAlreadyClaimed(false);
     setOk(false);
-    setArmed(false);
     setRetryAfterSec(null);
-    setAutoRetryMs(null);
     setClaiming(false);
     setError(invalidLinkMessage());
   }
@@ -185,6 +178,7 @@ export default function Claim() {
 
         setGift(j);
         setAlreadyClaimed(Boolean(j?.isClaimed));
+        if (Boolean(j?.isClaimed)) setOk(true);
         setError("");
       } catch (e: any) {
         const msg = String(e?.message || "Failed to load thankÜmail");
@@ -208,9 +202,7 @@ export default function Claim() {
   useEffect(() => {
     if (!alreadyClaimed) return;
     setRetryAfterSec(null);
-    setAutoRetryMs(null);
     setClaiming(false);
-    setArmed(false);
     tokenRef.current = "";
     setCaptchaReady(!siteKey ? true : false);
   }, [alreadyClaimed, siteKey]);
@@ -221,6 +213,11 @@ export default function Claim() {
     if (retryAfterSec === null) return;
     if (retryAfterSec <= 0) return;
 
+    if (retryTimerRef.current) {
+      window.clearInterval(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+
     const t = window.setInterval(() => {
       setRetryAfterSec((prev) => {
         if (prev === null) return null;
@@ -229,35 +226,76 @@ export default function Claim() {
       });
     }, 1000);
 
-    return () => window.clearInterval(t);
-  }, [hasAmount, retryAfterSec]);
-
-  // Auto-retry timer (no-amount only, NO UI countdown)
-  useEffect(() => {
-    if (hasAmount) return;
-    if (!armed) return;
-    if (!autoRetryMs || autoRetryMs <= 0) return;
-
-    if (autoRetryTimerRef.current) {
-      window.clearTimeout(autoRetryTimerRef.current);
-      autoRetryTimerRef.current = null;
-    }
-
-    const id = window.setTimeout(() => {
-      setAutoRetryMs(null);
-      setArmed(true);
-      setRetryAfterSec(0);
-    }, autoRetryMs);
-
-    autoRetryTimerRef.current = id as any;
+    retryTimerRef.current = t as any;
 
     return () => {
-      if (autoRetryTimerRef.current) {
-        window.clearTimeout(autoRetryTimerRef.current);
-        autoRetryTimerRef.current = null;
+      if (retryTimerRef.current) {
+        window.clearInterval(retryTimerRef.current);
+        retryTimerRef.current = null;
       }
     };
-  }, [hasAmount, armed, autoRetryMs]);
+  }, [hasAmount, retryAfterSec]);
+
+  // Auto attempt after countdown hits 0 (gift-amount only)
+  useEffect(() => {
+    if (!hasAmount) return;
+    if (retryAfterSec === null) return;
+    if (retryAfterSec !== 0) return;
+    if (!canAttemptClaim) return;
+
+    (async () => {
+      setClaiming(true);
+      setError("");
+      try {
+        const { r, j } = await postClaim();
+
+        if (j?.__notJson || j?.__badJson) {
+          throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
+        }
+
+        if (!r.ok) {
+          const code = String(j?.code || "");
+          const msg = String(j?.error || "Claim failed");
+
+          if (isInvalidLinkSignal(r.status, code, msg)) {
+            lockInvalidLink();
+            return;
+          }
+
+          if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
+            setAlreadyClaimed(true);
+            setOk(true);
+            setError("");
+            return;
+          }
+
+          if (code === "TURNSTILE_FAILED") {
+            hardResetTurnstile();
+            if (!invalidRef.current) setError("Verification expired — please verify again.");
+            return;
+          }
+
+          throw new Error(msg);
+        }
+
+        setOk(true);
+        setAlreadyClaimed(true);
+        setError("");
+
+        try {
+          const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
+          const jj: any = await safeJson(rr);
+          if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
+        } catch {}
+      } catch (e: any) {
+        if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
+      } finally {
+        setClaiming(false);
+        setRetryAfterSec(null);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAmount, retryAfterSec, canAttemptClaim]);
 
   function hardResetTurnstile() {
     try {
@@ -356,13 +394,11 @@ export default function Claim() {
             if (invalidRef.current) return;
             tokenRef.current = "";
             setCaptchaReady(false);
-            setArmed(false);
           },
           "error-callback": () => {
             if (invalidRef.current) return;
             tokenRef.current = "";
             setCaptchaReady(false);
-            setArmed(false);
             setError("Verification failed. Please try again.");
           },
         });
@@ -402,82 +438,19 @@ export default function Claim() {
     return { r, j };
   }
 
-  useEffect(() => {
-    if (!armed) return;
-    if (!canAttemptClaim) return;
-
-    if (hasAmount) {
-      if (retryAfterSec === null) return;
-      if (retryAfterSec !== 0) return;
-    } else {
-      if (retryAfterSec !== 0) return;
-    }
-
-    (async () => {
-      setClaiming(true);
-      setError("");
-
-      try {
-        const { r, j } = await postClaim();
-
-        if (j?.__notJson || j?.__badJson) {
-          throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
-        }
-
-        if (!r.ok) {
-          const code = String(j?.code || "");
-          const msg = String(j?.error || "Claim failed");
-
-          if (isInvalidLinkSignal(r.status, code, msg)) {
-            lockInvalidLink();
-            return;
-          }
-
-          if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
-            setAlreadyClaimed(true);
-            setError("This thankÜmail has already been claimed.");
-            return;
-          }
-
-          if (code === "TURNSTILE_FAILED") {
-            hardResetTurnstile();
-            setArmed(false);
-            if (!invalidRef.current) setError("Verification expired — please verify again.");
-            return;
-          }
-
-          throw new Error(msg);
-        }
-
-        setOk(true);
-        setAlreadyClaimed(true);
-
-        try {
-          const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
-          const jj: any = await safeJson(rr);
-          if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
-        } catch {}
-      } catch (e: any) {
-        if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
-      } finally {
-        setClaiming(false);
-        setArmed(false);
-        setRetryAfterSec(null);
-      }
-    })();
-  }, [armed, canAttemptClaim, hasAmount, retryAfterSec, publicId]);
-
   async function handleClaimClick() {
     if (!publicId) return;
     if (!canAttemptClaim) return;
 
-    if (waitingOnDelay) {
-      setError("One moment — please try again shortly.");
-      return;
+    // Guest/no-amount: instant success UI (seamless)
+    if (!hasAmount) {
+      setOk(true);
+      setAlreadyClaimed(true);
+      setError("");
     }
 
     if (shouldShowCaptcha && !captchaReady) {
-      setError("Please complete the quick verification below.");
+      if (hasAmount) setError("Please complete the quick verification below.");
       return;
     }
 
@@ -491,19 +464,10 @@ export default function Claim() {
         throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
       }
 
-      if (r.status === 429 && j?.retryAfterSec) {
+      // Gift-amount: if delay, start visible countdown + auto retry
+      if (hasAmount && r.status === 429 && j?.retryAfterSec) {
         const sec = Math.max(0, Number(j.retryAfterSec) || 0);
-
-        setArmed(true);
-
-        if (hasAmount) {
-          setRetryAfterSec(sec);
-          setAutoRetryMs(null);
-        } else {
-          setRetryAfterSec(null);
-          setAutoRetryMs(sec * 1000);
-        }
-
+        setRetryAfterSec(sec);
         setClaiming(false);
         return;
       }
@@ -519,14 +483,20 @@ export default function Claim() {
 
         if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
           setAlreadyClaimed(true);
-          setError("This thankÜmail has already been claimed.");
+          setOk(true);
+          setError("");
           return;
         }
 
         if (code === "TURNSTILE_FAILED") {
           hardResetTurnstile();
-          setArmed(false);
           if (!invalidRef.current) setError("Verification expired — please verify again.");
+          return;
+        }
+
+        // Guest/no-amount: keep seamless success; don’t block them
+        if (!hasAmount) {
+          setError("");
           return;
         }
 
@@ -535,6 +505,7 @@ export default function Claim() {
 
       setOk(true);
       setAlreadyClaimed(true);
+      setError("");
 
       try {
         const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
@@ -542,35 +513,16 @@ export default function Claim() {
         if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
       } catch {}
     } catch (e: any) {
-      if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
+      if (!invalidRef.current) {
+        if (hasAmount) setError(friendlyError(e?.message || "Claim failed"));
+        else setError("");
+      }
     } finally {
       setClaiming(false);
     }
   }
 
-  const buttonDisabled =
-    !canAttemptClaim ||
-    claiming ||
-    (shouldShowCaptcha ? !captchaReady : false) ||
-    (waitingOnDelay ? true : false) ||
-    (armed ? true : false);
-
-  let buttonText = hasAmount ? "Claim gift" : "Complete";
-  if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
-  else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
-  else if (!hasAmount && armed) buttonText = "Completing…";
-  else if (armed) buttonText = hasAmount ? "Finalizing…" : "Completing…";
-  else if (claiming) buttonText = "Checking…";
-  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to complete";
-
-  const statusLine = alreadyClaimed
-    ? "This thankÜmail has already been claimed."
-    : waitingOnDelay || armed
-      ? hasAmount
-        ? "One moment — finalizing."
-        : "One moment — completing."
-      : "";
-
+  // Background + overlay matches Home
   if (loading) {
     return (
       <div
@@ -611,6 +563,12 @@ export default function Claim() {
   }
 
   if (ok) {
+    // fire confetti once on ok screen entry
+    if (!confettiFiredRef.current) {
+      confettiFiredRef.current = true;
+      fireConfettiBurst();
+    }
+
     return (
       <div
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
@@ -622,9 +580,11 @@ export default function Claim() {
             <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
               <div className="text-sm text-slate-500">thankÜmail</div>
 
-              <h1 className="mt-2 font-outfit text-3xl text-slate-900">It’s yours.</h1>
+              <h1 className="mt-2 font-outfit text-3xl text-slate-900">Received.</h1>
               <p className="mt-2 text-slate-700">
-                {hasAmount ? "The note was the heart of it. The gift is the follow-through." : "The note was the heart of it."}
+                {hasAmount
+                  ? "The note was the heart of it. The gift will finalize shortly."
+                  : "The note was the heart of it."}
               </p>
 
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
@@ -639,7 +599,9 @@ export default function Claim() {
                 </div>
               ) : null}
 
-              <div className="mt-5 text-xs text-slate-600">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
+              <div className="mt-5 text-xs text-slate-600">
+                If you weren’t expecting this, you can ignore it — nothing else is required.
+              </div>
             </div>
 
             <div className="mt-4 text-center text-xs text-white/60">{CLAIM_UI_MARKER}</div>
@@ -648,6 +610,18 @@ export default function Claim() {
       </div>
     );
   }
+
+  let buttonText = hasAmount ? "Claim gift" : "Complete";
+  if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
+  else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
+  else if (claiming) buttonText = "Checking…";
+  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
+
+  const buttonDisabled =
+    !canAttemptClaim ||
+    claiming ||
+    (shouldShowCaptcha ? !captchaReady : false) ||
+    (waitingOnDelay ? true : false);
 
   return (
     <div
@@ -667,12 +641,10 @@ export default function Claim() {
 
             {alreadyClaimed ? (
               <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                {statusLine || "This thankÜmail has already been claimed."}
+                This thankÜmail has already been claimed.
               </div>
             ) : error ? (
               <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
-            ) : statusLine ? (
-              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">{statusLine}</div>
             ) : null}
 
             <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
@@ -729,13 +701,9 @@ export default function Claim() {
                 {buttonText}
               </button>
 
-              {waitingOnDelay || armed ? (
-                <div className="mt-3 text-xs text-slate-600">
-                  {hasAmount ? "No second click needed — this finalizes automatically." : "No second click needed — this completes automatically."}
-                </div>
-              ) : (
-                <div className="mt-3 text-xs text-slate-600">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
-              )}
+              <div className="mt-3 text-xs text-slate-600">
+                If you weren’t expecting this, you can ignore it — nothing else is required.
+              </div>
             </div>
           </div>
 
