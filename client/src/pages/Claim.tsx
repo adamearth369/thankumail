@@ -1,8 +1,11 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_006";
+const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_007";
 
 function getTurnstile(): any {
   return (window as any).turnstile;
@@ -33,7 +36,7 @@ function isInvalidLinkSignal(status: number, code: string, msg: string) {
 }
 
 function invalidLinkMessage() {
-  return "This thankÜmail link is invalid or expired.";
+  return "This thankümail link is invalid or expired.";
 }
 
 function friendlyError(msg: string) {
@@ -49,7 +52,7 @@ function friendlyError(msg: string) {
     return invalidLinkMessage();
   }
 
-  if (/already claimed/i.test(m)) return "This thankÜmail has already been claimed.";
+  if (/already claimed/i.test(m)) return "This thankümail has already been claimed.";
 
   if (/TURNSTILE_FAILED/i.test(m) || /captcha/i.test(m) || /verification/i.test(m)) {
     return "Verification expired or failed — please verify again.";
@@ -168,7 +171,7 @@ export default function Claim() {
 
         if (!r.ok) {
           const code = String(j?.code || "");
-          const msg = String(j?.error || "Failed to load thankÜmail");
+          const msg = String(j?.error || "Failed to load thankümail");
           if (isInvalidLinkSignal(r.status, code, msg)) {
             lockInvalidLink();
             return;
@@ -181,7 +184,7 @@ export default function Claim() {
         if (Boolean(j?.isClaimed)) setOk(true);
         setError("");
       } catch (e: any) {
-        const msg = String(e?.message || "Failed to load thankÜmail");
+        const msg = String(e?.message || "Failed to load thankümail");
         if (
           /not found/i.test(msg) ||
           /invalid or expired/i.test(msg) ||
@@ -533,7 +536,9 @@ export default function Claim() {
         <div className="min-h-screen bg-black/40">
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-              <div className="text-sm text-slate-500 mb-2">thankÜmail</div>
+              <div className="text-sm text-slate-500 mb-2">
+                <span className="font-quicksand font-semibold">thankümail</span>
+              </div>
               <div className="font-outfit text-2xl text-slate-900">Loading…</div>
               <div className="mt-3 text-sm text-slate-600">Just a moment.</div>
             </div>
@@ -553,7 +558,10 @@ export default function Claim() {
         <div className="min-h-screen bg-black/40">
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 p-6 text-slate-900">
-              <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankÜmail</div>
+              <div className="text-sm text-red-800 font-medium mb-1">
+                Couldn’t open this{" "}
+                <span className="font-quicksand font-semibold">thankümail</span>
+              </div>
               <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
             </div>
           </div>
@@ -578,18 +586,20 @@ export default function Claim() {
         <div className="min-h-screen bg-black/40">
           <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-              <div className="text-sm text-slate-500">thankÜmail</div>
+              <div className="text-sm text-slate-500">
+                <span className="font-quicksand font-semibold">thankümail</span>
+              </div>
 
               <h1 className="mt-2 font-outfit text-3xl text-slate-900">Received.</h1>
               <p className="mt-2 text-slate-700">
-                {hasAmount
-                  ? "The note was the heart of it. The gift will finalize shortly."
-                  : "The note was the heart of it."}
+                {hasAmount ? "The note was the heart of it. The gift will finalize shortly." : "The note was the heart of it."}
               </p>
 
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
                 <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Message</div>
-                <div className="text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">{gift?.message || "—"}</div>
+                <div className="text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">
+                  {gift?.message || "—"}
+                </div>
               </div>
 
               {hasAmount ? (
@@ -611,7 +621,7 @@ export default function Claim() {
     );
   }
 
-  let buttonText = hasAmount ? "Claim gift" : "Complete";
+  let buttonText = hasAmount ? "Claim gift" : "Accept this thankümail";
   if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (claiming) buttonText = "Checking…";
@@ -632,19 +642,23 @@ export default function Claim() {
       <div className="min-h-screen bg-black/40">
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-            <div className="text-sm text-slate-500">thankÜmail</div>
+            <div className="text-sm text-slate-500">
+              <span className="font-quicksand font-semibold">thankümail</span>
+            </div>
 
             <h1 className="mt-2 font-outfit text-3xl text-slate-900">A note for you.</h1>
             <p className="mt-2 text-slate-700">
-              Read the message first. {hasAmount ? "Claim when you’re ready." : "Complete when you’re ready."}
+              Read the message first. {hasAmount ? "Claim when you’re ready." : "Accept when you’re ready."}
             </p>
 
             {alreadyClaimed ? (
               <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                This thankÜmail has already been claimed.
+                This <span className="font-quicksand font-semibold">thankümail</span> has already been claimed.
               </div>
             ) : error ? (
-              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
+              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {error}
+              </div>
             ) : null}
 
             <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
@@ -655,7 +669,7 @@ export default function Claim() {
             <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
               <div className="flex items-end justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-slate-900">{hasAmount ? "Gift" : "Complete"}</div>
+                  <div className="text-sm font-semibold text-slate-900">{hasAmount ? "Gift" : "Confirmation"}</div>
                   <div className="mt-1 text-xs text-slate-600">
                     {hasAmount
                       ? "For safety, there’s a quick verification and a short pause before it finalizes."
