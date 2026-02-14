@@ -590,16 +590,59 @@ export default function CreateGiftForm() {
 
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-              <div className="font-medium mb-1">Sent!</div>
-              <div className="break-all">
-                Claim link:{" "}
-                <a className="underline" href={result.claimUrl} target="_blank" rel="noreferrer">
-                  {result.claimUrl}
-                </a>
+              <div className="font-medium mb-1">Sent.</div>
+              <div className="text-sm text-emerald-900/80">
+                We’ve delivered your thankümail to the recipient.
               </div>
+
+              {result.emailSent ? (
+                <div className="mt-2 text-xs text-emerald-900/80">Email: sent ✓</div>
+              ) : result.deliveryOk ? (
+                <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
+              ) : null}
+
               {result.deliveryError ? (
                 <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
               ) : null}
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResult(null);
+                    clearErrorsAndUnlock();
+                    setSenderEmail("");
+                    setRecipientEmail("");
+                    setPresetIdx(0);
+                    try {
+                      if (widgetIdRef.current && window.turnstile?.reset) {
+                        window.turnstile.reset(widgetIdRef.current);
+                      }
+                    } catch {}
+                    setToken("");
+                  }}
+                  className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-50 cursor-pointer"
+                >
+                  Send another
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      navigator.clipboard?.writeText(String(result.publicId || "")).catch(() => {});
+                    } catch {}
+                  }}
+                  className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-50 cursor-pointer"
+                  title="Copies the internal reference id (not a claim link)"
+                >
+                  Copy reference
+                </button>
+              </div>
+
+              <div className="mt-2 text-[11px] text-emerald-900/70">
+                For safety, we don’t show the claim link here.
+              </div>
             </div>
           ) : null}
 
