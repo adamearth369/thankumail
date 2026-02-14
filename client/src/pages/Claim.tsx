@@ -5,7 +5,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_007";
 
 function getTurnstile(): any {
   return (window as any).turnstile;
@@ -525,13 +524,11 @@ export default function Claim() {
     }
   }
 
-  // Background + overlay matches Home
   if (loading) {
     return (
       <div
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
-        data-claim-marker={CLAIM_UI_MARKER}
       >
         <div className="min-h-screen bg-black/40">
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
@@ -551,7 +548,6 @@ export default function Claim() {
       <div
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
-        data-claim-marker={CLAIM_UI_MARKER}
       >
         <div className="min-h-screen bg-black/40">
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
@@ -575,7 +571,6 @@ export default function Claim() {
       <div
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
-        data-claim-marker={CLAIM_UI_MARKER}
       >
         <div className="min-h-screen bg-black/40">
           <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
@@ -601,8 +596,6 @@ export default function Claim() {
                 </div>
               ) : null}
             </div>
-
-            <div className="mt-4 text-center text-xs text-white/60">{CLAIM_UI_MARKER}</div>
           </main>
         </div>
       </div>
@@ -625,7 +618,6 @@ export default function Claim() {
     <div
       className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
-      data-claim-marker={CLAIM_UI_MARKER}
     >
       <div className="min-h-screen bg-black/40">
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
@@ -700,8 +692,6 @@ export default function Claim() {
               </button>
             </div>
           </div>
-
-          <div className="mt-4 text-center text-xs text-white/60">{CLAIM_UI_MARKER}</div>
         </main>
       </div>
     </div>
