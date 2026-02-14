@@ -605,7 +605,7 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
               ) : null}
 
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-3">
                 <button
                   type="button"
                   onClick={() => {
@@ -625,19 +625,6 @@ export default function CreateGiftForm() {
                 >
                   Send another
                 </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    try {
-                      navigator.clipboard?.writeText(String(result.publicId || "")).catch(() => {});
-                    } catch {}
-                  }}
-                  className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-50 cursor-pointer"
-                  title="Copies the internal reference id (not a claim link)"
-                >
-                  Copy reference
-                </button>
               </div>
 
               <div className="mt-2 text-[11px] text-emerald-900/70">
@@ -651,7 +638,6 @@ export default function CreateGiftForm() {
             disabled={!canSubmit}
             className={classNames(
               "w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
-              // Make border more noticeable (match inputs) + hand cursor on hover
               canSubmit
                 ? "bg-tm-amber text-tm-charcoal border-slate-400/70 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
                 : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
