@@ -165,10 +165,8 @@ export default function CreateGiftForm() {
     return (envKey || FALLBACK_TURNSTILE_SITE_KEY || "").trim();
   }, []);
 
-  const wordmark = useMemo(() => {
-    const dia = "\u0308";
-    return `thanku${dia}mail`;
-  }, []);
+  // BRAND: always use the real ü (U+00FC), never combining diaeresis
+  const wordmark = "thankümail";
 
   const canSubmit = useMemo(() => {
     const s = senderEmail.trim();
@@ -615,7 +613,16 @@ export default function CreateGiftForm() {
                 : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
             )}
           >
-            {submitting ? "Sending…" : `Send ${wordmark}`}
+            {submitting ? (
+              "Sending…"
+            ) : (
+              <>
+                Send{" "}
+                <span className="font-quicksand font-semibold">
+                  {wordmark}
+                </span>
+              </>
+            )}
           </button>
         </div>
       </form>
