@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_003";
+const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_004";
 
 function getTurnstile(): any {
   return (window as any).turnstile;
@@ -50,7 +50,7 @@ function friendlyError(msg: string) {
   }
 
   if (/already claimed/i.test(m)) return "This thankÜmail has already been claimed.";
-  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — we’re finalizing your thankÜmail.";
+  if (/MIN_DELAY/i.test(m) || /wait/i.test(m)) return "One moment — please try again shortly.";
 
   if (/TURNSTILE_FAILED/i.test(m) || /captcha/i.test(m) || /verification/i.test(m)) {
     return "Verification expired or failed — please verify again.";
@@ -121,7 +121,6 @@ export default function Claim() {
   const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
-  // IMPORTANT: guest thankÜmail has amount = null; do NOT show $0.00 ever
   const amountCents = useMemo(() => {
     const v = gift?.amount;
     if (v === null || v === undefined || v === "") return 0;
@@ -245,7 +244,7 @@ export default function Claim() {
     }
 
     const id = window.setTimeout(() => {
-      setAutoRetryMs(null); // consume
+      setAutoRetryMs(null);
       setArmed(true);
       setRetryAfterSec(0);
     }, autoRetryMs);
@@ -403,7 +402,6 @@ export default function Claim() {
     return { r, j };
   }
 
-  // Auto-complete when armed
   useEffect(() => {
     if (!armed) return;
     if (!canAttemptClaim) return;
@@ -474,7 +472,7 @@ export default function Claim() {
     if (!canAttemptClaim) return;
 
     if (waitingOnDelay) {
-      setError("One moment — we’re finalizing your thankÜmail.");
+      setError("One moment — please try again shortly.");
       return;
     }
 
@@ -560,15 +558,17 @@ export default function Claim() {
   let buttonText = hasAmount ? "Claim gift" : "Complete";
   if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
-  else if (!hasAmount && armed) buttonText = "Finalizing…";
-  else if (armed) buttonText = "Finalizing…";
+  else if (!hasAmount && armed) buttonText = "Completing…";
+  else if (armed) buttonText = hasAmount ? "Finalizing…" : "Completing…";
   else if (claiming) buttonText = "Checking…";
   else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to complete";
 
   const statusLine = alreadyClaimed
     ? "This thankÜmail has already been claimed."
     : waitingOnDelay || armed
-      ? "One moment — finalizing."
+      ? hasAmount
+        ? "One moment — finalizing."
+        : "One moment — completing."
       : "";
 
   if (loading) {
@@ -720,17 +720,19 @@ export default function Claim() {
                 onClick={handleClaimClick}
                 disabled={buttonDisabled}
                 className={cn(
-                  "mt-4 w-full rounded-2xl px-4 py-3 font-outfit text-lg tracking-tight transition",
+                  "mt-4 w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
                   buttonDisabled
-                    ? "bg-slate-200 text-slate-500 cursor-not-allowed"
-                    : "bg-tm-amber text-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
+                    ? "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
+                    : "bg-tm-amber text-tm-charcoal border-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
                 )}
               >
                 {buttonText}
               </button>
 
               {waitingOnDelay || armed ? (
-                <div className="mt-3 text-xs text-slate-600">No second click needed — this completes automatically.</div>
+                <div className="mt-3 text-xs text-slate-600">
+                  {hasAmount ? "No second click needed — this finalizes automatically." : "No second click needed — this completes automatically."}
+                </div>
               ) : (
                 <div className="mt-3 text-xs text-slate-600">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
               )}
