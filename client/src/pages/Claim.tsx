@@ -1,11 +1,8 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
-
-declare global {
-  interface Window {
-    turnstile?: any;
-  }
-}
 
 const API_BASE = "https://api.thankumail.com";
 const CLAIM_UI_MARKER = "claim_ui_v2026-02-13_001";
@@ -97,7 +94,13 @@ export default function Claim() {
 
   const [claiming, setClaiming] = useState(false);
   const [armed, setArmed] = useState(false);
+
+  // For gift-amount flows only (shows countdown)
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
+
+  // For guest/no-amount flows (NO countdown UI)
+  const [autoRetryMs, setAutoRetryMs] = useState<number | null>(null);
+  const autoRetryTimerRef = useRef<number | null>(null);
 
   const [error, setError] = useState("");
   const [ok, setOk] = useState(false);
@@ -117,8 +120,6 @@ export default function Claim() {
   const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
-  const waitingOnDelay = useMemo(() => retryAfterSec !== null && retryAfterSec > 0, [retryAfterSec]);
-
   // IMPORTANT: guest thankÜmail has amount = null; do NOT show $0.00 ever
   const amountCents = useMemo(() => {
     const v = gift?.amount;
@@ -134,6 +135,13 @@ export default function Claim() {
     return (amountCents / 100).toFixed(2);
   }, [amountCents, hasAmount]);
 
+  const waitingOnDelay = useMemo(() => {
+    // countdown only for hasAmount
+    if (hasAmount) return retryAfterSec !== null && retryAfterSec > 0;
+    // for no-amount, we "delay" without showing seconds when autoRetryMs is set and armed
+    return !!autoRetryMs && autoRetryMs > 0;
+  }, [hasAmount, retryAfterSec, autoRetryMs]);
+
   function lockInvalidLink() {
     invalidRef.current = true;
     setGift(null);
@@ -141,6 +149,7 @@ export default function Claim() {
     setOk(false);
     setArmed(false);
     setRetryAfterSec(null);
+    setAutoRetryMs(null);
     setClaiming(false);
     setError(invalidLinkMessage());
   }
@@ -201,13 +210,16 @@ export default function Claim() {
   useEffect(() => {
     if (!alreadyClaimed) return;
     setRetryAfterSec(null);
+    setAutoRetryMs(null);
     setClaiming(false);
     setArmed(false);
     tokenRef.current = "";
     setCaptchaReady(!siteKey ? true : false);
   }, [alreadyClaimed, siteKey]);
 
+  // Countdown ticker (gift-amount only)
   useEffect(() => {
+    if (!hasAmount) return;
     if (retryAfterSec === null) return;
     if (retryAfterSec <= 0) return;
 
@@ -220,7 +232,35 @@ export default function Claim() {
     }, 1000);
 
     return () => window.clearInterval(t);
-  }, [retryAfterSec]);
+  }, [hasAmount, retryAfterSec]);
+
+  // Auto-retry timer (no-amount only, NO UI countdown)
+  useEffect(() => {
+    if (hasAmount) return;
+    if (!armed) return;
+    if (!autoRetryMs || autoRetryMs <= 0) return;
+
+    if (autoRetryTimerRef.current) {
+      window.clearTimeout(autoRetryTimerRef.current);
+      autoRetryTimerRef.current = null;
+    }
+
+    const id = window.setTimeout(() => {
+      setAutoRetryMs(null); // consume
+      setArmed(true); // keep armed; the claim effect below will fire
+      // trigger immediate attempt without a visible countdown
+      setRetryAfterSec(0);
+    }, autoRetryMs);
+
+    autoRetryTimerRef.current = id as any;
+
+    return () => {
+      if (autoRetryTimerRef.current) {
+        window.clearTimeout(autoRetryTimerRef.current);
+        autoRetryTimerRef.current = null;
+      }
+    };
+  }, [hasAmount, armed, autoRetryMs]);
 
   function hardResetTurnstile() {
     try {
@@ -364,11 +404,21 @@ export default function Claim() {
     return { r, j };
   }
 
+  // Auto-complete when armed:
+  // - If hasAmount: use visible retryAfterSec countdown to 0
+  // - If NO amount: auto-retry after server delay WITHOUT showing seconds
   useEffect(() => {
     if (!armed) return;
     if (!canAttemptClaim) return;
-    if (waitingOnDelay) return;
-    if (retryAfterSec !== 0) return;
+
+    // hasAmount: wait for countdown to reach 0
+    if (hasAmount) {
+      if (retryAfterSec === null) return;
+      if (retryAfterSec !== 0) return;
+    } else {
+      // no-amount: we don't show countdown; we only proceed once we’ve consumed autoRetryMs and set retryAfterSec=0
+      if (retryAfterSec !== 0) return;
+    }
 
     (async () => {
       setClaiming(true);
@@ -419,9 +469,10 @@ export default function Claim() {
       } finally {
         setClaiming(false);
         setArmed(false);
+        setRetryAfterSec(null);
       }
     })();
-  }, [armed, canAttemptClaim, waitingOnDelay, retryAfterSec, publicId]);
+  }, [armed, canAttemptClaim, hasAmount, retryAfterSec, publicId]);
 
   async function handleClaimClick() {
     if (!publicId) return;
@@ -448,8 +499,20 @@ export default function Claim() {
       }
 
       if (r.status === 429 && j?.retryAfterSec) {
+        const sec = Math.max(0, Number(j.retryAfterSec) || 0);
+
         setArmed(true);
-        setRetryAfterSec(Number(j.retryAfterSec) || 0);
+
+        if (hasAmount) {
+          // gift: show countdown
+          setRetryAfterSec(sec);
+          setAutoRetryMs(null);
+        } else {
+          // guest/no-amount: NO countdown UI, but still respect delay and auto-finish
+          setRetryAfterSec(null);
+          setAutoRetryMs(sec * 1000);
+        }
+
         setClaiming(false);
         return;
       }
@@ -503,15 +566,17 @@ export default function Claim() {
 
   let buttonText = hasAmount ? "Claim gift" : "Complete";
   if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
-  else if (waitingOnDelay) buttonText = `Finalizing… ${retryAfterSec}s`;
+  else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
+  else if (!hasAmount && armed) buttonText = "Finalizing…";
   else if (armed) buttonText = "Finalizing…";
   else if (claiming) buttonText = "Checking…";
-  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to complete";
+  else if (shouldShowCaptcha && !captchaReady)
+    buttonText = turnstileBooting ? "Loading verification…" : "Verify to complete";
 
   const statusLine = alreadyClaimed
     ? "This thankÜmail has already been claimed."
     : waitingOnDelay || armed
-      ? "You’re verified. It will complete automatically."
+      ? "One moment — finalizing."
       : "";
 
   if (loading) {
@@ -603,7 +668,9 @@ export default function Claim() {
               <div>
                 <div className="text-sm font-semibold text-tm-charcoal">{hasAmount ? "Gift" : "Complete"}</div>
                 <div className="mt-1 text-xs text-tm-charcoal/60">
-                  For safety, there’s a quick verification and a short pause before it finalizes.
+                  {hasAmount
+                    ? "For safety, there’s a quick verification and a short pause before it finalizes."
+                    : "For safety, there’s a quick verification."}
                 </div>
               </div>
 
@@ -628,7 +695,8 @@ export default function Claim() {
               </div>
             ) : null}
 
-            {!alreadyClaimed && retryAfterSec !== null && retryAfterSec > 0 ? (
+            {/* Countdown text is intentionally only for hasAmount */}
+            {hasAmount && retryAfterSec !== null && retryAfterSec > 0 ? (
               <div className="mt-4 text-sm text-tm-charcoal/70">Finalizing… about {retryAfterSec} seconds.</div>
             ) : null}
 
@@ -637,7 +705,9 @@ export default function Claim() {
               disabled={buttonDisabled}
               className={cn(
                 "mt-4 w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
-                buttonDisabled ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed" : "bg-tm-amber text-tm-charcoal hover:opacity-95"
+                buttonDisabled
+                  ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
+                  : "bg-tm-amber text-tm-charcoal hover:opacity-95"
               )}
             >
               {buttonText}
