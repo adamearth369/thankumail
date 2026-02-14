@@ -608,8 +608,9 @@ export default function CreateGiftForm() {
             disabled={!canSubmit}
             className={classNames(
               "w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
+              // Make border more noticeable (match inputs) + hand cursor on hover
               canSubmit
-                ? "bg-tm-amber text-tm-charcoal border-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
+                ? "bg-tm-amber text-tm-charcoal border-slate-400/70 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
                 : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
             )}
           >
