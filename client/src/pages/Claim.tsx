@@ -1,11 +1,12 @@
-// WHERE TO PASTE: client/src/pages/Claim.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-const CLAIM_UI_MARKER = "claim_ui_v2026-02-13_001";
+const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_001";
+
+function getTurnstile(): any {
+  return (window as any).turnstile;
+}
 
 function getPublicIdFromPath() {
   const parts = window.location.pathname.split("/").filter(Boolean);
@@ -264,8 +265,9 @@ export default function Claim() {
 
   function hardResetTurnstile() {
     try {
-      if (window.turnstile && widgetIdRef.current !== null) {
-        window.turnstile.reset(widgetIdRef.current);
+      const ts = getTurnstile();
+      if (ts && widgetIdRef.current !== null && ts.reset) {
+        ts.reset(widgetIdRef.current);
       }
     } catch {}
     tokenRef.current = "";
@@ -302,7 +304,7 @@ export default function Claim() {
       return;
     }
 
-    if (window.turnstile) {
+    if (getTurnstile()) {
       setTurnstileBooting(false);
       return;
     }
@@ -338,7 +340,7 @@ export default function Claim() {
     const tryRender = () => {
       if (cancelled) return;
 
-      const ts = window.turnstile;
+      const ts = getTurnstile();
       const el = document.getElementById("turnstile-container");
       if (!ts || !el) return;
       if (renderedRef.current) return;
@@ -570,8 +572,7 @@ export default function Claim() {
   else if (!hasAmount && armed) buttonText = "Finalizing…";
   else if (armed) buttonText = "Finalizing…";
   else if (claiming) buttonText = "Checking…";
-  else if (shouldShowCaptcha && !captchaReady)
-    buttonText = turnstileBooting ? "Loading verification…" : "Verify to complete";
+  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to complete";
 
   const statusLine = alreadyClaimed
     ? "This thankÜmail has already been claimed."
@@ -579,9 +580,12 @@ export default function Claim() {
       ? "One moment — finalizing."
       : "";
 
+  const bg =
+    "bg-[radial-gradient(1200px_600px_at_50%_-10%,rgba(201,162,39,0.18),transparent_60%),radial-gradient(900px_500px_at_20%_20%,rgba(31,61,43,0.12),transparent_55%),linear-gradient(to_bottom,rgba(246,241,232,0.85),rgba(246,241,232,0.55))]";
+
   if (loading) {
     return (
-      <div className="min-h-[70vh] flex items-center justify-center px-6" data-claim-marker={CLAIM_UI_MARKER}>
+      <div className={cn("min-h-[70vh] flex items-center justify-center px-6", bg)} data-claim-marker={CLAIM_UI_MARKER}>
         <div className="w-full max-w-md rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
           <div className="text-sm text-tm-charcoal/60 mb-2">thankÜmail</div>
           <div className="font-outfit text-2xl text-tm-charcoal">Loading…</div>
@@ -593,7 +597,7 @@ export default function Claim() {
 
   if ((error && !gift) || invalidRef.current) {
     return (
-      <div className="min-h-[70vh] flex items-center justify-center px-6" data-claim-marker={CLAIM_UI_MARKER}>
+      <div className={cn("min-h-[70vh] flex items-center justify-center px-6", bg)} data-claim-marker={CLAIM_UI_MARKER}>
         <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50 p-6">
           <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankÜmail</div>
           <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
@@ -604,7 +608,7 @@ export default function Claim() {
 
   if (ok) {
     return (
-      <div className="min-h-[70vh] flex items-start justify-center px-6 py-10" data-claim-marker={CLAIM_UI_MARKER}>
+      <div className={cn("min-h-[70vh] flex items-start justify-center px-6 py-10", bg)} data-claim-marker={CLAIM_UI_MARKER}>
         <div className="w-full max-w-xl">
           <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
             <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
@@ -636,7 +640,7 @@ export default function Claim() {
   }
 
   return (
-    <div className="min-h-[70vh] flex items-start justify-center px-6 py-10" data-claim-marker={CLAIM_UI_MARKER}>
+    <div className={cn("min-h-[70vh] flex items-start justify-center px-6 py-10", bg)} data-claim-marker={CLAIM_UI_MARKER}>
       <div className="w-full max-w-xl">
         <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
           <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
@@ -705,9 +709,7 @@ export default function Claim() {
               disabled={buttonDisabled}
               className={cn(
                 "mt-4 w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
-                buttonDisabled
-                  ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed"
-                  : "bg-tm-amber text-tm-charcoal hover:opacity-95"
+                buttonDisabled ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed" : "bg-tm-amber text-tm-charcoal hover:opacity-95"
               )}
             >
               {buttonText}
