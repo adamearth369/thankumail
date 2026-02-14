@@ -510,7 +510,7 @@ export default function CreateGiftForm() {
                 type="button"
                 aria-label="Previous message"
                 onClick={() => selectPreset(presetIdx - 1)}
-                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50"
+                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 cursor-pointer"
               >
                 ‹
               </button>
@@ -524,7 +524,7 @@ export default function CreateGiftForm() {
                 type="button"
                 aria-label="Next message"
                 onClick={() => selectPreset(presetIdx + 1)}
-                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50"
+                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 cursor-pointer"
               >
                 ›
               </button>
@@ -539,7 +539,7 @@ export default function CreateGiftForm() {
                     type="button"
                     onClick={() => selectPreset(i)}
                     className={classNames(
-                      "px-2 py-1 rounded-full text-xs border transition",
+                      "px-2 py-1 rounded-full text-xs border transition cursor-pointer",
                       active
                         ? "border-slate-900 bg-slate-900 text-white"
                         : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
@@ -577,7 +577,7 @@ export default function CreateGiftForm() {
                     });
                   });
                 }}
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-slate-900 hover:opacity-90"
+                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-slate-900 hover:opacity-90 cursor-pointer"
               >
                 Retry
               </button>
@@ -609,10 +609,9 @@ export default function CreateGiftForm() {
             type="submit"
             disabled={!canSubmit}
             className={classNames(
-              "w-full rounded-2xl px-4 py-3 transition shadow-soft",
-              "font-quicksand font-semibold tracking-tight",
+              "w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight",
               canSubmit
-                ? "bg-tm-amber text-tm-charcoal hover:opacity-95"
+                ? "bg-tm-amber text-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
                 : "bg-slate-200 text-slate-500 cursor-not-allowed"
             )}
           >

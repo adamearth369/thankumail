@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_001";
+const CLAIM_UI_MARKER = "claim_ui_v2026-02-14_003";
 
 function getTurnstile(): any {
   return (window as any).turnstile;
@@ -137,9 +137,7 @@ export default function Claim() {
   }, [amountCents, hasAmount]);
 
   const waitingOnDelay = useMemo(() => {
-    // countdown only for hasAmount
     if (hasAmount) return retryAfterSec !== null && retryAfterSec > 0;
-    // for no-amount, we "delay" without showing seconds when autoRetryMs is set and armed
     return !!autoRetryMs && autoRetryMs > 0;
   }, [hasAmount, retryAfterSec, autoRetryMs]);
 
@@ -248,8 +246,7 @@ export default function Claim() {
 
     const id = window.setTimeout(() => {
       setAutoRetryMs(null); // consume
-      setArmed(true); // keep armed; the claim effect below will fire
-      // trigger immediate attempt without a visible countdown
+      setArmed(true);
       setRetryAfterSec(0);
     }, autoRetryMs);
 
@@ -406,19 +403,15 @@ export default function Claim() {
     return { r, j };
   }
 
-  // Auto-complete when armed:
-  // - If hasAmount: use visible retryAfterSec countdown to 0
-  // - If NO amount: auto-retry after server delay WITHOUT showing seconds
+  // Auto-complete when armed
   useEffect(() => {
     if (!armed) return;
     if (!canAttemptClaim) return;
 
-    // hasAmount: wait for countdown to reach 0
     if (hasAmount) {
       if (retryAfterSec === null) return;
       if (retryAfterSec !== 0) return;
     } else {
-      // no-amount: we don't show countdown; we only proceed once we’ve consumed autoRetryMs and set retryAfterSec=0
       if (retryAfterSec !== 0) return;
     }
 
@@ -506,11 +499,9 @@ export default function Claim() {
         setArmed(true);
 
         if (hasAmount) {
-          // gift: show countdown
           setRetryAfterSec(sec);
           setAutoRetryMs(null);
         } else {
-          // guest/no-amount: NO countdown UI, but still respect delay and auto-finish
           setRetryAfterSec(null);
           setAutoRetryMs(sec * 1000);
         }
@@ -580,16 +571,21 @@ export default function Claim() {
       ? "One moment — finalizing."
       : "";
 
-  const bg =
-    "bg-[radial-gradient(1200px_600px_at_50%_-10%,rgba(201,162,39,0.18),transparent_60%),radial-gradient(900px_500px_at_20%_20%,rgba(31,61,43,0.12),transparent_55%),linear-gradient(to_bottom,rgba(246,241,232,0.85),rgba(246,241,232,0.55))]";
-
   if (loading) {
     return (
-      <div className={cn("min-h-[70vh] flex items-center justify-center px-6", bg)} data-claim-marker={CLAIM_UI_MARKER}>
-        <div className="w-full max-w-md rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
-          <div className="text-sm text-tm-charcoal/60 mb-2">thankÜmail</div>
-          <div className="font-outfit text-2xl text-tm-charcoal">Loading…</div>
-          <div className="mt-3 text-sm text-tm-charcoal/70">Just a moment.</div>
+      <div
+        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+        data-claim-marker={CLAIM_UI_MARKER}
+      >
+        <div className="min-h-screen bg-black/40">
+          <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+            <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
+              <div className="text-sm text-slate-500 mb-2">thankÜmail</div>
+              <div className="font-outfit text-2xl text-slate-900">Loading…</div>
+              <div className="mt-3 text-sm text-slate-600">Just a moment.</div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -597,10 +593,18 @@ export default function Claim() {
 
   if ((error && !gift) || invalidRef.current) {
     return (
-      <div className={cn("min-h-[70vh] flex items-center justify-center px-6", bg)} data-claim-marker={CLAIM_UI_MARKER}>
-        <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50 p-6">
-          <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankÜmail</div>
-          <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
+      <div
+        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+        data-claim-marker={CLAIM_UI_MARKER}
+      >
+        <div className="min-h-screen bg-black/40">
+          <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+            <div className="w-full max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 p-6 text-slate-900">
+              <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankÜmail</div>
+              <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -608,128 +612,133 @@ export default function Claim() {
 
   if (ok) {
     return (
-      <div className={cn("min-h-[70vh] flex items-start justify-center px-6 py-10", bg)} data-claim-marker={CLAIM_UI_MARKER}>
-        <div className="w-full max-w-xl">
-          <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
-            <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
+      <div
+        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+        data-claim-marker={CLAIM_UI_MARKER}
+      >
+        <div className="min-h-screen bg-black/40">
+          <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+            <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
+              <div className="text-sm text-slate-500">thankÜmail</div>
 
-            <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">It’s yours.</h1>
-            <p className="mt-2 text-tm-charcoal/70">
-              {hasAmount ? "The note was the heart of it. The gift is the follow-through." : "The note was the heart of it."}
-            </p>
+              <h1 className="mt-2 font-outfit text-3xl text-slate-900">It’s yours.</h1>
+              <p className="mt-2 text-slate-700">
+                {hasAmount ? "The note was the heart of it. The gift is the follow-through." : "The note was the heart of it."}
+              </p>
 
-            <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
-              <div className="text-xs uppercase tracking-wide text-tm-charcoal/60 mb-2">Message</div>
-              <div className="text-lg leading-relaxed text-tm-charcoal whitespace-pre-wrap">{gift?.message || "—"}</div>
-            </div>
-
-            {hasAmount ? (
-              <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-tm-cream/40 bg-tm-cream/20 p-4">
-                <div className="text-sm text-tm-charcoal/70">Gift amount</div>
-                <div className="font-outfit text-2xl text-tm-charcoal">${amountDollars}</div>
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
+                <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Message</div>
+                <div className="text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">{gift?.message || "—"}</div>
               </div>
-            ) : null}
 
-            <div className="mt-5 text-xs text-tm-charcoal/60">
-              If you weren’t expecting this, you can ignore it — nothing else is required.
+              {hasAmount ? (
+                <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-sm text-slate-700">Gift amount</div>
+                  <div className="font-outfit text-2xl text-slate-900">${amountDollars}</div>
+                </div>
+              ) : null}
+
+              <div className="mt-5 text-xs text-slate-600">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
             </div>
-          </div>
+
+            <div className="mt-4 text-center text-xs text-white/60">{CLAIM_UI_MARKER}</div>
+          </main>
         </div>
       </div>
     );
   }
 
   return (
-    <div className={cn("min-h-[70vh] flex items-start justify-center px-6 py-10", bg)} data-claim-marker={CLAIM_UI_MARKER}>
-      <div className="w-full max-w-xl">
-        <div className="rounded-2xl border border-tm-cream/30 bg-white/70 backdrop-blur p-6 shadow-soft">
-          <div className="text-sm text-tm-charcoal/60">thankÜmail</div>
+    <div
+      className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+      style={{ backgroundImage: "url('/images/hero-background.png')" }}
+      data-claim-marker={CLAIM_UI_MARKER}
+    >
+      <div className="min-h-screen bg-black/40">
+        <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+          <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
+            <div className="text-sm text-slate-500">thankÜmail</div>
 
-          <h1 className="mt-2 font-outfit text-3xl text-tm-charcoal">A note for you.</h1>
-          <p className="mt-2 text-tm-charcoal/70">
-            Read the message first. {hasAmount ? "Claim when you’re ready." : "Complete when you’re ready."}
-          </p>
-
-          {alreadyClaimed ? (
-            <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-              {statusLine || "This thankÜmail has already been claimed."}
-            </div>
-          ) : error ? (
-            <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
-          ) : statusLine ? (
-            <div className="mt-4 rounded-2xl border border-tm-cream/40 bg-tm-cream/20 px-4 py-3 text-sm text-tm-charcoal">
-              {statusLine}
-            </div>
-          ) : null}
-
-          <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
-            <div className="text-xs uppercase tracking-wide text-tm-charcoal/60 mb-2">Message</div>
-            <div className="text-lg leading-relaxed text-tm-charcoal whitespace-pre-wrap">{gift?.message || "—"}</div>
-          </div>
-
-          <div className="mt-5 rounded-2xl border border-tm-cream/40 bg-white p-5">
-            <div className="flex items-end justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-tm-charcoal">{hasAmount ? "Gift" : "Complete"}</div>
-                <div className="mt-1 text-xs text-tm-charcoal/60">
-                  {hasAmount
-                    ? "For safety, there’s a quick verification and a short pause before it finalizes."
-                    : "For safety, there’s a quick verification."}
-                </div>
-              </div>
-
-              {hasAmount ? (
-                <div className="text-right">
-                  <div className="text-xs text-tm-charcoal/60">Amount</div>
-                  <div className="font-outfit text-2xl text-tm-charcoal">${amountDollars}</div>
-                </div>
-              ) : null}
-            </div>
-
-            {shouldShowCaptcha ? (
-              <div className="mt-4">
-                <div className="rounded-2xl border border-tm-cream/40 bg-white p-4">
-                  <div id="turnstile-container" />
-                  {turnstileBooting ? (
-                    <div className="mt-2 text-xs text-tm-charcoal/60">Loading verification…</div>
-                  ) : captchaReady ? (
-                    <div className="mt-2 text-xs text-tm-charcoal/60">Verified ✓</div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            {/* Countdown text is intentionally only for hasAmount */}
-            {hasAmount && retryAfterSec !== null && retryAfterSec > 0 ? (
-              <div className="mt-4 text-sm text-tm-charcoal/70">Finalizing… about {retryAfterSec} seconds.</div>
-            ) : null}
-
-            <button
-              onClick={handleClaimClick}
-              disabled={buttonDisabled}
-              className={cn(
-                "mt-4 w-full rounded-2xl px-4 py-3 font-medium transition shadow-soft",
-                buttonDisabled ? "bg-tm-cream/60 text-tm-charcoal/50 cursor-not-allowed" : "bg-tm-amber text-tm-charcoal hover:opacity-95"
-              )}
-            >
-              {buttonText}
-            </button>
+            <h1 className="mt-2 font-outfit text-3xl text-slate-900">A note for you.</h1>
+            <p className="mt-2 text-slate-700">
+              Read the message first. {hasAmount ? "Claim when you’re ready." : "Complete when you’re ready."}
+            </p>
 
             {alreadyClaimed ? (
-              <div className="mt-3 text-xs text-tm-charcoal/60">
-                If you believe this is a mistake, ask the sender to create a new thankÜmail.
+              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {statusLine || "This thankÜmail has already been claimed."}
               </div>
-            ) : waitingOnDelay || armed ? (
-              <div className="mt-3 text-xs text-tm-charcoal/60">No second click needed — this completes automatically.</div>
-            ) : (
-              <div className="mt-3 text-xs text-tm-charcoal/60">
-                If you weren’t expecting this, you can ignore it — nothing else is required.
-              </div>
-            )}
-          </div>
-        </div>
+            ) : error ? (
+              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
+            ) : statusLine ? (
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">{statusLine}</div>
+            ) : null}
 
-        <div className="mt-4 text-center text-xs text-tm-charcoal/50">{CLAIM_UI_MARKER}</div>
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
+              <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Message</div>
+              <div className="text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">{gift?.message || "—"}</div>
+            </div>
+
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">{hasAmount ? "Gift" : "Complete"}</div>
+                  <div className="mt-1 text-xs text-slate-600">
+                    {hasAmount
+                      ? "For safety, there’s a quick verification and a short pause before it finalizes."
+                      : "For safety, there’s a quick verification."}
+                  </div>
+                </div>
+
+                {hasAmount ? (
+                  <div className="text-right">
+                    <div className="text-xs text-slate-500">Amount</div>
+                    <div className="font-outfit text-2xl text-slate-900">${amountDollars}</div>
+                  </div>
+                ) : null}
+              </div>
+
+              {shouldShowCaptcha ? (
+                <div className="mt-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div id="turnstile-container" />
+                    {turnstileBooting ? (
+                      <div className="mt-2 text-xs text-slate-500">Loading verification…</div>
+                    ) : captchaReady ? (
+                      <div className="mt-2 text-xs text-slate-600">Verified ✓</div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {hasAmount && retryAfterSec !== null && retryAfterSec > 0 ? (
+                <div className="mt-4 text-sm text-slate-700">Finalizing… about {retryAfterSec} seconds.</div>
+              ) : null}
+
+              <button
+                onClick={handleClaimClick}
+                disabled={buttonDisabled}
+                className={cn(
+                  "mt-4 w-full rounded-2xl px-4 py-3 font-outfit text-lg tracking-tight transition",
+                  buttonDisabled
+                    ? "bg-slate-200 text-slate-500 cursor-not-allowed"
+                    : "bg-tm-amber text-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
+                )}
+              >
+                {buttonText}
+              </button>
+
+              {waitingOnDelay || armed ? (
+                <div className="mt-3 text-xs text-slate-600">No second click needed — this completes automatically.</div>
+              ) : (
+                <div className="mt-3 text-xs text-slate-600">If you weren’t expecting this, you can ignore it — nothing else is required.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 text-center text-xs text-white/60">{CLAIM_UI_MARKER}</div>
+        </main>
       </div>
     </div>
   );
