@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/email.ts
-// ACTION: Full file replacement (paste exactly)
-
 type SendEmailResult = { ok: true; messageId: string } | { ok: false; error: string };
 
 type SendGiftEmailArgs = {
@@ -27,7 +24,7 @@ type SendReturnToSenderEmailArgs = {
   reason?: string;
 };
 
-const EMAIL_VERSION = "email_v2026-02-14_002";
+const EMAIL_VERSION = "email_v2026-02-14_003";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -63,7 +60,9 @@ function escapeHtml(input: string) {
 }
 
 function logEmail(event: string, fields: Record<string, any> = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), event, emailVersion: EMAIL_VERSION, ...fields }));
+  console.log(
+    JSON.stringify({ ts: new Date().toISOString(), event, emailVersion: EMAIL_VERSION, ...fields }),
+  );
 }
 
 function emailDomain(to: string) {
@@ -110,7 +109,8 @@ function getBrevoApiKey():
   if (smtpKey) {
     return {
       ok: false,
-      error: "BREVO_API_KEY is missing (BREVO_SMTP_KEY is set, but the API endpoint requires an API v3 key)",
+      error:
+        "BREVO_API_KEY is missing (BREVO_SMTP_KEY is set, but the API endpoint requires an API v3 key)",
       note: "BREVO_SMTP_KEY_present_but_rejected",
     };
   }
@@ -118,15 +118,22 @@ function getBrevoApiKey():
   return { ok: false, error: "Missing BREVO_API_KEY", note: "no_brevo_keys_present" };
 }
 
-/* -------------------- HTML WRAPPER -------------------- */
-function htmlDoc(inner: string) {
-  // NOTE: Email clients may fall back to system fonts. We still try to load the same families as the site.
-  const fontLinks = `
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Outfit:wght@500;700;800&family=Quicksand:wght@600;700&display=swap" rel="stylesheet" />
-`;
+/* -------------------- EMAIL STYLE -------------------- */
+/**
+ * Gmail will not reliably apply web fonts.
+ * To keep brand consistency, we use a wordmark image (hosted on the site)
+ * and a clean system font stack for all other text.
+ */
+function wordmarkUrl() {
+  const site = (env("PUBLIC_SITE_URL") || "https://thankumail.com").replace(/\/+$/, "");
+  return `${site}/images/thankumail-wordmark.png`;
+}
 
+function sysFontStack() {
+  return `-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji",sans-serif`;
+}
+
+function htmlDoc(inner: string) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -134,14 +141,57 @@ function htmlDoc(inner: string) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
   <title>thankümail</title>
-  ${fontLinks}
 </head>
 <body style="margin:0; padding:0; background:#ffffff;">
-  <div style="padding:16px; color:#111; line-height:1.6; font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;">
+  <div style="margin:0; padding:0; background:#ffffff;">
     ${inner}
   </div>
 </body>
 </html>`;
+}
+
+function shell(args: { title: string; bodyHtml: string; ctaHref: string; ctaLabel: string; note?: string }) {
+  const font = sysFontStack();
+  const logo = wordmarkUrl();
+
+  return htmlDoc(`
+  <div style="padding:18px; background:#ffffff; font-family:${font}; color:#0f172a;">
+    <div style="max-width:640px; margin:0 auto;">
+      <div style="margin:2px 0 14px;">
+        <img src="${logo}" alt="thankümail" width="220" style="display:block; height:auto; border:0; outline:none; text-decoration:none;" />
+      </div>
+
+      <h1 style="margin:0 0 12px; font-size:28px; line-height:1.2; font-weight:800; color:#0f172a;">
+        ${escapeHtml(args.title)}
+      </h1>
+
+      ${args.bodyHtml}
+
+      <div style="margin:18px 0 0;">
+        <a href="${args.ctaHref}"
+           style="display:inline-block; padding:14px 18px; background:#0b1220; color:#ffffff; text-decoration:none; border-radius:14px; font-weight:800; font-size:14px; letter-spacing:0.2px;">
+          ${escapeHtml(args.ctaLabel)} →
+        </a>
+      </div>
+
+      <div style="margin:14px 0 0; font-size:12px; color:#6b7280;">
+        ${escapeHtml(args.note || "This message was sent anonymously.")}
+      </div>
+    </div>
+  </div>
+  `);
+}
+
+function messageCard(message: string) {
+  const safe = escapeHtml(message || "");
+  return `
+  <div style="margin:0 0 10px; font-size:14px; color:#0f172a; font-weight:700;">Message</div>
+  <div style="margin:0 0 6px; padding:14px 16px; border:1px solid #e5e7eb; border-radius:14px; background:#ffffff;">
+    <div style="font-size:15px; color:#111827; font-style:italic; line-height:1.5;">
+      "${safe}"
+    </div>
+  </div>
+  `;
 }
 
 /* -------------------- BREVO SEND -------------------- */
@@ -219,7 +269,9 @@ async function sendBrevoEmail(params: {
     }
 
     if (!resp.ok) {
-      const bodyPreview = (bodyJson ? JSON.stringify(bodyJson) : bodyText || "").toString().slice(0, 800);
+      const bodyPreview = (bodyJson ? JSON.stringify(bodyJson) : bodyText || "")
+        .toString()
+        .slice(0, 800);
 
       logEmail("email_api_send_failed", {
         toDomain: emailDomain(to),
@@ -260,42 +312,20 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
   textLines.push(``, `Claim: ${claimUrl}`);
   const textContent = textLines.filter(Boolean).join("\n");
 
-  const inner = `
-    <div style="margin:0 0 6px; font-family:'Quicksand','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-weight:700; color:#111; font-size:14px;">
-      thankümail
+  const bodyHtml = `
+    ${args.message ? messageCard(args.message) : ""}
+    <div style="margin:0; font-size:12px; color:#6b7280;">
+      ${showAmount ? `A gift is included.` : `A note, sent with care.`}
     </div>
-
-    <h2 style="margin:0 0 12px; font-family:'Outfit','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:26px; line-height:1.2; font-weight:800; color:#111;">
-      You received a thankümail 🎁
-    </h2>
-
-    ${
-      showAmount
-        ? `<p style="margin:0 0 10px; font-size:14px; color:#111;"><b>Amount:</b> ${money(args.amountCents)}</p>`
-        : ``
-    }
-
-    ${
-      args.message
-        ? `<p style="margin:0 0 8px; font-size:14px; color:#111;"><b>Message:</b></p>
-           <div style="margin:0 0 16px; padding:12px 14px; border:1px solid #e5e7eb; border-radius:12px; background:#ffffff;">
-             <div style="font-size:14px; color:#374151; font-style:italic;">"${escapeHtml(args.message)}"</div>
-           </div>`
-        : ""
-    }
-
-    <p style="margin:0 0 16px">
-      <a href="${claimUrl}" style="display:inline-block; padding:12px 16px; background:#111; color:#fff; text-decoration:none; border-radius:14px; font-weight:800; font-size:14px; font-family:'Outfit','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-        Accept your thankümail →
-      </a>
-    </p>
-
-    <p style="margin:0; font-size:12px; color:#6b7280;">
-      This message was sent anonymously.
-    </p>
   `;
 
-  const htmlContent = htmlDoc(inner);
+  const htmlContent = shell({
+    title: "You received a thankümail 🎁",
+    bodyHtml,
+    ctaHref: claimUrl,
+    ctaLabel: "Accept your thankümail",
+    note: "This message was sent anonymously.",
+  });
 
   const r = await sendBrevoEmail({
     to: args.to,
@@ -308,7 +338,9 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
   return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
-export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ ok: boolean; error?: string }> {
+export async function sendReminderEmail(
+  args: SendReminderEmailArgs,
+): Promise<{ ok: boolean; error?: string }> {
   const claimUrl = toAbsoluteLink(args.claimUrl);
   const subject = `Reminder: your thankümail is waiting`;
 
@@ -319,33 +351,22 @@ export async function sendReminderEmail(args: SendReminderEmailArgs): Promise<{ 
   textLines.push(``, `Claim: ${claimUrl}`);
   const textContent = textLines.filter(Boolean).join("\n");
 
-  const inner = `
-    <div style="margin:0 0 6px; font-family:'Quicksand','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-weight:700; color:#111; font-size:14px;">
-      thankümail
+  const bodyHtml = `
+    <div style="margin:0 0 10px; font-size:14px; color:#111827;">
+      Your thankümail is still waiting.
     </div>
-
-    <h2 style="margin:0 0 12px; font-family:'Outfit','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:24px; line-height:1.2; font-weight:800; color:#111;">
-      Your thankümail is still waiting 💛
-    </h2>
-
-    ${
-      showAmount
-        ? `<p style="margin:0 0 10px; font-size:14px; color:#111;"><b>Amount:</b> ${money(args.amountCents)}</p>`
-        : ``
-    }
-
-    <p style="margin:0 0 16px">
-      <a href="${claimUrl}" style="display:inline-block; padding:12px 16px; background:#111; color:#fff; text-decoration:none; border-radius:14px; font-weight:800; font-size:14px; font-family:'Outfit','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-        Accept your thankümail →
-      </a>
-    </p>
-
-    <p style="margin:0; font-size:12px; color:#6b7280;">
-      This message was sent anonymously.
-    </p>
+    <div style="margin:0; font-size:12px; color:#6b7280;">
+      ${showAmount ? `A gift is included.` : `A note, sent with care.`}
+    </div>
   `;
 
-  const htmlContent = htmlDoc(inner);
+  const htmlContent = shell({
+    title: "Your thankümail is still waiting 💛",
+    bodyHtml,
+    ctaHref: claimUrl,
+    ctaLabel: "Accept your thankümail",
+    note: "This message was sent anonymously.",
+  });
 
   const r = await sendBrevoEmail({
     to: args.to,
@@ -370,27 +391,43 @@ export async function sendReturnToSenderEmail(
   if (args.reason) textLines.push(`Reason: ${args.reason}`);
   const textContent = textLines.filter(Boolean).join("\n");
 
-  const inner = `
-    <div style="margin:0 0 6px; font-family:'Quicksand','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-weight:700; color:#111; font-size:14px;">
-      thankümail
+  const reasonHtml = args.reason
+    ? `<div style="margin:10px 0 0; padding:12px 14px; border:1px solid #e5e7eb; border-radius:14px; background:#ffffff;">
+         <div style="font-size:12px; color:#6b7280; font-weight:700; margin:0 0 6px;">Reason</div>
+         <div style="font-size:14px; color:#111827;">${escapeHtml(args.reason)}</div>
+       </div>`
+    : "";
+
+  const bodyHtml = `
+    <div style="margin:0; font-size:14px; color:#111827;">
+      Your thankümail could not be completed.
     </div>
-
-    <h2 style="margin:0 0 12px; font-family:'Outfit','DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:24px; line-height:1.2; font-weight:800; color:#111;">
-      Your thankümail update
-    </h2>
-
-    <p style="margin:0 0 8px; font-size:14px; color:#111;"><b>Public ID:</b> ${escapeHtml(args.publicId)}</p>
-
-    ${
-      showAmount
-        ? `<p style="margin:0 0 8px; font-size:14px; color:#111;"><b>Amount:</b> ${money(args.amountCents)}</p>`
-        : ``
-    }
-
-    ${args.reason ? `<p style="margin:0 0 8px; font-size:14px; color:#111;"><b>Reason:</b> ${escapeHtml(args.reason)}</p>` : ""}
+    <div style="margin:10px 0 0; font-size:12px; color:#6b7280;">
+      Public ID: <span style="color:#111827; font-weight:700;">${escapeHtml(args.publicId)}</span>
+    </div>
+    ${reasonHtml}
   `;
 
-  const htmlContent = htmlDoc(inner);
+  // No CTA here (no claim link); keep emotionally neutral.
+  const htmlContent = htmlDoc(`
+    <div style="padding:18px; background:#ffffff; font-family:${sysFontStack()}; color:#0f172a;">
+      <div style="max-width:640px; margin:0 auto;">
+        <div style="margin:2px 0 14px;">
+          <img src="${wordmarkUrl()}" alt="thankümail" width="220" style="display:block; height:auto; border:0; outline:none; text-decoration:none;" />
+        </div>
+
+        <h1 style="margin:0 0 12px; font-size:24px; line-height:1.2; font-weight:800; color:#0f172a;">
+          Your thankümail update
+        </h1>
+
+        ${bodyHtml}
+
+        <div style="margin:14px 0 0; font-size:12px; color:#6b7280;">
+          This message was sent anonymously.
+        </div>
+      </div>
+    </div>
+  `);
 
   const r = await sendBrevoEmail({
     to: args.to,
