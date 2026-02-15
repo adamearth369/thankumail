@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -531,6 +534,9 @@ export default function Claim() {
 
   const shellStyle: React.CSSProperties = {
     fontFamily: FONT_BODY,
+    WebkitFontSmoothing: "antialiased",
+    MozOsxFontSmoothing: "grayscale",
+    textRendering: "optimizeLegibility",
   };
 
   if (loading) {
@@ -592,17 +598,22 @@ export default function Claim() {
                 thankümail
               </div>
 
-              <h1 className="mt-2 text-3xl text-slate-900" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+              <h1
+                className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight"
+                style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
+              >
                 Received.
               </h1>
 
-              <p className="mt-2 text-slate-700">
+              <p className="mt-2 text-slate-700 text-[15px] leading-relaxed md:text-base">
                 {hasAmount ? "The note was the heart of it. The gift will finalize shortly." : "The note was the heart of it."}
               </p>
 
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
-                <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Message</div>
-                <div className="text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">{gift?.message || "—"}</div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Message</div>
+                <div className="text-[17px] md:text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">
+                  {gift?.message || "—"}
+                </div>
               </div>
 
               {hasAmount ? (
@@ -644,11 +655,14 @@ export default function Claim() {
               thankümail
             </div>
 
-            <h1 className="mt-2 text-3xl text-slate-900" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+            <h1
+              className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight"
+              style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
+            >
               A note for you.
             </h1>
 
-            <p className="mt-2 text-slate-700">
+            <p className="mt-2 text-slate-700 text-[15px] leading-relaxed md:text-base">
               Read the message first. {hasAmount ? "Claim when you’re ready." : "Accept when you’re ready."}
             </p>
 
@@ -663,15 +677,17 @@ export default function Claim() {
             ) : null}
 
             <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
-              <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Message</div>
-              <div className="text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">{gift?.message || "—"}</div>
+              <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Message</div>
+              <div className="text-[17px] md:text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">
+                {gift?.message || "—"}
+              </div>
             </div>
 
             <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
               <div className="flex items-end justify-between gap-3">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">{hasAmount ? "Gift" : "Accept"}</div>
-                  <div className="mt-1 text-xs text-slate-600">
+                  <div className="mt-1 text-xs text-slate-600 leading-relaxed">
                     {hasAmount
                       ? "For safety, there’s a quick verification and a short pause before it finalizes."
                       : "For safety, there’s a quick verification."}
@@ -714,7 +730,7 @@ export default function Claim() {
                     ? "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
                     : "bg-tm-amber text-tm-charcoal border-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
                 )}
-                style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
+                style={{ fontFamily: FONT_TITLE, fontWeight: 800, letterSpacing: "-0.01em" }}
               >
                 {buttonText}
               </button>
