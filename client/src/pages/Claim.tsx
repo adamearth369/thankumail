@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -321,6 +324,7 @@ export default function Claim() {
     setCaptchaReady(false);
   }
 
+  // Keep container stable; only clear when we truly exit the captcha state
   useEffect(() => {
     if (!siteKey) return;
 
@@ -341,6 +345,7 @@ export default function Claim() {
     setCaptchaRendered(false);
   }, [siteKey, shouldShowCaptcha]);
 
+  // Ensure script exists
   useEffect(() => {
     if (!siteKey) {
       setTurnstileBooting(false);
@@ -379,6 +384,7 @@ export default function Claim() {
     document.body.appendChild(script);
   }, [siteKey, shouldShowCaptcha]);
 
+  // Render widget (use element render, not selector string)
   useEffect(() => {
     if (!siteKey) return;
     if (!shouldShowCaptcha) return;
@@ -397,7 +403,7 @@ export default function Claim() {
       try {
         setTurnstileBooting(false);
 
-        const id = ts.render("#turnstile-container", {
+        const id = ts.render(el, {
           sitekey: siteKey,
           callback: (token: string) => {
             if (invalidRef.current) return;
@@ -458,15 +464,9 @@ export default function Claim() {
     if (!publicId) return;
     if (!canAttemptClaim) return;
 
-    // Guest/no-amount: instant success UI (seamless)
-    if (!hasAmount) {
-      setOk(true);
-      setAlreadyClaimed(true);
-      setError("");
-    }
-
+    // ALWAYS require verification when enforced (prevents “success UI but claim never completed”)
     if (shouldShowCaptcha && !captchaReady) {
-      if (hasAmount) setError("Please complete the quick verification below.");
+      setError("Please complete the quick verification below.");
       return;
     }
 
@@ -510,12 +510,6 @@ export default function Claim() {
           return;
         }
 
-        // Guest/no-amount: keep seamless success; don’t block them
-        if (!hasAmount) {
-          setError("");
-          return;
-        }
-
         throw new Error(msg);
       }
 
@@ -529,10 +523,7 @@ export default function Claim() {
         if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
       } catch {}
     } catch (e: any) {
-      if (!invalidRef.current) {
-        if (hasAmount) setError(friendlyError(e?.message || "Claim failed"));
-        else setError("");
-      }
+      if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
     } finally {
       setClaiming(false);
     }
@@ -547,10 +538,7 @@ export default function Claim() {
 
   if (loading) {
     return (
-      <div
-        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
-        style={{ backgroundImage: "url('/images/hero-background.png')" }}
-      >
+      <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
@@ -570,10 +558,7 @@ export default function Claim() {
 
   if ((error && !gift) || invalidRef.current) {
     return (
-      <div
-        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
-        style={{ backgroundImage: "url('/images/hero-background.png')" }}
-      >
+      <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 p-6 text-slate-900">
@@ -593,10 +578,7 @@ export default function Claim() {
     }
 
     return (
-      <div
-        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
-        style={{ backgroundImage: "url('/images/hero-background.png')" }}
-      >
+      <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
@@ -604,10 +586,7 @@ export default function Claim() {
                 thankümail
               </div>
 
-              <h1
-                className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight"
-                style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
-              >
+              <h1 className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
                 Received.
               </h1>
 
@@ -642,7 +621,7 @@ export default function Claim() {
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (claiming) buttonText = "Checking…";
   else if (shouldShowCaptcha && !captchaReady) {
-    buttonText = !captchaRendered || turnstileBooting ? "Loading verification…" : "Verify to claim";
+    buttonText = !captchaRendered || turnstileBooting ? "Loading verification…" : "Verify to continue";
   }
 
   const buttonDisabled =
@@ -652,10 +631,7 @@ export default function Claim() {
     (waitingOnDelay ? true : false);
 
   return (
-    <div
-      className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
-      style={{ backgroundImage: "url('/images/hero-background.png')" }}
-    >
+    <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
       <div className="min-h-screen bg-black/40" style={shellStyle}>
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
@@ -663,10 +639,7 @@ export default function Claim() {
               thankümail
             </div>
 
-            <h1
-              className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight"
-              style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
-            >
+            <h1 className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
               A note for you.
             </h1>
 
@@ -715,7 +688,10 @@ export default function Claim() {
               {shouldShowCaptcha ? (
                 <div className="mt-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div id="turnstile-container" />
+                    <div
+                      id="turnstile-container"
+                      className="min-h-[76px] flex items-center justify-center"
+                    />
                     {turnstileBooting ? (
                       <div className="mt-2 text-xs text-slate-500">Loading verification…</div>
                     ) : captchaReady ? (
