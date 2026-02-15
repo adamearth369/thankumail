@@ -1,10 +1,15 @@
-// WHERE TO PASTE: client/src/pages/Claim.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
+
+// Force site-consistent fonts even if a Tailwind font class fails to apply
+const FONT_BODY =
+  "'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
+const FONT_TITLE =
+  "'Outfit', 'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
+const FONT_WORDMARK =
+  "'Quicksand', 'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
 
 function getTurnstile(): any {
   return (window as any).turnstile;
@@ -524,17 +529,25 @@ export default function Claim() {
     }
   }
 
+  const shellStyle: React.CSSProperties = {
+    fontFamily: FONT_BODY,
+  };
+
   if (loading) {
     return (
       <div
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
-        <div className="min-h-screen bg-black/40">
+        <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-              <div className="text-sm text-slate-500 mb-2">thankümail</div>
-              <div className="font-outfit text-2xl text-slate-900">Loading…</div>
+              <div className="text-sm text-slate-500 mb-2" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
+                thankümail
+              </div>
+              <div style={{ fontFamily: FONT_TITLE, fontWeight: 800 }} className="text-2xl text-slate-900">
+                Loading…
+              </div>
               <div className="mt-3 text-sm text-slate-600">Just a moment.</div>
             </div>
           </div>
@@ -549,7 +562,7 @@ export default function Claim() {
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
-        <div className="min-h-screen bg-black/40">
+        <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 p-6 text-slate-900">
               <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankümail</div>
@@ -572,12 +585,20 @@ export default function Claim() {
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
-        <div className="min-h-screen bg-black/40">
+        <div className="min-h-screen bg-black/40" style={shellStyle}>
           <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-              <div className="text-sm text-slate-500">thankümail</div>
+              <div className="text-sm text-slate-500" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
+                thankümail
+              </div>
 
-              <h1 className="mt-2 font-outfit text-3xl text-slate-900">Received.</h1>
+              <h1 className="mt-2 text-3xl text-slate-900" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+                Received.
+              </h1>
+
+              <p className="mt-2 text-slate-700">
+                {hasAmount ? "The note was the heart of it. The gift will finalize shortly." : "The note was the heart of it."}
+              </p>
 
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
                 <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Message</div>
@@ -587,7 +608,9 @@ export default function Claim() {
               {hasAmount ? (
                 <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="text-sm text-slate-700">Gift amount</div>
-                  <div className="font-outfit text-2xl text-slate-900">${amountDollars}</div>
+                  <div className="text-2xl text-slate-900" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+                    ${amountDollars}
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -601,7 +624,7 @@ export default function Claim() {
   if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (claiming) buttonText = "Checking…";
-  else if (shouldShowCaptcha && !captchaReady) buttonText = hasAmount ? (turnstileBooting ? "Loading verification…" : "Verify to claim") : "Accept thankümail";
+  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
 
   const buttonDisabled =
     !canAttemptClaim ||
@@ -614,12 +637,17 @@ export default function Claim() {
       className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
-      <div className="min-h-screen bg-black/40">
+      <div className="min-h-screen bg-black/40" style={shellStyle}>
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-            <div className="text-sm text-slate-500">thankümail</div>
+            <div className="text-sm text-slate-500" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
+              thankümail
+            </div>
 
-            <h1 className="mt-2 font-outfit text-3xl text-slate-900">A note for you.</h1>
+            <h1 className="mt-2 text-3xl text-slate-900" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+              A note for you.
+            </h1>
+
             <p className="mt-2 text-slate-700">
               Read the message first. {hasAmount ? "Claim when you’re ready." : "Accept when you’re ready."}
             </p>
@@ -629,7 +657,9 @@ export default function Claim() {
                 This thankümail has already been claimed.
               </div>
             ) : error ? (
-              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
+              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {error}
+              </div>
             ) : null}
 
             <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
@@ -651,7 +681,9 @@ export default function Claim() {
                 {hasAmount ? (
                   <div className="text-right">
                     <div className="text-xs text-slate-500">Amount</div>
-                    <div className="font-outfit text-2xl text-slate-900">${amountDollars}</div>
+                    <div className="text-2xl text-slate-900" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+                      ${amountDollars}
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -677,11 +709,12 @@ export default function Claim() {
                 onClick={handleClaimClick}
                 disabled={buttonDisabled}
                 className={cn(
-                  "mt-4 w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
+                  "mt-4 w-full rounded-2xl px-5 py-4 transition text-lg tracking-tight border-2",
                   buttonDisabled
                     ? "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
-                    : "bg-tm-amber text-tm-charcoal border-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
+                    : "bg-tm-amber text-tm-charcoal border-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
                 )}
+                style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
               >
                 {buttonText}
               </button>
