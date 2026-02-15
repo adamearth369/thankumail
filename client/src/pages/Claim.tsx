@@ -1,10 +1,11 @@
-// WHERE TO PASTE: client/src/pages/Claim.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
+
+// IMPORTANT: Static build is not exposing VITE_TURNSTILE_SITE_KEY reliably.
+// Use the known public Turnstile site key directly so Claim always renders captcha.
+const TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 // Force site-consistent fonts even if a Tailwind font class fails to apply
 const FONT_BODY =
@@ -114,7 +115,7 @@ export default function Claim() {
 
   const invalidRef = useRef<boolean>(false);
 
-  const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
+  const siteKey = TURNSTILE_SITE_KEY || "";
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
   const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey);
   const tokenRef = useRef<string>("");
@@ -641,8 +642,7 @@ export default function Claim() {
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (claiming) buttonText = "Checking…";
   else if (shouldShowCaptcha && !captchaReady) {
-    // Never show a "verify" CTA until the widget is actually visible.
-    buttonText = !captchaRendered || turnstileBooting ? "Loading verification…" : "Complete verification";
+    buttonText = !captchaRendered || turnstileBooting ? "Loading verification…" : "Verify to claim";
   }
 
   const buttonDisabled =
