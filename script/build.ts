@@ -17,35 +17,60 @@ function envTrue(v: string | undefined) {
 
 async function main() {
   const root = process.cwd();
-  const outDir = path.resolve(root, "dist");
-  ensureDir(outDir);
 
-  // 🚨 STATIC SITE FIX
-  // When BUILD_CLIENT=true we MUST build Vite and copy its output to /dist
+  // This is the directory Render Static Site serves in this repo:
+  // Vite is currently outputting to: dist/public
+  const distDir = path.resolve(root, "dist");
+  const publicDir = path.resolve(distDir, "public");
+
+  ensureDir(distDir);
+
+  // STATIC SITE BUILD: build Vite and ensure output is dist/public
   if (envTrue(process.env.BUILD_CLIENT)) {
     console.log("building client with vite...");
     run("npx vite build");
 
-    // Vite outputs to client/dist by default in this project
-    const viteOut = path.resolve(root, "client", "dist");
-
-    if (!fs.existsSync(viteOut)) {
-      throw new Error("Vite build did not produce client/dist");
+    if (!fs.existsSync(publicDir)) {
+      throw new Error("Vite build did not produce dist/public");
     }
 
-    // wipe /dist then copy client build into it (this is what Render serves)
-    fs.rmSync(outDir, { recursive: true, force: true });
-    fs.mkdirSync(outDir, { recursive: true });
-    fs.cpSync(viteOut, outDir, { recursive: true });
+    // Render Static Site typically serves a single publish directory.
+    // We want the publish dir to contain index.html + assets/*
+    // So we mirror dist/public -> dist (index.html at dist/index.html).
+    const indexHtml = path.resolve(publicDir, "index.html");
+    if (!fs.existsSync(indexHtml)) {
+      throw new Error("Vite build missing dist/public/index.html");
+    }
 
-    console.log("client build copied to /dist (static site ready)");
-    return; // IMPORTANT: do not bundle server for static site
+    // Clean dist root but preserve that we're about to move content into it
+    // Approach: move dist/public/* up to dist/*
+    const tmp = path.resolve(root, ".tm_public_tmp");
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.mkdirSync(tmp, { recursive: true });
+
+    // copy dist/public -> tmp
+    fs.cpSync(publicDir, tmp, { recursive: true });
+
+    // wipe dist, recreate
+    fs.rmSync(distDir, { recursive: true, force: true });
+    fs.mkdirSync(distDir, { recursive: true });
+
+    // copy tmp -> dist
+    fs.cpSync(tmp, distDir, { recursive: true });
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+
+    console.log("client build ready in /dist (index.html + assets/)");
+    return;
   }
 
-  // ---- Web Service build (server only) ----
+  // WEB SERVICE BUILD: server bundle only
+  ensureDir(distDir);
+
   await esbuild.build({
     entryPoints: [path.resolve(root, "server", "index.ts")],
-    outfile: path.resolve(outDir, "index.cjs"),
+    outfile: path.resolve(distDir, "index.cjs"),
     bundle: true,
     platform: "node",
     format: "cjs",
