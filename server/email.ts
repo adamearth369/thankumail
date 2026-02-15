@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/email.ts
+// ACTION: Full file replacement (paste exactly)
+
 type SendEmailResult = { ok: true; messageId: string } | { ok: false; error: string };
 
 type SendGiftEmailArgs = {
@@ -24,7 +27,7 @@ type SendReturnToSenderEmailArgs = {
   reason?: string;
 };
 
-const EMAIL_VERSION = "email_v2026-02-14_005";
+const EMAIL_VERSION = "email_v2026-02-14_006";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -173,11 +176,13 @@ function fontCss() {
   .tm-title {
     font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
     font-weight: 800 !important;
+    letter-spacing: -0.2px;
   }
 
   .tm-btn {
     font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
     font-weight: 800 !important;
+    letter-spacing: 0.2px;
   }
   `;
 }
@@ -195,9 +200,7 @@ function htmlDoc(inner: string) {
   </style>
 </head>
 <body style="margin:0; padding:0; background:#ffffff;">
-  <div style="margin:0; padding:0; background:#ffffff;">
-    ${inner}
-  </div>
+  ${inner}
 </body>
 </html>`;
 }
@@ -208,46 +211,76 @@ function shell(args: {
   ctaHref: string;
   ctaLabel: string;
   note?: string;
+  preheader?: string;
 }) {
   const logo = wordmarkUrl();
+  const preheader = escapeHtml(args.preheader || args.title || "thankümail");
 
   return htmlDoc(`
-  <div style="padding:18px; background:#ffffff; color:#0f172a;">
-    <div style="max-width:640px; margin:0 auto;">
-      <div style="margin:2px 0 14px; text-align:center;">
-        <img src="${logo}" alt="thankümail" width="220" style="display:block; margin:0 auto; height:auto; border:0; outline:none; text-decoration:none;" />
-      </div>
-
-      <h1 class="tm-title" style="margin:0 0 12px; font-size:28px; line-height:1.2; color:#0f172a; text-align:center;">
-        ${escapeHtml(args.title)}
-      </h1>
-
-      <div style="max-width:520px; margin:0 auto;">
-        ${args.bodyHtml}
-
-        <div style="margin:18px 0 0; text-align:center;">
-          <a href="${args.ctaHref}"
-             class="tm-btn"
-             style="display:inline-block; padding:14px 18px; background:#0b1220; color:#ffffff; text-decoration:none; border-radius:14px; font-size:14px; letter-spacing:0.2px;">
-            ${escapeHtml(args.ctaLabel)} →
-          </a>
-        </div>
-
-        <div style="margin:14px 0 0; font-size:12px; color:#6b7280; text-align:center;">
-          ${escapeHtml(args.note || "This message was sent anonymously.")}
-        </div>
-      </div>
-    </div>
+  <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">
+    ${preheader}
   </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#ffffff;margin:0;padding:0;">
+    <tr>
+      <td align="center" style="padding:22px 14px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" style="max-width:640px;width:100%;">
+          <tr>
+            <td align="center" style="padding:0 0 16px;">
+              <img src="${logo}" alt="thankümail" width="220" style="display:block;margin:0 auto;height:auto;border:0;outline:none;text-decoration:none;" />
+            </td>
+          </tr>
+
+          <tr>
+            <td align="center" style="padding:0;">
+              <h1 class="tm-title" style="margin:0 0 14px;font-size:28px;line-height:1.2;color:#0f172a;text-align:center;">
+                ${escapeHtml(args.title)}
+              </h1>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="padding:0 8px;">
+                    <div style="max-width:520px;margin:0 auto;">
+                      ${args.bodyHtml}
+
+                      <div style="margin:20px 0 0;text-align:center;">
+                        <a href="${args.ctaHref}"
+                           class="tm-btn"
+                           style="display:inline-block;padding:14px 20px;background:#0b1220;color:#ffffff;text-decoration:none;border-radius:14px;font-size:14px;line-height:1;">
+                          ${escapeHtml(args.ctaLabel)} →
+                        </a>
+                      </div>
+
+                      <div style="margin:16px 0 0;font-size:12px;line-height:1.5;color:#6b7280;text-align:center;">
+                        ${escapeHtml(args.note || "This message was sent anonymously.")}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
   `);
 }
 
 function messageCard(message: string) {
   const safe = escapeHtml(message || "");
   return `
-  <div style="margin:0 0 10px; font-size:14px; color:#0f172a; font-weight:700;">Message</div>
-  <div style="margin:0 0 6px; padding:14px 16px; border:1px solid #e5e7eb; border-radius:14px; background:#ffffff;">
-    <div style="font-size:15px; color:#111827; font-style:italic; line-height:1.5;">
+  <div style="margin:0 0 10px;font-size:12px;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;font-weight:700;">
+    Message
+  </div>
+
+  <div style="margin:0 0 8px;padding:16px 16px;border:1px solid #e5e7eb;border-radius:14px;background:#ffffff;">
+    <div style="font-size:16px;line-height:1.6;color:#111827;font-style:italic;">
       "${safe}"
     </div>
   </div>
@@ -367,17 +400,18 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
   if (showAmount) textLines.push(`Amount: ${money(args.amountCents)}`);
   if (args.message) textLines.push(`Message: ${args.message}`);
   textLines.push(``, `Claim: ${claimUrl}`);
-  const textContent = textLines.join("\n"); // keep intended blank lines
+  const textContent = textLines.join("\n");
 
   const bodyHtml = `
     ${args.message ? messageCard(args.message) : ""}
-    <div style="margin:0; font-size:12px; color:#6b7280;">
+    <div style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;">
       ${showAmount ? `A gift is included.` : `A note, sent with care.`}
     </div>
   `;
 
   const htmlContent = shell({
     title: "You received a thankümail 🎁",
+    preheader: "A note for you — open when you’re ready.",
     bodyHtml,
     ctaHref: claimUrl,
     ctaLabel: "Accept your thankümail",
@@ -406,19 +440,20 @@ export async function sendReminderEmail(
   const textLines: string[] = [`Your thankümail is still waiting.`, ``];
   if (showAmount) textLines.push(`Amount: ${money(args.amountCents)}`);
   textLines.push(``, `Claim: ${claimUrl}`);
-  const textContent = textLines.join("\n"); // keep intended blank lines
+  const textContent = textLines.join("\n");
 
   const bodyHtml = `
-    <div style="margin:0 0 10px; font-size:14px; color:#111827;">
+    <div style="margin:0 0 10px;font-size:15px;line-height:1.6;color:#111827;">
       Your thankümail is still waiting.
     </div>
-    <div style="margin:0; font-size:12px; color:#6b7280;">
+    <div style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;">
       ${showAmount ? `A gift is included.` : `A note, sent with care.`}
     </div>
   `;
 
   const htmlContent = shell({
     title: "Your thankümail is still waiting 💛",
+    preheader: "A gentle reminder — it’s still here for you.",
     bodyHtml,
     ctaHref: claimUrl,
     ctaLabel: "Accept your thankümail",
@@ -446,46 +481,33 @@ export async function sendReturnToSenderEmail(
   const textLines: string[] = [`Your thankümail could not be completed.`, ``, `Public ID: ${args.publicId}`];
   if (showAmount) textLines.push(`Amount: ${money(args.amountCents)}`);
   if (args.reason) textLines.push(`Reason: ${args.reason}`);
-  const textContent = textLines.join("\n"); // keep intended blank lines
+  const textContent = textLines.join("\n");
 
   const reasonHtml = args.reason
-    ? `<div style="margin:10px 0 0; padding:12px 14px; border:1px solid #e5e7eb; border-radius:14px; background:#ffffff;">
-         <div style="font-size:12px; color:#6b7280; font-weight:700; margin:0 0 6px;">Reason</div>
-         <div style="font-size:14px; color:#111827;">${escapeHtml(args.reason)}</div>
+    ? `<div style="margin:12px 0 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:14px;background:#ffffff;">
+         <div style="font-size:12px;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;font-weight:700;margin:0 0 6px;">Reason</div>
+         <div style="font-size:14px;line-height:1.6;color:#111827;">${escapeHtml(args.reason)}</div>
        </div>`
     : "";
 
   const bodyHtml = `
-    <div style="margin:0; font-size:14px; color:#111827;">
+    <div style="margin:0;font-size:15px;line-height:1.6;color:#111827;">
       Your thankümail could not be completed.
     </div>
-    <div style="margin:10px 0 0; font-size:12px; color:#6b7280;">
-      Public ID: <span style="color:#111827; font-weight:700;">${escapeHtml(args.publicId)}</span>
+    <div style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#6b7280;">
+      Public ID: <span style="color:#111827;font-weight:700;">${escapeHtml(args.publicId)}</span>
     </div>
     ${reasonHtml}
   `;
 
-  const htmlContent = htmlDoc(`
-    <div style="padding:18px; background:#ffffff; color:#0f172a;">
-      <div style="max-width:640px; margin:0 auto;">
-        <div style="margin:2px 0 14px; text-align:center;">
-          <img src="${wordmarkUrl()}" alt="thankümail" width="220" style="display:block; margin:0 auto; height:auto; border:0; outline:none; text-decoration:none;" />
-        </div>
-
-        <h1 class="tm-title" style="margin:0 0 12px; font-size:24px; line-height:1.2; color:#0f172a; text-align:center;">
-          Your thankümail update
-        </h1>
-
-        <div style="max-width:520px; margin:0 auto;">
-          ${bodyHtml}
-        </div>
-
-        <div style="margin:14px 0 0; font-size:12px; color:#6b7280; text-align:center;">
-          This message was sent anonymously.
-        </div>
-      </div>
-    </div>
-  `);
+  const htmlContent = shell({
+    title: "Your thankümail update",
+    preheader: "An update about your thankümail.",
+    bodyHtml,
+    ctaHref: publicSite(),
+    ctaLabel: "Visit thankümail",
+    note: "This message was sent anonymously.",
+  });
 
   const r = await sendBrevoEmail({
     to: args.to,
