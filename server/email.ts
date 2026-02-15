@@ -24,7 +24,7 @@ type SendReturnToSenderEmailArgs = {
   reason?: string;
 };
 
-const EMAIL_VERSION = "email_v2026-02-14_004";
+const EMAIL_VERSION = "email_v2026-02-14_005";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -61,7 +61,12 @@ function escapeHtml(input: string) {
 
 function logEmail(event: string, fields: Record<string, any> = {}) {
   console.log(
-    JSON.stringify({ ts: new Date().toISOString(), event, emailVersion: EMAIL_VERSION, ...fields }),
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event,
+      emailVersion: EMAIL_VERSION,
+      ...fields,
+    }),
   );
 }
 
@@ -362,7 +367,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
   if (showAmount) textLines.push(`Amount: ${money(args.amountCents)}`);
   if (args.message) textLines.push(`Message: ${args.message}`);
   textLines.push(``, `Claim: ${claimUrl}`);
-  const textContent = textLines.filter(Boolean).join("\n");
+  const textContent = textLines.join("\n"); // keep intended blank lines
 
   const bodyHtml = `
     ${args.message ? messageCard(args.message) : ""}
@@ -401,7 +406,7 @@ export async function sendReminderEmail(
   const textLines: string[] = [`Your thankümail is still waiting.`, ``];
   if (showAmount) textLines.push(`Amount: ${money(args.amountCents)}`);
   textLines.push(``, `Claim: ${claimUrl}`);
-  const textContent = textLines.filter(Boolean).join("\n");
+  const textContent = textLines.join("\n"); // keep intended blank lines
 
   const bodyHtml = `
     <div style="margin:0 0 10px; font-size:14px; color:#111827;">
@@ -441,7 +446,7 @@ export async function sendReturnToSenderEmail(
   const textLines: string[] = [`Your thankümail could not be completed.`, ``, `Public ID: ${args.publicId}`];
   if (showAmount) textLines.push(`Amount: ${money(args.amountCents)}`);
   if (args.reason) textLines.push(`Reason: ${args.reason}`);
-  const textContent = textLines.filter(Boolean).join("\n");
+  const textContent = textLines.join("\n"); // keep intended blank lines
 
   const reasonHtml = args.reason
     ? `<div style="margin:10px 0 0; padding:12px 14px; border:1px solid #e5e7eb; border-radius:14px; background:#ffffff;">
