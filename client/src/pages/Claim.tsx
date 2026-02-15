@@ -121,6 +121,7 @@ export default function Claim() {
   const siteKey = TURNSTILE_SITE_KEY || "";
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
   const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey);
+
   const tokenRef = useRef<string>("");
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
@@ -384,13 +385,32 @@ export default function Claim() {
     document.body.appendChild(script);
   }, [siteKey, shouldShowCaptcha]);
 
-  // Render widget (use element render, not selector string)
+  // Render widget (force visible + sync token from getResponse)
   useEffect(() => {
     if (!siteKey) return;
     if (!shouldShowCaptcha) return;
     if (renderedRef.current) return;
 
     let cancelled = false;
+
+    const syncTokenFromResponseInput = () => {
+      try {
+        const el = document.getElementById("turnstile-container");
+        const input = el?.querySelector<HTMLInputElement>('input[id$="_response"]');
+        const responseInputId = input?.id || "";
+        const widgetId = responseInputId ? responseInputId.replace(/_response$/, "") : null;
+
+        const ts = getTurnstile();
+        const token = widgetId && ts?.getResponse ? String(ts.getResponse(widgetId) || "") : "";
+        if (token && token.length > 50) {
+          tokenRef.current = token;
+          setCaptchaReady(true);
+          setError("");
+        }
+      } catch {
+        // ignore
+      }
+    };
 
     const tryRender = () => {
       if (cancelled) return;
@@ -405,6 +425,8 @@ export default function Claim() {
 
         const id = ts.render(el, {
           sitekey: siteKey,
+          appearance: "always",
+          size: "normal",
           callback: (token: string) => {
             if (invalidRef.current) return;
             tokenRef.current = token || "";
@@ -427,6 +449,11 @@ export default function Claim() {
         widgetIdRef.current = id;
         renderedRef.current = true;
         setCaptchaRendered(true);
+
+        // In some environments Turnstile immediately writes a hidden response without iframe.
+        // Sync token anyway so claim can proceed.
+        window.setTimeout(syncTokenFromResponseInput, 200);
+        window.setTimeout(syncTokenFromResponseInput, 800);
       } catch {
         // keep retrying
       }
@@ -464,7 +491,6 @@ export default function Claim() {
     if (!publicId) return;
     if (!canAttemptClaim) return;
 
-    // ALWAYS require verification when enforced (prevents “success UI but claim never completed”)
     if (shouldShowCaptcha && !captchaReady) {
       setError("Please complete the quick verification below.");
       return;
@@ -688,10 +714,7 @@ export default function Claim() {
               {shouldShowCaptcha ? (
                 <div className="mt-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div
-                      id="turnstile-container"
-                      className="min-h-[76px] flex items-center justify-center"
-                    />
+                    <div id="turnstile-container" className="min-h-[76px] flex items-center justify-center" />
                     {turnstileBooting ? (
                       <div className="mt-2 text-xs text-slate-500">Loading verification…</div>
                     ) : captchaReady ? (
