@@ -20,20 +20,17 @@ function envTrue(v: string | undefined) {
 
 async function main() {
   const root = process.cwd();
-
-  // Vite is configured to output here:
-  // vite.config.ts -> build.outDir = dist/public
   const distDir = path.resolve(root, "dist");
   const publicDir = path.resolve(distDir, "public");
 
-  // STATIC SITE BUILD: build Vite and KEEP output in dist/public
-  if (envTrue(process.env.BUILD_CLIENT)) {
-    ensureDir(distDir);
+  ensureDir(distDir);
 
+  // STATIC SITE BUILD: keep Vite output EXACTLY at dist/public
+  // Render Static Site must publish: dist/public
+  if (envTrue(process.env.BUILD_CLIENT)) {
     console.log("building client with vite...");
     run("npx vite build");
 
-    // Must exist for Render Static Site publish dir = dist/public
     if (!fs.existsSync(publicDir)) {
       throw new Error("Vite build did not produce dist/public");
     }
@@ -47,9 +44,7 @@ async function main() {
     return;
   }
 
-  // WEB SERVICE BUILD: server bundle only
-  ensureDir(distDir);
-
+  // WEB SERVICE BUILD: server bundle only -> dist/index.cjs
   await esbuild.build({
     entryPoints: [path.resolve(root, "server", "index.ts")],
     outfile: path.resolve(distDir, "index.cjs"),
