@@ -6,14 +6,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
     <meta name="google" content="notranslate" />
 
-    <!-- BUILD MARKER (must change when Static Site rebuilds) -->
+    <!-- BUILD MARKER -->
     <meta name="tm-static-build-commit" content="ae28322" />
     <meta name="tm-static-build-at" content="2026-02-15" />
 
-    <!-- Preload self-hosted logo font to reduce 1s flash -->
+    <!-- Preload self-hosted logo font to reduce flash -->
     <link
       rel="preload"
       href="/fonts/quicksand-600.woff2"
@@ -22,7 +21,7 @@
       crossorigin
     />
 
-    <!-- Preconnect for Google Fonts (still used for body fonts in this build) -->
+    <!-- Preconnect for Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 
@@ -36,5 +35,8 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!-- Vite app entry (required) -->
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
