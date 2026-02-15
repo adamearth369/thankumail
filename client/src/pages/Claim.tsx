@@ -641,8 +641,8 @@ export default function Claim() {
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (claiming) buttonText = "Checking…";
   else if (shouldShowCaptcha && !captchaReady) {
-    // Don’t show “Verify to claim” until the widget is actually on the page.
-    buttonText = !captchaRendered || turnstileBooting ? "Loading verification…" : "Verify to claim";
+    // Never show a "verify" CTA until the widget is actually visible.
+    buttonText = !captchaRendered || turnstileBooting ? "Loading verification…" : "Complete verification";
   }
 
   const buttonDisabled =
