@@ -1,6 +1,3 @@
-// WHERE TO PASTE: script/build.ts
-// ACTION: Full file replacement (paste exactly)
-
 import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
@@ -23,22 +20,29 @@ async function main() {
   const outDir = path.resolve(root, "dist");
   ensureDir(outDir);
 
-  // IMPORTANT:
-  // Render Web Service deploys must NOT fail because Vite/Tailwind/PostCSS changes.
-  // We only build the client when explicitly requested (e.g., local or Static Site builds).
-  //
-  // To build client manually:
-  //   BUILD_CLIENT=true npm run build
-  //
-  // On Render Web Service:
-  //   leave BUILD_CLIENT unset (default false)
+  // 🚨 STATIC SITE FIX
+  // When BUILD_CLIENT=true we MUST build Vite and copy its output to /dist
   if (envTrue(process.env.BUILD_CLIENT)) {
+    console.log("building client with vite...");
     run("npx vite build");
-  } else {
-    console.log("skipping client build (set BUILD_CLIENT=true to enable)");
+
+    // Vite outputs to client/dist by default in this project
+    const viteOut = path.resolve(root, "client", "dist");
+
+    if (!fs.existsSync(viteOut)) {
+      throw new Error("Vite build did not produce client/dist");
+    }
+
+    // wipe /dist then copy client build into it (this is what Render serves)
+    fs.rmSync(outDir, { recursive: true, force: true });
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.cpSync(viteOut, outDir, { recursive: true });
+
+    console.log("client build copied to /dist (static site ready)");
+    return; // IMPORTANT: do not bundle server for static site
   }
 
-  // Bundle server -> dist/index.cjs (CJS) to match Render start command
+  // ---- Web Service build (server only) ----
   await esbuild.build({
     entryPoints: [path.resolve(root, "server", "index.ts")],
     outfile: path.resolve(outDir, "index.cjs"),
@@ -65,7 +69,7 @@ async function main() {
     ],
   });
 
-  console.log("build complete");
+  console.log("server build complete");
 }
 
 main().catch((err) => {
