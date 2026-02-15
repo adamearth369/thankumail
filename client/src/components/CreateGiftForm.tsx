@@ -57,41 +57,19 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
-const TURNSTILE_SCRIPT_SRC =
-  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 // IMPORTANT: backend expects presetMessageId in [1..7]
 const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
-  {
-    id: 1,
-    text: "I just wanted you to know how much you are appreciated. Thank you for being you.",
-  },
-  {
-    id: 2,
-    text: "Your support made a bigger difference than you realize. I’m truly grateful.",
-  },
-  {
-    id: 3,
-    text: "You showed up when it mattered most. That means everything. Thank you.",
-  },
-  {
-    id: 4,
-    text: "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you.",
-  },
-  {
-    id: 5,
-    text: "You mattered more in that moment than you probably realized. Thank you.",
-  },
-  {
-    id: 6,
-    text: "What you did made a positive difference for those around you. I’m grateful. Thank you.",
-  },
-  {
-    id: 7,
-    text: "What you did stayed with me. This is my way of saying thank you.",
-  },
+  { id: 1, text: "I just wanted you to know how much you are appreciated. Thank you for being you." },
+  { id: 2, text: "Your support made a bigger difference than you realize. I’m truly grateful." },
+  { id: 3, text: "You showed up when it mattered most. That means everything. Thank you." },
+  { id: 4, text: "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you." },
+  { id: 5, text: "You mattered more in that moment than you probably realized. Thank you." },
+  { id: 6, text: "What you did made a positive difference for those around you. I’m grateful. Thank you." },
+  { id: 7, text: "What you did stayed with me. This is my way of saying thank you." },
 ];
 
 function isEmail(s: string) {
@@ -113,8 +91,7 @@ function waitForTurnstile(maxMs: number) {
   return new Promise<boolean>((resolve) => {
     const start = Date.now();
     const tick = () => {
-      if (window.turnstile && typeof window.turnstile.render === "function")
-        return resolve(true);
+      if (window.turnstile && typeof window.turnstile.render === "function") return resolve(true);
       if (Date.now() - start >= maxMs) return resolve(false);
       setTimeout(tick, 50);
     };
@@ -140,10 +117,10 @@ function fireConfettiBurst() {
 
 export default function CreateGiftForm() {
   // Guest scope: email-only + preset-only + no amount
-  const [senderEmail, setSenderEmail] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
 
-  const [presetIdx, setPresetIdx] = useState<number>(0);
+  // Default to preset #2 (index 1)
+  const [presetIdx, setPresetIdx] = useState<number>(1);
 
   const [token, setToken] = useState<string>("");
   const [turnstileReady, setTurnstileReady] = useState<boolean>(false);
@@ -168,20 +145,24 @@ export default function CreateGiftForm() {
   // BRAND: always use the real ü (U+00FC), never combining diaeresis
   const wordmark = "thankümail";
 
-  const canSubmit = useMemo(() => {
-    const s = senderEmail.trim();
-    const re = recipientEmail.trim();
-    const presetOk = presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length;
+  const presetOk = useMemo(() => presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length, [presetIdx]);
 
+  const canSubmit = useMemo(() => {
+    const re = recipientEmail.trim();
     return (
       !submitting &&
-      isEmail(s) &&
       isEmail(re) &&
       presetOk &&
       token.length >= 20 &&
       TURNSTILE_SITE_KEY.length > 0
     );
-  }, [submitting, senderEmail, recipientEmail, presetIdx, token, TURNSTILE_SITE_KEY]);
+  }, [submitting, recipientEmail, presetOk, token, TURNSTILE_SITE_KEY]);
+
+  const showRetry =
+    fieldError === "turnstile" ||
+    errorLockRef.current === "turnstile" ||
+    isTurnstileErrorCode(undefined) ||
+    /verification|captcha|turnstile/i.test(error);
 
   function setErrorWithLock(msg: string, lock: "none" | "server" | "turnstile") {
     errorLockRef.current = lock;
@@ -215,9 +196,7 @@ export default function CreateGiftForm() {
         return;
       }
 
-      const existing = document.querySelector<HTMLScriptElement>(
-        `script[src="${TURNSTILE_SCRIPT_SRC}"]`
-      );
+      const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
       if (!existing) {
         const script = document.createElement("script");
         script.src = TURNSTILE_SCRIPT_SRC;
@@ -238,10 +217,7 @@ export default function CreateGiftForm() {
 
       setTurnstileReady(ok);
       if (!ok) {
-        setErrorWithLock(
-          "Verification is taking too long to initialize. Please refresh and try again.",
-          "turnstile"
-        );
+        setErrorWithLock("Verification is taking too long to initialize. Please refresh and try again.", "turnstile");
       }
     }
 
@@ -343,15 +319,7 @@ export default function CreateGiftForm() {
     setFieldError("");
     setResult(null);
 
-    const s = senderEmail.trim();
     const re = recipientEmail.trim();
-
-    if (!isEmail(s)) {
-      setSubmitting(false);
-      setFieldError("senderEmail");
-      setErrorWithLock("Please enter a valid sender email.", "none");
-      return;
-    }
 
     if (!isEmail(re)) {
       setSubmitting(false);
@@ -374,14 +342,13 @@ export default function CreateGiftForm() {
       return;
     }
 
-    const presetMessageId = PRESET_MESSAGES[presetIdx]?.id ?? 1;
+    const presetMessageId = PRESET_MESSAGES[presetIdx]?.id ?? 2;
 
     try {
       const resp = await fetch(`${API_BASE}/api/gifts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          senderEmail: s,
           recipientEmail: re,
           messageMode: "preset",
           presetMessageId,
@@ -423,7 +390,7 @@ export default function CreateGiftForm() {
       fireConfettiBurst();
 
       setRecipientEmail("");
-      setPresetIdx(0);
+      setPresetIdx(1);
 
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
@@ -451,32 +418,12 @@ export default function CreateGiftForm() {
   const inputBase =
     "w-full rounded-xl border px-3 py-2 outline-none bg-white text-slate-900 placeholder:text-slate-400 border-slate-400/70 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10";
 
-  const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[0];
+  const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
 
   return (
     <div className="w-full max-w-xl mx-auto">
-      <form
-        onSubmit={onSubmit}
-        className="rounded-2xl border border-slate-300 bg-white p-5 shadow-soft text-slate-900"
-      >
+      <form onSubmit={onSubmit} className="rounded-2xl border border-slate-300 bg-white p-5 shadow-soft text-slate-900">
         <div className="space-y-4">
-          <div>
-            <input
-              value={senderEmail}
-              onChange={(e) => setSenderEmail(e.target.value)}
-              type="email"
-              autoComplete="email"
-              aria-label="Your email"
-              placeholder="Your email"
-              className={classNames(
-                inputBase,
-                fieldError === "senderEmail"
-                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                  : ""
-              )}
-            />
-          </div>
-
           <div>
             <input
               value={recipientEmail}
@@ -487,9 +434,7 @@ export default function CreateGiftForm() {
               placeholder="Recipient email"
               className={classNames(
                 inputBase,
-                fieldError === "recipientEmail"
-                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                  : ""
+                fieldError === "recipientEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
               )}
             />
           </div>
@@ -538,9 +483,7 @@ export default function CreateGiftForm() {
                     onClick={() => selectPreset(i)}
                     className={classNames(
                       "px-2 py-1 rounded-full text-xs border transition cursor-pointer",
-                      active
-                        ? "border-slate-900 bg-slate-900 text-white"
-                        : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                      active ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
                     )}
                     aria-label={`Select preset ${i + 1}`}
                   >
@@ -559,41 +502,39 @@ export default function CreateGiftForm() {
               ref={widgetContainerRef}
               className={classNames(
                 "min-h-[65px] rounded-xl border bg-white flex items-center justify-center overflow-hidden",
-                fieldError === "turnstile" ? "border-red-400" : "border-slate-400/70"
+                fieldError === "turnstile" ? "border-red-400" : "border-slate-400/70",
               )}
             />
 
-            <div className="mt-2 flex items-center justify-end gap-2 text-xs text-slate-500">
-              <button
-                type="button"
-                onClick={() => {
-                  clearErrorsAndUnlock();
-                  destroyWidget();
-                  requestAnimationFrame(() => {
+            {showRetry ? (
+              <div className="mt-2 flex items-center justify-end gap-2 text-xs text-slate-500">
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearErrorsAndUnlock();
+                    destroyWidget();
                     requestAnimationFrame(() => {
-                      renderWidget();
+                      requestAnimationFrame(() => {
+                        renderWidget();
+                      });
                     });
-                  });
-                }}
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-slate-900 hover:opacity-90 cursor-pointer"
-              >
-                Retry
-              </button>
-            </div>
+                  }}
+                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-slate-900 hover:opacity-90 cursor-pointer"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : null}
           </div>
 
           {error ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </div>
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
           ) : null}
 
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
               <div className="font-medium mb-1">Sent.</div>
-              <div className="text-sm text-emerald-900/80">
-                We’ve delivered your thankümail to the recipient.
-              </div>
+              <div className="text-sm text-emerald-900/80">We’ve delivered your thankümail to the recipient.</div>
 
               {result.emailSent ? (
                 <div className="mt-2 text-xs text-emerald-900/80">Email: sent ✓</div>
@@ -611,9 +552,8 @@ export default function CreateGiftForm() {
                   onClick={() => {
                     setResult(null);
                     clearErrorsAndUnlock();
-                    setSenderEmail("");
                     setRecipientEmail("");
-                    setPresetIdx(0);
+                    setPresetIdx(1);
                     try {
                       if (widgetIdRef.current && window.turnstile?.reset) {
                         window.turnstile.reset(widgetIdRef.current);
@@ -627,9 +567,7 @@ export default function CreateGiftForm() {
                 </button>
               </div>
 
-              <div className="mt-2 text-[11px] text-emerald-900/70">
-                For safety, we don’t show the claim link here.
-              </div>
+              <div className="mt-2 text-[11px] text-emerald-900/70">For safety, we don’t show the claim link here.</div>
             </div>
           ) : null}
 
@@ -640,17 +578,14 @@ export default function CreateGiftForm() {
               "w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
               canSubmit
                 ? "bg-tm-amber text-tm-charcoal border-slate-400/70 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
-                : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
+                : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed",
             )}
           >
             {submitting ? (
               "Sending…"
             ) : (
               <>
-                Send{" "}
-                <span className="font-quicksand font-semibold">
-                  {wordmark}
-                </span>
+                Send <span className="font-quicksand font-semibold">{wordmark}</span>
               </>
             )}
           </button>
