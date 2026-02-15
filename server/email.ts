@@ -24,7 +24,7 @@ type SendReturnToSenderEmailArgs = {
   reason?: string;
 };
 
-const EMAIL_VERSION = "email_v2026-02-14_003";
+const EMAIL_VERSION = "email_v2026-02-14_004";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -119,18 +119,62 @@ function getBrevoApiKey():
 }
 
 /* -------------------- EMAIL STYLE -------------------- */
-/**
- * Gmail will not reliably apply web fonts.
- * To keep brand consistency, we use a wordmark image (hosted on the site)
- * and a clean system font stack for all other text.
- */
-function wordmarkUrl() {
-  const site = (env("PUBLIC_SITE_URL") || "https://thankumail.com").replace(/\/+$/, "");
-  return `${site}/images/thankumail-wordmark.png`;
+function publicSite() {
+  return (env("PUBLIC_SITE_URL") || "https://thankumail.com").replace(/\/+$/, "");
 }
 
-function sysFontStack() {
-  return `-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji",sans-serif`;
+function wordmarkUrl() {
+  return `${publicSite()}/images/thankumail-wordmark.png`;
+}
+
+function fontCss() {
+  const base = publicSite();
+
+  // Best-effort: many clients support @font-face; Gmail may still fall back.
+  return `
+  @font-face {
+    font-family: 'TM Quicksand';
+    font-style: normal;
+    font-weight: 600;
+    src: url('${base}/fonts/quicksand-600.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'TM DM Sans';
+    font-style: normal;
+    font-weight: 400;
+    src: url('${base}/fonts/dm-sans-400.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'TM DM Sans';
+    font-style: normal;
+    font-weight: 500;
+    src: url('${base}/fonts/dm-sans-500.woff2') format('woff2');
+  }
+
+  :root { color-scheme: light; supported-color-schemes: light; }
+
+  body, table, td, div, p, a, span, h1, h2, h3 {
+    font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  .tm-wordmark {
+    font-family: 'TM Quicksand', 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.2px;
+  }
+
+  .tm-title {
+    font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-weight: 800 !important;
+  }
+
+  .tm-btn {
+    font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-weight: 800 !important;
+  }
+  `;
 }
 
 function htmlDoc(inner: string) {
@@ -141,6 +185,9 @@ function htmlDoc(inner: string) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
   <title>thankümail</title>
+  <style type="text/css">
+  ${fontCss()}
+  </style>
 </head>
 <body style="margin:0; padding:0; background:#ffffff;">
   <div style="margin:0; padding:0; background:#ffffff;">
@@ -150,32 +197,40 @@ function htmlDoc(inner: string) {
 </html>`;
 }
 
-function shell(args: { title: string; bodyHtml: string; ctaHref: string; ctaLabel: string; note?: string }) {
-  const font = sysFontStack();
+function shell(args: {
+  title: string;
+  bodyHtml: string;
+  ctaHref: string;
+  ctaLabel: string;
+  note?: string;
+}) {
   const logo = wordmarkUrl();
 
   return htmlDoc(`
-  <div style="padding:18px; background:#ffffff; font-family:${font}; color:#0f172a;">
+  <div style="padding:18px; background:#ffffff; color:#0f172a;">
     <div style="max-width:640px; margin:0 auto;">
-      <div style="margin:2px 0 14px;">
-        <img src="${logo}" alt="thankümail" width="220" style="display:block; height:auto; border:0; outline:none; text-decoration:none;" />
+      <div style="margin:2px 0 14px; text-align:center;">
+        <img src="${logo}" alt="thankümail" width="220" style="display:block; margin:0 auto; height:auto; border:0; outline:none; text-decoration:none;" />
       </div>
 
-      <h1 style="margin:0 0 12px; font-size:28px; line-height:1.2; font-weight:800; color:#0f172a;">
+      <h1 class="tm-title" style="margin:0 0 12px; font-size:28px; line-height:1.2; color:#0f172a; text-align:center;">
         ${escapeHtml(args.title)}
       </h1>
 
-      ${args.bodyHtml}
+      <div style="max-width:520px; margin:0 auto;">
+        ${args.bodyHtml}
 
-      <div style="margin:18px 0 0;">
-        <a href="${args.ctaHref}"
-           style="display:inline-block; padding:14px 18px; background:#0b1220; color:#ffffff; text-decoration:none; border-radius:14px; font-weight:800; font-size:14px; letter-spacing:0.2px;">
-          ${escapeHtml(args.ctaLabel)} →
-        </a>
-      </div>
+        <div style="margin:18px 0 0; text-align:center;">
+          <a href="${args.ctaHref}"
+             class="tm-btn"
+             style="display:inline-block; padding:14px 18px; background:#0b1220; color:#ffffff; text-decoration:none; border-radius:14px; font-size:14px; letter-spacing:0.2px;">
+            ${escapeHtml(args.ctaLabel)} →
+          </a>
+        </div>
 
-      <div style="margin:14px 0 0; font-size:12px; color:#6b7280;">
-        ${escapeHtml(args.note || "This message was sent anonymously.")}
+        <div style="margin:14px 0 0; font-size:12px; color:#6b7280; text-align:center;">
+          ${escapeHtml(args.note || "This message was sent anonymously.")}
+        </div>
       </div>
     </div>
   </div>
@@ -210,12 +265,9 @@ async function sendBrevoEmail(params: {
 
     const endpoint = env("BREVO_API_ENDPOINT", "https://api.brevo.com/v3/smtp/email");
 
-    // IMPORTANT: these must match a VERIFIED sender in Brevo
     const fromEmail = env("FROM_EMAIL", "no-reply@thankumail.com");
     const fromName = env("FROM_NAME", "thankümail");
 
-    // CRITICAL ANONYMITY:
-    // Always force Reply-To to the same no-reply identity so Brevo/account defaults can’t leak a real address.
     const replyToEmail = env("REPLY_TO_EMAIL", fromEmail);
     const replyToName = env("REPLY_TO_NAME", fromName);
 
@@ -408,21 +460,22 @@ export async function sendReturnToSenderEmail(
     ${reasonHtml}
   `;
 
-  // No CTA here (no claim link); keep emotionally neutral.
   const htmlContent = htmlDoc(`
-    <div style="padding:18px; background:#ffffff; font-family:${sysFontStack()}; color:#0f172a;">
+    <div style="padding:18px; background:#ffffff; color:#0f172a;">
       <div style="max-width:640px; margin:0 auto;">
-        <div style="margin:2px 0 14px;">
-          <img src="${wordmarkUrl()}" alt="thankümail" width="220" style="display:block; height:auto; border:0; outline:none; text-decoration:none;" />
+        <div style="margin:2px 0 14px; text-align:center;">
+          <img src="${wordmarkUrl()}" alt="thankümail" width="220" style="display:block; margin:0 auto; height:auto; border:0; outline:none; text-decoration:none;" />
         </div>
 
-        <h1 style="margin:0 0 12px; font-size:24px; line-height:1.2; font-weight:800; color:#0f172a;">
+        <h1 class="tm-title" style="margin:0 0 12px; font-size:24px; line-height:1.2; color:#0f172a; text-align:center;">
           Your thankümail update
         </h1>
 
-        ${bodyHtml}
+        <div style="max-width:520px; margin:0 auto;">
+          ${bodyHtml}
+        </div>
 
-        <div style="margin:14px 0 0; font-size:12px; color:#6b7280;">
+        <div style="margin:14px 0 0; font-size:12px; color:#6b7280; text-align:center;">
           This message was sent anonymously.
         </div>
       </div>
