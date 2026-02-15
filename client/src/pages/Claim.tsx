@@ -120,6 +120,7 @@ export default function Claim() {
   const tokenRef = useRef<string>("");
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
+  const [captchaRendered, setCaptchaRendered] = useState<boolean>(false);
 
   const confettiFiredRef = useRef<boolean>(false);
 
@@ -215,6 +216,7 @@ export default function Claim() {
     setClaiming(false);
     tokenRef.current = "";
     setCaptchaReady(!siteKey ? true : false);
+    setCaptchaRendered(false);
   }, [alreadyClaimed, siteKey]);
 
   // Countdown ticker (gift-amount only)
@@ -327,6 +329,7 @@ export default function Claim() {
       tokenRef.current = "";
       setCaptchaReady(false);
       setTurnstileBooting(false);
+      setCaptchaRendered(false);
 
       const el = document.getElementById("turnstile-container");
       if (el) el.innerHTML = "";
@@ -334,6 +337,7 @@ export default function Claim() {
     }
 
     setTurnstileBooting(true);
+    setCaptchaRendered(false);
   }, [siteKey, shouldShowCaptcha]);
 
   useEffect(() => {
@@ -415,6 +419,7 @@ export default function Claim() {
 
         widgetIdRef.current = id;
         renderedRef.current = true;
+        setCaptchaRendered(true);
       } catch {
         // keep retrying
       }
@@ -635,7 +640,10 @@ export default function Claim() {
   if (!canAttemptClaim && alreadyClaimed) buttonText = "Already claimed";
   else if (hasAmount && retryAfterSec !== null && retryAfterSec > 0) buttonText = `Finalizing… ${retryAfterSec}s`;
   else if (claiming) buttonText = "Checking…";
-  else if (shouldShowCaptcha && !captchaReady) buttonText = turnstileBooting ? "Loading verification…" : "Verify to claim";
+  else if (shouldShowCaptcha && !captchaReady) {
+    // Don’t show “Verify to claim” until the widget is actually on the page.
+    buttonText = !captchaRendered || turnstileBooting ? "Loading verification…" : "Verify to claim";
+  }
 
   const buttonDisabled =
     !canAttemptClaim ||
@@ -712,6 +720,8 @@ export default function Claim() {
                       <div className="mt-2 text-xs text-slate-500">Loading verification…</div>
                     ) : captchaReady ? (
                       <div className="mt-2 text-xs text-slate-600">Verified ✓</div>
+                    ) : captchaRendered ? (
+                      <div className="mt-2 text-xs text-slate-500">Complete verification above.</div>
                     ) : null}
                   </div>
                 </div>
