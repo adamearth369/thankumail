@@ -1,3 +1,6 @@
+// WHERE TO PASTE: script/build.ts
+// ACTION: Full file replacement (paste exactly)
+
 import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
@@ -18,50 +21,29 @@ function envTrue(v: string | undefined) {
 async function main() {
   const root = process.cwd();
 
-  // This is the directory Render Static Site serves in this repo:
-  // Vite is currently outputting to: dist/public
+  // Vite is configured to output here:
+  // vite.config.ts -> build.outDir = dist/public
   const distDir = path.resolve(root, "dist");
   const publicDir = path.resolve(distDir, "public");
 
-  ensureDir(distDir);
-
-  // STATIC SITE BUILD: build Vite and ensure output is dist/public
+  // STATIC SITE BUILD: build Vite and KEEP output in dist/public
   if (envTrue(process.env.BUILD_CLIENT)) {
+    ensureDir(distDir);
+
     console.log("building client with vite...");
     run("npx vite build");
 
+    // Must exist for Render Static Site publish dir = dist/public
     if (!fs.existsSync(publicDir)) {
       throw new Error("Vite build did not produce dist/public");
     }
 
-    // Render Static Site typically serves a single publish directory.
-    // We want the publish dir to contain index.html + assets/*
-    // So we mirror dist/public -> dist (index.html at dist/index.html).
     const indexHtml = path.resolve(publicDir, "index.html");
     if (!fs.existsSync(indexHtml)) {
       throw new Error("Vite build missing dist/public/index.html");
     }
 
-    // Clean dist root but preserve that we're about to move content into it
-    // Approach: move dist/public/* up to dist/*
-    const tmp = path.resolve(root, ".tm_public_tmp");
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-    fs.mkdirSync(tmp, { recursive: true });
-
-    // copy dist/public -> tmp
-    fs.cpSync(publicDir, tmp, { recursive: true });
-
-    // wipe dist, recreate
-    fs.rmSync(distDir, { recursive: true, force: true });
-    fs.mkdirSync(distDir, { recursive: true });
-
-    // copy tmp -> dist
-    fs.cpSync(tmp, distDir, { recursive: true });
-
-    fs.rmSync(tmp, { recursive: true, force: true });
-
-    console.log("client build ready in /dist (index.html + assets/)");
+    console.log("client build ready in dist/public (index.html + assets/)");
     return;
   }
 
