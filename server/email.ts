@@ -27,7 +27,7 @@ type SendReturnToSenderEmailArgs = {
   reason?: string;
 };
 
-const EMAIL_VERSION = "email_v2026-02-14_006";
+const EMAIL_VERSION = "email_v2026-02-15_001";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -272,6 +272,34 @@ function shell(args: {
   `);
 }
 
+function subtleMetaRow(label: string, value: string) {
+  return `
+  <div style="margin:10px 0 0;">
+    <div style="font-size:12px;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;font-weight:700;margin:0 0 6px;">
+      ${escapeHtml(label)}
+    </div>
+    <div style="font-size:14px;line-height:1.6;color:#111827;">
+      ${escapeHtml(value)}
+    </div>
+  </div>
+  `;
+}
+
+function amountPill(amountCents: number) {
+  return `
+  <div style="margin:14px 0 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:14px;background:#ffffff;">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
+      <div style="font-size:12px;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;font-weight:700;">
+        Gift amount
+      </div>
+      <div style="font-size:20px;line-height:1.2;color:#0f172a;font-weight:800;">
+        ${escapeHtml(money(amountCents))}
+      </div>
+    </div>
+  </div>
+  `;
+}
+
 function messageCard(message: string) {
   const safe = escapeHtml(message || "");
   return `
@@ -407,6 +435,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
     <div style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;">
       ${showAmount ? `A gift is included.` : `A note, sent with care.`}
     </div>
+    ${showAmount ? amountPill(args.amountCents) : ""}
   `;
 
   const htmlContent = shell({
@@ -414,7 +443,7 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
     preheader: "A note for you — open when you’re ready.",
     bodyHtml,
     ctaHref: claimUrl,
-    ctaLabel: "Accept your thankümail",
+    ctaLabel: showAmount ? "Open your thankümail" : "Read your thankümail",
     note: "This message was sent anonymously.",
   });
 
@@ -443,12 +472,13 @@ export async function sendReminderEmail(
   const textContent = textLines.join("\n");
 
   const bodyHtml = `
-    <div style="margin:0 0 10px;font-size:15px;line-height:1.6;color:#111827;">
+    <div style="margin:0;font-size:15px;line-height:1.6;color:#111827;">
       Your thankümail is still waiting.
     </div>
-    <div style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;">
+    <div style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#6b7280;">
       ${showAmount ? `A gift is included.` : `A note, sent with care.`}
     </div>
+    ${showAmount ? amountPill(args.amountCents) : ""}
   `;
 
   const htmlContent = shell({
@@ -456,7 +486,7 @@ export async function sendReminderEmail(
     preheader: "A gentle reminder — it’s still here for you.",
     bodyHtml,
     ctaHref: claimUrl,
-    ctaLabel: "Accept your thankümail",
+    ctaLabel: showAmount ? "Open your thankümail" : "Read your thankümail",
     note: "This message was sent anonymously.",
   });
 
@@ -478,26 +508,31 @@ export async function sendReturnToSenderEmail(
 
   const showAmount = shouldShowAmount(args.amountCents);
 
-  const textLines: string[] = [`Your thankümail could not be completed.`, ``, `Public ID: ${args.publicId}`];
+  const textLines: string[] = [
+    `Your thankümail could not be completed.`,
+    ``,
+    `Public ID: ${args.publicId}`,
+  ];
   if (showAmount) textLines.push(`Amount: ${money(args.amountCents)}`);
   if (args.reason) textLines.push(`Reason: ${args.reason}`);
   const textContent = textLines.join("\n");
-
-  const reasonHtml = args.reason
-    ? `<div style="margin:12px 0 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:14px;background:#ffffff;">
-         <div style="font-size:12px;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;font-weight:700;margin:0 0 6px;">Reason</div>
-         <div style="font-size:14px;line-height:1.6;color:#111827;">${escapeHtml(args.reason)}</div>
-       </div>`
-    : "";
 
   const bodyHtml = `
     <div style="margin:0;font-size:15px;line-height:1.6;color:#111827;">
       Your thankümail could not be completed.
     </div>
-    <div style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#6b7280;">
-      Public ID: <span style="color:#111827;font-weight:700;">${escapeHtml(args.publicId)}</span>
-    </div>
-    ${reasonHtml}
+    ${subtleMetaRow("Public ID", args.publicId)}
+    ${showAmount ? amountPill(args.amountCents) : ""}
+    ${
+      args.reason
+        ? `<div style="margin:14px 0 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:14px;background:#ffffff;">
+             <div style="font-size:12px;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;font-weight:700;margin:0 0 6px;">Reason</div>
+             <div style="font-size:14px;line-height:1.6;color:#111827;">${escapeHtml(
+               args.reason,
+             )}</div>
+           </div>`
+        : ""
+    }
   `;
 
   const htmlContent = shell({
