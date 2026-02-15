@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Home.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useState } from "react";
 import CreateGiftForm from "../components/CreateGiftForm";
 
@@ -35,6 +38,16 @@ export default function Home() {
 
             <div className="mt-2 text-sm sm:text-base text-white/85">
               No strings attached.
+            </div>
+
+            {/* Guest scope badge */}
+            <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[12px] text-white/90">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-300" />
+              Guest mode: preset note + email delivery
+            </div>
+
+            <div className="mt-3 max-w-xl text-white/85 text-sm leading-relaxed">
+              Pick a short message. Send it by email. They’ll verify and accept it on the claim page.
             </div>
           </div>
 
