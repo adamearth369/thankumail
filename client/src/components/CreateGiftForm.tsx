@@ -430,21 +430,18 @@ export default function CreateGiftForm() {
     }
   }
 
-  // EDIT: make placeholders visible on your tm palette (especially when inputs inherit dark backgrounds)
+  // FORCE visible input background + placeholder (some global CSS is making inputs transparent on prod)
   const inputBase =
-    "w-full rounded-xl border px-3 py-2 outline-none bg-tm-cream text-tm-charcoal " +
-    "placeholder:text-tm-charcoal/60 placeholder:opacity-100 border-tm-charcoal/30 " +
-    "focus:border-tm-charcoal focus:ring-2 focus:ring-tm-honey/30";
+    "w-full rounded-xl border px-3 py-2 outline-none !bg-white !text-slate-900 placeholder:!text-slate-500 placeholder:opacity-100 !border-slate-400/70 focus:!border-slate-900 focus:ring-2 focus:ring-slate-900/10";
 
   const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
 
   return (
     <div className="w-full max-w-xl mx-auto">
-      <form onSubmit={onSubmit} className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal">
+      <form onSubmit={onSubmit} className="rounded-2xl border border-slate-300 bg-white p-5 shadow-soft text-slate-900">
         <div className="space-y-4">
           {/* Sender email (abuse limits). Never shown to recipient. */}
           <div>
-            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Sender email</div>
             <input
               value={senderEmail}
               onChange={(e) => setSenderEmail(e.target.value)}
@@ -457,11 +454,10 @@ export default function CreateGiftForm() {
                 fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
               )}
             />
-            <div className="mt-1 text-[11px] text-tm-charcoal/60">Used only for abuse protection. Not shared with the recipient.</div>
+            <div className="mt-1 text-[11px] text-slate-500">Used only for abuse protection. Not shared with the recipient.</div>
           </div>
 
           <div>
-            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Recipient email</div>
             <input
               value={recipientEmail}
               onChange={(e) => setRecipientEmail(e.target.value)}
@@ -479,8 +475,8 @@ export default function CreateGiftForm() {
           {/* -------------------- PRESET CAROUSEL (LOCKED) -------------------- */}
           <div>
             <div className="flex items-center justify-between gap-3 mb-2">
-              <div className="text-sm font-medium text-tm-charcoal">Choose a message</div>
-              <div className="text-xs text-tm-charcoal/60">
+              <div className="text-sm font-medium text-slate-900">Choose a message</div>
+              <div className="text-xs text-slate-500">
                 {presetIdx + 1}/{PRESET_MESSAGES.length}
               </div>
             </div>
@@ -490,21 +486,21 @@ export default function CreateGiftForm() {
                 type="button"
                 aria-label="Previous message"
                 onClick={() => selectPreset(presetIdx - 1)}
-                className="shrink-0 w-10 rounded-xl border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90 cursor-pointer"
+                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 cursor-pointer"
               >
                 ‹
               </button>
 
-              <div className="flex-1 text-left rounded-xl border px-3 py-3 bg-tm-cream border-tm-charcoal/20">
-                <div className="text-xs text-tm-charcoal/60 mb-1">Preset</div>
-                <div className="text-sm text-tm-charcoal leading-snug">{currentPreset?.text}</div>
+              <div className="flex-1 text-left rounded-xl border px-3 py-3 bg-white border-slate-300">
+                <div className="text-xs text-slate-500 mb-1">Preset</div>
+                <div className="text-sm text-slate-900 leading-snug">{currentPreset?.text}</div>
               </div>
 
               <button
                 type="button"
                 aria-label="Next message"
                 onClick={() => selectPreset(presetIdx + 1)}
-                className="shrink-0 w-10 rounded-xl border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90 cursor-pointer"
+                className="shrink-0 w-10 rounded-xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 cursor-pointer"
               >
                 ›
               </button>
@@ -520,9 +516,7 @@ export default function CreateGiftForm() {
                     onClick={() => selectPreset(i)}
                     className={classNames(
                       "px-2 py-1 rounded-full text-xs border transition cursor-pointer",
-                      active
-                        ? "border-tm-charcoal bg-tm-charcoal text-tm-cream"
-                        : "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90",
+                      active ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
                     )}
                     aria-label={`Select preset ${i + 1}`}
                   >
@@ -534,19 +528,19 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
+            <div className="text-sm font-medium text-slate-900 mb-2">Human check</div>
 
             <div
               id="tm-turnstile"
               ref={widgetContainerRef}
               className={classNames(
-                "min-h-[65px] rounded-xl border bg-tm-cream flex items-center justify-center overflow-hidden",
-                fieldError === "turnstile" ? "border-red-400" : "border-tm-charcoal/30",
+                "min-h-[65px] rounded-xl border bg-white flex items-center justify-center overflow-hidden",
+                fieldError === "turnstile" ? "border-red-400" : "border-slate-400/70",
               )}
             />
 
             {showRetry ? (
-              <div className="mt-2 flex items-center justify-end gap-2 text-xs text-tm-charcoal/60">
+              <div className="mt-2 flex items-center justify-end gap-2 text-xs text-slate-500">
                 <button
                   type="button"
                   onClick={() => {
@@ -558,7 +552,7 @@ export default function CreateGiftForm() {
                       });
                     });
                   }}
-                  className="rounded-lg border border-tm-charcoal/20 bg-tm-cream px-2 py-1 text-tm-charcoal hover:opacity-90 cursor-pointer"
+                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-slate-900 hover:opacity-90 cursor-pointer"
                 >
                   Retry
                 </button>
@@ -566,9 +560,7 @@ export default function CreateGiftForm() {
             ) : null}
           </div>
 
-          {error ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
-          ) : null}
+          {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
 
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
@@ -581,9 +573,7 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
-              ) : null}
+              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
 
               <div className="mt-3">
                 <button
@@ -617,7 +607,7 @@ export default function CreateGiftForm() {
             className={classNames(
               "w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
               canSubmit
-                ? "bg-tm-amber text-tm-charcoal border-tm-charcoal/30 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
+                ? "bg-tm-amber text-tm-charcoal border-slate-400/70 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
                 : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed",
             )}
           >
