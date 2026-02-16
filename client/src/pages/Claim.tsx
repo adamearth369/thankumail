@@ -2,12 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-
-// IMPORTANT: Static build is not exposing VITE_TURNSTILE_SITE_KEY reliably.
-// Use the known public Turnstile site key directly so Claim always renders captcha.
 const TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
-// Force site-consistent fonts even if a Tailwind font class fails to apply
 const FONT_BODY =
   "'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
 const FONT_TITLE =
@@ -105,12 +101,10 @@ export default function Claim() {
 
   const [claiming, setClaiming] = useState(false);
 
-  // For gift-amount flows only (shows countdown)
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
   const retryTimerRef = useRef<number | null>(null);
 
   const [error, setError] = useState("");
-  // "ok" = claimed successfully *this session* (do NOT set from initial load)
   const [ok, setOk] = useState(false);
   const [alreadyClaimed, setAlreadyClaimed] = useState(false);
 
@@ -124,6 +118,8 @@ export default function Claim() {
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
   const [captchaRendered, setCaptchaRendered] = useState<boolean>(false);
+
+  const [captchaBlocked, setCaptchaBlocked] = useState<boolean>(false);
 
   const confettiFiredRef = useRef<boolean>(false);
 
@@ -172,7 +168,6 @@ export default function Claim() {
       invalidRef.current = false;
       confettiFiredRef.current = false;
 
-      // IMPORTANT: never carry "just claimed" across refresh
       setOk(false);
 
       try {
@@ -198,7 +193,6 @@ export default function Claim() {
         const claimed = Boolean(j?.isClaimed);
         setAlreadyClaimed(claimed);
 
-        // If it’s already claimed on load, show "already claimed" state (not the "Received." success screen)
         setError("");
       } catch (e: any) {
         const msg = String(e?.message || "Failed to load thankümail");
@@ -226,9 +220,9 @@ export default function Claim() {
     tokenRef.current = "";
     setCaptchaReady(!siteKey ? true : false);
     setCaptchaRendered(false);
+    setCaptchaBlocked(false);
   }, [alreadyClaimed, siteKey]);
 
-  // Countdown ticker (gift-amount only)
   useEffect(() => {
     if (!hasAmount) return;
     if (retryAfterSec === null) return;
@@ -266,9 +260,9 @@ export default function Claim() {
     } catch {}
     tokenRef.current = "";
     setCaptchaReady(false);
+    setCaptchaBlocked(false);
   }
 
-  // Keep container stable; only clear when we truly exit the captcha state
   useEffect(() => {
     if (!siteKey) return;
 
@@ -279,6 +273,7 @@ export default function Claim() {
       setCaptchaReady(false);
       setTurnstileBooting(false);
       setCaptchaRendered(false);
+      setCaptchaBlocked(false);
 
       const el = document.getElementById("turnstile-container");
       if (el) el.innerHTML = "";
@@ -287,9 +282,9 @@ export default function Claim() {
 
     setTurnstileBooting(true);
     setCaptchaRendered(false);
+    setCaptchaBlocked(false);
   }, [siteKey, shouldShowCaptcha]);
 
-  // Ensure script exists
   useEffect(() => {
     if (!siteKey) {
       setTurnstileBooting(false);
@@ -322,13 +317,13 @@ export default function Claim() {
     script.onload = () => setTurnstileBooting(false);
     script.onerror = () => {
       setTurnstileBooting(false);
-      if (!invalidRef.current) setError("Verification failed to load. Please refresh the page.");
+      setCaptchaBlocked(true);
+      if (!invalidRef.current) setError("");
     };
 
     document.body.appendChild(script);
   }, [siteKey, shouldShowCaptcha]);
 
-  // Render widget (force visible + sync token from getResponse)
   useEffect(() => {
     if (!siteKey) return;
     if (!shouldShowCaptcha) return;
@@ -348,6 +343,7 @@ export default function Claim() {
         if (token && token.length > 50) {
           tokenRef.current = token;
           setCaptchaReady(true);
+          setCaptchaBlocked(false);
           setError("");
         }
       } catch {
@@ -374,6 +370,7 @@ export default function Claim() {
             if (invalidRef.current) return;
             tokenRef.current = token || "";
             setCaptchaReady(!!token);
+            setCaptchaBlocked(false);
             setError("");
           },
           "expired-callback": () => {
@@ -385,7 +382,8 @@ export default function Claim() {
             if (invalidRef.current) return;
             tokenRef.current = "";
             setCaptchaReady(false);
-            setError("Verification failed. Please try again.");
+            setCaptchaBlocked(true);
+            setError("");
           },
         });
 
@@ -393,8 +391,6 @@ export default function Claim() {
         renderedRef.current = true;
         setCaptchaRendered(true);
 
-        // In some environments Turnstile immediately writes a hidden response without iframe.
-        // Sync token anyway so claim can proceed.
         window.setTimeout(syncTokenFromResponseInput, 200);
         window.setTimeout(syncTokenFromResponseInput, 800);
       } catch {
@@ -408,7 +404,8 @@ export default function Claim() {
       window.clearInterval(interval);
       if (!renderedRef.current) {
         setTurnstileBooting(false);
-        if (!invalidRef.current) setError("Verification didn’t load. Please refresh the page.");
+        setCaptchaBlocked(true);
+        setError("");
       }
     }, 3000);
 
@@ -441,7 +438,6 @@ export default function Claim() {
     } catch {}
   }
 
-  // Auto attempt after countdown hits 0 (gift-amount only)
   useEffect(() => {
     if (!hasAmount) return;
     if (retryAfterSec === null) return;
@@ -486,7 +482,6 @@ export default function Claim() {
           throw new Error(msg);
         }
 
-        // Some deployments return 200 with isClaimed:true even when already claimed.
         if (claimedBefore || Boolean(j?.isClaimed && gift?.isClaimed)) {
           setAlreadyClaimed(true);
           setOk(false);
@@ -530,7 +525,6 @@ export default function Claim() {
         throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
       }
 
-      // Gift-amount: if delay, start visible countdown + auto retry
       if (hasAmount && r.status === 429 && j?.retryAfterSec) {
         const sec = Math.max(0, Number(j.retryAfterSec) || 0);
         setRetryAfterSec(sec);
@@ -564,7 +558,6 @@ export default function Claim() {
         throw new Error(msg);
       }
 
-      // 200 OK but already claimed: show claimed state (not success)
       if (claimedBefore) {
         setAlreadyClaimed(true);
         setOk(false);
@@ -573,7 +566,6 @@ export default function Claim() {
         return;
       }
 
-      // Success this session
       setOk(true);
       setAlreadyClaimed(true);
       setError("");
@@ -601,7 +593,10 @@ export default function Claim() {
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-              <div className="text-sm text-slate-500 mb-2" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
+              <div
+                className="text-sm text-slate-500 mb-2"
+                style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}
+              >
                 thankümail
               </div>
               <div style={{ fontFamily: FONT_TITLE, fontWeight: 800 }} className="text-2xl text-slate-900">
@@ -659,7 +654,9 @@ export default function Claim() {
               </h1>
 
               <p className="mt-2 text-slate-700 text-[15px] leading-relaxed md:text-base">
-                {hasAmount ? "The note was the heart of it. The gift will finalize shortly." : "The note was the heart of it."}
+                {hasAmount
+                  ? "The note was the heart of it. The gift will finalize shortly."
+                  : "The note was the heart of it."}
               </p>
 
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
@@ -693,10 +690,7 @@ export default function Claim() {
   }
 
   const buttonDisabled =
-    !canAttemptClaim ||
-    claiming ||
-    (shouldShowCaptcha ? !captchaReady : false) ||
-    (waitingOnDelay ? true : false);
+    !canAttemptClaim || claiming || (shouldShowCaptcha ? !captchaReady : false) || (waitingOnDelay ? true : false);
 
   return (
     <div
@@ -763,7 +757,15 @@ export default function Claim() {
                 <div className="mt-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
                     <div id="turnstile-container" className="min-h-[76px] flex items-center justify-center" />
-                    {turnstileBooting ? (
+
+                    {captchaBlocked ? (
+                      <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        Verification is blocked in this browser.
+                        <div className="mt-1 text-amber-900/90">
+                          Disable Shields/adblock for thankumail.com, or open this link in Chrome/Safari, then refresh.
+                        </div>
+                      </div>
+                    ) : turnstileBooting ? (
                       <div className="mt-2 text-xs text-slate-500">Loading verification…</div>
                     ) : captchaReady ? (
                       <div className="mt-2 text-xs text-slate-600">Verified ✓</div>
