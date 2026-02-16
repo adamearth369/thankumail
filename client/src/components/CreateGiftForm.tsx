@@ -133,6 +133,8 @@ export default function CreateGiftForm() {
   const [fieldError, setFieldError] = useState<string>("");
   const [result, setResult] = useState<CreateGiftOk | null>(null);
 
+  const [lastSentRecipientEmail, setLastSentRecipientEmail] = useState<string>("");
+
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
@@ -153,14 +155,7 @@ export default function CreateGiftForm() {
   const canSubmit = useMemo(() => {
     const re = recipientEmail.trim();
     const se = senderEmail.trim();
-    return (
-      !submitting &&
-      isEmail(re) &&
-      isEmail(se) &&
-      presetOk &&
-      token.length >= 20 &&
-      TURNSTILE_SITE_KEY.length > 0
-    );
+    return !submitting && isEmail(re) && isEmail(se) && presetOk && token.length >= 20 && TURNSTILE_SITE_KEY.length > 0;
   }, [submitting, recipientEmail, senderEmail, presetOk, token, TURNSTILE_SITE_KEY]);
 
   const showRetry =
@@ -397,6 +392,7 @@ export default function CreateGiftForm() {
         return;
       }
 
+      setLastSentRecipientEmail(re);
       setResult(data as CreateGiftOk);
       setSubmitting(false);
       errorLockRef.current = "none";
@@ -581,10 +577,11 @@ export default function CreateGiftForm() {
           {/* Success */}
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-              <div className="font-medium mb-1">Delivered.</div>
+              <div className="font-medium mb-1">Sent.</div>
 
               <div className="text-sm text-emerald-900/85">
-                Your thankümail has been sent to <span className="font-medium">{recipientEmail.trim() || "the recipient"}</span>.
+                Your thankümail has been sent to{" "}
+                <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
               </div>
 
               <div className="mt-2 text-xs text-emerald-900/75">
@@ -608,6 +605,7 @@ export default function CreateGiftForm() {
                     setRecipientEmail("");
                     setSenderEmail("");
                     setPresetIdx(1);
+                    setLastSentRecipientEmail("");
                     try {
                       if (widgetIdRef.current && window.turnstile?.reset) {
                         window.turnstile.reset(widgetIdRef.current);
@@ -621,8 +619,23 @@ export default function CreateGiftForm() {
                 </button>
               </div>
 
-              <div className="mt-2 text-[11px] text-emerald-900/70">
-                We don’t show the claim link here to avoid confusion.
+              <div className="mt-2 text-[11px] text-emerald-900/70">We don’t show the claim link here to avoid confusion.</div>
+            </div>
+          ) : null}
+
+          {/* Reassurance (ABOVE CTA) */}
+          {!result?.ok ? (
+            <div className="rounded-xl border border-tm-charcoal/10 bg-tm-cream/60 px-3 py-2 text-[12px] text-tm-charcoal/75">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-tm-forest">•</span> No account
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-tm-forest">•</span> Preset message only
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-tm-forest">•</span> Your email isn’t shown to them
+                </span>
               </div>
             </div>
           ) : null}
@@ -646,9 +659,7 @@ export default function CreateGiftForm() {
             )}
           </button>
 
-          <div className="text-[11px] text-tm-charcoal/60 text-center">
-            Guest mode: preset messages only. No amount. No account.
-          </div>
+          <div className="text-[11px] text-tm-charcoal/60 text-center">Guest mode: preset messages only. No amount. No account.</div>
         </div>
       </form>
     </div>
