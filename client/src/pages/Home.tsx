@@ -19,7 +19,6 @@ export default function Home() {
       className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
-      {/* overlay (NO blur) */}
       <div className="min-h-screen bg-black/40">
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div
@@ -32,22 +31,23 @@ export default function Home() {
               {wordmark}
             </h1>
 
-            <div className="mt-2 text-white/95 text-sm sm:text-base font-medium tracking-wide">
-              Anonymous Appreciation
+            <div className="mt-3 text-white/95 text-base sm:text-lg font-medium tracking-wide">
+              Anonymous appreciation by email.
             </div>
 
             <div className="mt-2 text-sm sm:text-base text-white/85">
-              No strings attached.
+              One message. One moment. No account required.
             </div>
 
-            {/* Guest scope badge */}
             <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[12px] text-white/90">
               <span className="inline-block h-2 w-2 rounded-full bg-emerald-300" />
               Guest mode: preset note + email delivery
             </div>
 
-            <div className="mt-3 max-w-xl text-white/85 text-sm leading-relaxed">
-              Pick a short message. Send it by email. They’ll verify and accept it on the claim page.
+            <div className="mt-4 max-w-xl text-white/85 text-sm leading-relaxed">
+              Choose a short thank-you message and send it instantly.
+              <br />
+              The recipient verifies and receives it on a private claim page.
             </div>
           </div>
 
@@ -56,7 +56,7 @@ export default function Home() {
           </div>
 
           <footer className="mt-10 text-center text-sm text-white/80">
-            {wordmark} is designed to be calm, honest, and human.
+            Designed to feel calm, honest, and human.
           </footer>
         </main>
       </div>
