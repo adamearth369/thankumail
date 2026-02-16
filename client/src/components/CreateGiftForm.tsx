@@ -43,6 +43,7 @@ declare global {
           "expired-callback"?: () => void;
           "timeout-callback"?: () => void;
           "response-field"?: boolean;
+          "response-field-name"?: string;
           "refresh-expired"?: "auto" | "manual";
           "refresh-timeout"?: "auto" | "manual";
           size?: "normal" | "compact";
@@ -135,6 +136,10 @@ export default function CreateGiftForm() {
 
   const [lastSentRecipientEmail, setLastSentRecipientEmail] = useState<string>("");
 
+  // Token UX for PowerShell
+  const [copyStatus, setCopyStatus] = useState<string>("");
+  const copyTimerRef = useRef<number | null>(null);
+
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
@@ -184,6 +189,37 @@ export default function CreateGiftForm() {
   function selectPreset(i: number) {
     const idx = clampPresetIndex(i);
     setPresetIdx(idx);
+  }
+
+  function setCopyToast(msg: string) {
+    setCopyStatus(msg);
+    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => setCopyStatus(""), 1800);
+  }
+
+  async function copyTokenToClipboard() {
+    const t = String(token || "").trim();
+    if (!t) return;
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(t);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = t;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "-9999px";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopyToast("Token copied");
+    } catch {
+      setCopyToast("Copy failed");
+    }
   }
 
   useEffect(() => {
@@ -258,6 +294,11 @@ export default function CreateGiftForm() {
         sitekey: TURNSTILE_SITE_KEY,
         theme: "auto",
         size: "normal",
+
+        // IMPORTANT: this creates a hidden input with the token we can copy if needed
+        "response-field": true,
+        "response-field-name": "cf-turnstile-response",
+
         callback: (t: string) => {
           setToken(String(t || ""));
           if (errorLockRef.current !== "server") {
@@ -570,6 +611,39 @@ export default function CreateGiftForm() {
                 </button>
               </div>
             ) : null}
+
+            {/* PowerShell helper: copy a fresh token (must be used immediately + only once) */}
+            <div className="mt-2 rounded-xl border border-tm-charcoal/10 bg-tm-cream/60 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] text-tm-charcoal/70">
+                  PowerShell create helper (use token immediately; single-use)
+                </div>
+                <div className="flex items-center gap-2">
+                  {copyStatus ? <div className="text-[11px] text-tm-charcoal/70">{copyStatus}</div> : null}
+                  <button
+                    type="button"
+                    disabled={!token || token.length < 20}
+                    onClick={copyTokenToClipboard}
+                    className={classNames(
+                      "rounded-lg border px-2 py-1 text-[11px] font-medium",
+                      token && token.length >= 20
+                        ? "border-tm-charcoal/20 bg-white text-tm-charcoal hover:opacity-90 cursor-pointer"
+                        : "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed",
+                    )}
+                  >
+                    Copy token
+                  </button>
+                </div>
+              </div>
+
+              {/* Keep the token visible for manual copy/paste if needed */}
+              <textarea
+                readOnly
+                value={token || ""}
+                placeholder="Complete the Human check to generate a token…"
+                className="mt-2 w-full h-[72px] resize-none rounded-lg border border-tm-charcoal/15 bg-white px-2 py-2 text-[11px] text-tm-charcoal/80 placeholder:text-tm-charcoal/40"
+              />
+            </div>
           </div>
 
           {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
