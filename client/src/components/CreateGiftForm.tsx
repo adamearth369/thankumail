@@ -119,7 +119,7 @@ export default function CreateGiftForm() {
   // Guest scope: email-only + preset-only + no amount
   const [recipientEmail, setRecipientEmail] = useState("");
 
-  // Abuse-control (hidden): sender email used for rate limits; never shown to recipient
+  // Abuse-control: sender email used for rate limits; never shown to recipient
   const [senderEmail, setSenderEmail] = useState("");
 
   // Default to preset #2 (index 1)
@@ -430,8 +430,9 @@ export default function CreateGiftForm() {
     }
   }
 
+  // Fix placeholder visibility + keep guest aesthetic
   const inputBase =
-    "w-full rounded-xl border px-3 py-2 outline-none bg-white text-slate-900 placeholder:text-slate-400 border-slate-400/70 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10";
+    "w-full rounded-xl border px-3 py-2 outline-none bg-white text-slate-900 placeholder:text-slate-400 placeholder:opacity-100 border-slate-400/70 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10";
 
   const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
 
@@ -439,16 +440,22 @@ export default function CreateGiftForm() {
     <div className="w-full max-w-xl mx-auto">
       <form onSubmit={onSubmit} className="rounded-2xl border border-slate-300 bg-white p-5 shadow-soft text-slate-900">
         <div className="space-y-4">
-          {/* Hidden sender email for abuse limits (not shown in UI) */}
-          <input
-            type="email"
-            autoComplete="email"
-            tabIndex={-1}
-            aria-hidden="true"
-            value={senderEmail}
-            onChange={(e) => setSenderEmail(e.target.value)}
-            className="hidden"
-          />
+          {/* Sender email (abuse limits). Never shown to recipient. */}
+          <div>
+            <input
+              value={senderEmail}
+              onChange={(e) => setSenderEmail(e.target.value)}
+              type="email"
+              autoComplete="email"
+              aria-label="Your email"
+              placeholder="Your email (sender)"
+              className={classNames(
+                inputBase,
+                fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
+              )}
+            />
+            <div className="mt-1 text-[11px] text-slate-500">Used only for abuse protection. Not shared with the recipient.</div>
+          </div>
 
           <div>
             <input
@@ -570,7 +577,9 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
+              {result.deliveryError ? (
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+              ) : null}
 
               <div className="mt-3">
                 <button
