@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -60,6 +57,8 @@ declare global {
 const API_BASE = "https://api.thankumail.com";
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
+// Cloudflare Turnstile "Always Pass" test sitekey (safe for client-side fallback)
+// NOTE: production site should ideally provide VITE_TURNSTILE_SITE_KEY at build time
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 // IMPORTANT: backend expects presetMessageId in [1..7]
@@ -101,8 +100,7 @@ function waitForTurnstile(maxMs: number) {
 }
 
 function isTurnstileErrorCode(code?: string) {
-  const c = String(code || "").toUpperCase();
-  return c === "TURNSTILE_FAILED";
+  return String(code || "").toUpperCase() === "TURNSTILE_FAILED";
 }
 
 function fireConfettiBurst() {
@@ -113,6 +111,16 @@ function fireConfettiBurst() {
     confetti({ ...defaults, particleCount: 25, spread: 160, startVelocity: 25 });
   } catch {
     // ignore
+  }
+}
+
+function getTurnstileSiteKey() {
+  try {
+    const v = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY;
+    const envKey = typeof v === "string" ? v.trim() : "";
+    return (envKey || FALLBACK_TURNSTILE_SITE_KEY || "").trim();
+  } catch {
+    return (FALLBACK_TURNSTILE_SITE_KEY || "").trim();
   }
 }
 
@@ -145,12 +153,7 @@ export default function CreateGiftForm() {
   const renderSeqRef = useRef<number>(0);
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
 
-  const TURNSTILE_SITE_KEY = useMemo(() => {
-    const envKey = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY
-      ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
-      : "";
-    return (envKey || FALLBACK_TURNSTILE_SITE_KEY || "").trim();
-  }, []);
+  const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
 
   // BRAND: always use the real ü (U+00FC), never combining diaeresis
   const wordmark = "thankümail";
@@ -166,7 +169,6 @@ export default function CreateGiftForm() {
   const showRetry =
     fieldError === "turnstile" ||
     errorLockRef.current === "turnstile" ||
-    isTurnstileErrorCode(undefined) ||
     /verification|captcha|turnstile/i.test(error);
 
   function setErrorWithLock(msg: string, lock: "none" | "server" | "turnstile") {
@@ -226,7 +228,8 @@ export default function CreateGiftForm() {
     let cancelled = false;
 
     async function ensureTurnstile() {
-      if (!TURNSTILE_SITE_KEY) {
+      const keyNow = getTurnstileSiteKey();
+      if (!keyNow) {
         setTurnstileReady(false);
         setErrorWithLock("Verification is not configured (missing site key).", "turnstile");
         return;
@@ -282,7 +285,13 @@ export default function CreateGiftForm() {
     const el = widgetContainerRef.current;
     if (!el) return;
     if (!window.turnstile?.render) return;
-    if (!TURNSTILE_SITE_KEY) return;
+
+    const sitekey = getTurnstileSiteKey();
+    if (!sitekey) {
+      setTurnstileReady(false);
+      setErrorWithLock("Verification is not configured (missing site key).", "turnstile");
+      return;
+    }
 
     setToken("");
     el.innerHTML = "";
@@ -291,7 +300,7 @@ export default function CreateGiftForm() {
 
     try {
       const id = window.turnstile.render(el, {
-        sitekey: TURNSTILE_SITE_KEY,
+        sitekey,
         theme: "auto",
         size: "normal",
 
@@ -336,7 +345,9 @@ export default function CreateGiftForm() {
     if (!turnstileReady) return;
     if (!widgetContainerRef.current) return;
     if (!window.turnstile?.render) return;
-    if (!TURNSTILE_SITE_KEY) return;
+
+    const sitekey = getTurnstileSiteKey();
+    if (!sitekey) return;
 
     destroyWidget();
 
@@ -377,7 +388,8 @@ export default function CreateGiftForm() {
       return;
     }
 
-    if (!TURNSTILE_SITE_KEY) {
+    const sitekey = getTurnstileSiteKey();
+    if (!sitekey) {
       setSubmitting(false);
       setFieldError("turnstile");
       setErrorWithLock("Verification is not configured. Please contact support.", "turnstile");
@@ -467,7 +479,6 @@ export default function CreateGiftForm() {
     }
   }
 
-  // EDIT: make placeholders visible on your tm palette (especially when inputs inherit dark backgrounds)
   const inputBase =
     "w-full rounded-xl border px-3 py-2 outline-none bg-tm-cream text-tm-charcoal " +
     "placeholder:text-tm-charcoal/60 placeholder:opacity-100 border-tm-charcoal/30 " +
@@ -479,7 +490,6 @@ export default function CreateGiftForm() {
     <div className="w-full max-w-xl mx-auto">
       <form onSubmit={onSubmit} className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal">
         <div className="space-y-4">
-          {/* Header */}
           <div className="space-y-1">
             <div className="text-lg font-outfit font-semibold tracking-tight text-tm-charcoal">
               Send a <span className="font-quicksand font-semibold">{wordmark}</span>
@@ -487,7 +497,6 @@ export default function CreateGiftForm() {
             <div className="text-xs text-tm-charcoal/60">Guest mode: preset message + email delivery. No account needed.</div>
           </div>
 
-          {/* Sender email */}
           <div>
             <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Sender email</div>
             <input
@@ -505,7 +514,6 @@ export default function CreateGiftForm() {
             <div className="mt-1 text-[11px] text-tm-charcoal/60">Used only for abuse protection. Not shared with the recipient.</div>
           </div>
 
-          {/* Recipient email */}
           <div>
             <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Recipient email</div>
             <input
@@ -522,7 +530,6 @@ export default function CreateGiftForm() {
             />
           </div>
 
-          {/* Preset carousel */}
           <div>
             <div className="flex items-center justify-between gap-3 mb-2">
               <div className="text-sm font-medium text-tm-charcoal">Choose a message</div>
@@ -579,7 +586,6 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
-          {/* Turnstile */}
           <div>
             <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
 
@@ -612,12 +618,9 @@ export default function CreateGiftForm() {
               </div>
             ) : null}
 
-            {/* PowerShell helper: copy a fresh token (must be used immediately + only once) */}
             <div className="mt-2 rounded-xl border border-tm-charcoal/10 bg-tm-cream/60 px-3 py-2">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] text-tm-charcoal/70">
-                  PowerShell create helper (use token immediately; single-use)
-                </div>
+                <div className="text-[11px] text-tm-charcoal/70">PowerShell create helper (use token immediately; single-use)</div>
                 <div className="flex items-center gap-2">
                   {copyStatus ? <div className="text-[11px] text-tm-charcoal/70">{copyStatus}</div> : null}
                   <button
@@ -636,7 +639,6 @@ export default function CreateGiftForm() {
                 </div>
               </div>
 
-              {/* Keep the token visible for manual copy/paste if needed */}
               <textarea
                 readOnly
                 value={token || ""}
@@ -648,19 +650,15 @@ export default function CreateGiftForm() {
 
           {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
 
-          {/* Success */}
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
               <div className="font-medium mb-1">Sent.</div>
 
               <div className="text-sm text-emerald-900/85">
-                Your thankümail has been sent to{" "}
-                <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
+                Your thankümail has been sent to <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
               </div>
 
-              <div className="mt-2 text-xs text-emerald-900/75">
-                If they don’t see it within a minute, ask them to check Spam or Promotions.
-              </div>
+              <div className="mt-2 text-xs text-emerald-900/75">If they don’t see it within a minute, ask them to check Spam or Promotions.</div>
 
               {result.emailSent ? (
                 <div className="mt-2 text-xs text-emerald-900/80">Email: sent ✓</div>
@@ -681,9 +679,7 @@ export default function CreateGiftForm() {
                     setPresetIdx(1);
                     setLastSentRecipientEmail("");
                     try {
-                      if (widgetIdRef.current && window.turnstile?.reset) {
-                        window.turnstile.reset(widgetIdRef.current);
-                      }
+                      if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
                     } catch {}
                     setToken("");
                   }}
@@ -697,7 +693,6 @@ export default function CreateGiftForm() {
             </div>
           ) : null}
 
-          {/* Reassurance (ABOVE CTA) */}
           {!result?.ok ? (
             <div className="rounded-xl border border-tm-charcoal/10 bg-tm-cream/60 px-3 py-2 text-[12px] text-tm-charcoal/75">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
