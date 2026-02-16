@@ -1,25 +1,58 @@
+// WHERE TO PASTE: client/src/hooks/use-gifts.ts
+// ACTION: Full file replacement (paste exactly)
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, buildUrl, type InsertGift } from "@shared/routes";
+import { api, type InsertGift } from "@shared/routes";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/apiBase";
 
 // ============================================
-// GIFTS HOOKS
+// GIFTS HOOKS (simple paths; no schema validators)
 // ============================================
+
+type GiftGetOk = any;
+type GiftCreateOk = any;
+type GiftClaimOk = any;
+
+type ApiError = {
+  error?: string;
+  message?: string;
+  field?: string;
+  code?: string;
+  codes?: string[];
+};
+
+function pickErrorMessage(j: any, fallback: string) {
+  const a = j as ApiError;
+  return (
+    (typeof a?.error === "string" && a.error) ||
+    (typeof a?.message === "string" && a.message) ||
+    fallback
+  );
+}
+
+function giftGetPath(publicId: string) {
+  return `/api/gifts/${encodeURIComponent(String(publicId || "").trim())}`;
+}
+
+function giftClaimPath(publicId: string) {
+  return `/api/gifts/${encodeURIComponent(String(publicId || "").trim())}/claim`;
+}
 
 export function useGift(publicId: string) {
   return useQuery({
-    queryKey: [api.gifts.get.path, publicId],
+    queryKey: ["gift", publicId],
     queryFn: async () => {
-      const url = buildUrl(api.gifts.get.path, { publicId });
+      const url = giftGetPath(publicId);
       const res = await fetch(apiUrl(url));
 
       if (res.status === 404) return null;
       if (!res.ok) throw new Error("Failed to fetch gift");
 
-      return api.gifts.get.responses[200].parse(await res.json());
+      return (await res.json()) as GiftGetOk;
     },
     retry: () => false,
+    enabled: !!String(publicId || "").trim(),
   });
 }
 
@@ -29,28 +62,32 @@ export function useCreateGift() {
 
   return useMutation({
     mutationFn: async (data: InsertGift) => {
-      const validated = api.gifts.create.input.parse(data);
-
-      const res = await fetch(apiUrl(api.gifts.create.path), {
-        method: api.gifts.create.method,
+      const res = await fetch(apiUrl(api.createGift), {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(validated),
+        body: JSON.stringify(data),
       });
 
-      if (!res.ok) {
-        if (res.status === 400) {
-          const error = api.gifts.create.responses[400].parse(await res.json());
-          throw new Error(error.message);
-        }
-        throw new Error("Failed to create gift");
+      let j: any = null;
+      try {
+        j = await res.json();
+      } catch {
+        // ignore
       }
 
-      return api.gifts.create.responses[201].parse(await res.json());
+      if (!res.ok) {
+        throw new Error(pickErrorMessage(j, "Failed to create gift"));
+      }
+
+      return (j ?? {}) as GiftCreateOk;
     },
-    onError: (error) => {
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["gift"] });
+    },
+    onError: (error: any) => {
       toast({
         title: "Error creating gift",
-        description: error.message,
+        description: String(error?.message || "Request failed"),
         variant: "destructive",
       });
     },
@@ -63,32 +100,35 @@ export function useClaimGift() {
 
   return useMutation({
     mutationFn: async (publicId: string) => {
-      const url = buildUrl(api.gifts.claim.path, { publicId });
-      const res = await fetch(apiUrl(url), { method: api.gifts.claim.method });
+      const url = giftClaimPath(publicId);
+      const res = await fetch(apiUrl(url), { method: "POST" });
 
-      if (!res.ok) {
-        if (res.status === 400) {
-          const error = api.gifts.claim.responses[400].parse(await res.json());
-          throw new Error(error.message);
-        }
-        if (res.status === 404) throw new Error("Gift not found");
-        throw new Error("Failed to claim gift");
+      let j: any = null;
+      try {
+        j = await res.json();
+      } catch {
+        // ignore
       }
 
-      return api.gifts.claim.responses[200].parse(await res.json());
+      if (!res.ok) {
+        if (res.status === 404) throw new Error("Gift not found");
+        throw new Error(pickErrorMessage(j, "Failed to claim gift"));
+      }
+
+      return (j ?? {}) as GiftClaimOk;
     },
-    onSuccess: (_, publicId) => {
-      queryClient.invalidateQueries({ queryKey: [api.gifts.get.path, publicId] });
+    onSuccess: (_data, publicId) => {
+      queryClient.invalidateQueries({ queryKey: ["gift", publicId] });
       toast({
         title: "Woohoo!",
         description: "Gift claimed successfully!",
         className: "bg-green-50 border-green-200 text-green-900",
       });
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast({
         title: "Couldn't claim gift",
-        description: error.message,
+        description: String(error?.message || "Request failed"),
         variant: "destructive",
       });
     },
