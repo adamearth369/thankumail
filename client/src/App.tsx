@@ -1,10 +1,10 @@
 import { Switch, Route } from "wouter";
 import Home from "./pages/Home";
 import Claim from "./pages/Claim";
-import TurnstileTool from "./pages/TurnstileTool";
+import TurnstileTool from "./pages/turnstile-tool";
 import NotFound from "./pages/not-found";
 
-function Router() {
+export default function App() {
   return (
     <Switch>
       <Route path="/" component={Home} />
@@ -13,8 +13,4 @@ function Router() {
       <Route component={NotFound} />
     </Switch>
   );
-}
-
-export default function App() {
-  return <Router />;
 }
