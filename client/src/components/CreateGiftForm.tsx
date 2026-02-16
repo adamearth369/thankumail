@@ -115,39 +115,6 @@ function fireConfettiBurst() {
   }
 }
 
-async function copyText(text: string) {
-  const t = String(text || "");
-  if (!t) return false;
-
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(t);
-      return true;
-    }
-  } catch {
-    // ignore
-  }
-
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = t;
-    ta.setAttribute("readonly", "true");
-    ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    ta.style.top = "-9999px";
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return !!ok;
-  } catch {
-    // ignore
-  }
-
-  return false;
-}
-
 export default function CreateGiftForm() {
   // Guest scope: email-only + preset-only + no amount
   const [recipientEmail, setRecipientEmail] = useState("");
@@ -165,8 +132,6 @@ export default function CreateGiftForm() {
   const [error, setError] = useState<string>("");
   const [fieldError, setFieldError] = useState<string>("");
   const [result, setResult] = useState<CreateGiftOk | null>(null);
-
-  const [copied, setCopied] = useState<boolean>(false);
 
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
@@ -224,7 +189,6 @@ export default function CreateGiftForm() {
   function selectPreset(i: number) {
     const idx = clampPresetIndex(i);
     setPresetIdx(idx);
-    setCopied(false);
   }
 
   useEffect(() => {
@@ -359,7 +323,6 @@ export default function CreateGiftForm() {
     setError("");
     setFieldError("");
     setResult(null);
-    setCopied(false);
 
     const re = recipientEmail.trim();
     const se = senderEmail.trim();
@@ -629,39 +592,6 @@ export default function CreateGiftForm() {
 
               {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
 
-              {/* Copy link fallback */}
-              {result.claimUrl ? (
-                <div className="mt-3 rounded-xl border border-emerald-200 bg-white px-3 py-3">
-                  <div className="text-xs font-medium text-emerald-900 mb-1">If the email doesn’t arrive</div>
-                  <div className="text-[11px] text-emerald-900/70 mb-2">Copy the claim link and send it manually.</div>
-
-                  <div className="flex items-stretch gap-2">
-                    <input
-                      readOnly
-                      value={result.claimUrl}
-                      aria-label="Claim link"
-                      className="flex-1 rounded-xl border px-3 py-2 text-xs outline-none bg-white text-tm-charcoal border-emerald-200"
-                    />
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const ok = await copyText(result.claimUrl);
-                        setCopied(ok);
-                        if (ok) setTimeout(() => setCopied(false), 2000);
-                      }}
-                      className={classNames(
-                        "shrink-0 rounded-xl border px-3 py-2 text-xs font-medium cursor-pointer",
-                        copied
-                          ? "border-emerald-300 bg-emerald-100 text-emerald-900"
-                          : "border-emerald-300 bg-white text-emerald-900 hover:bg-emerald-50",
-                      )}
-                    >
-                      {copied ? "Copied" : "Copy link"}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
               <div className="mt-3">
                 <button
                   type="button"
@@ -671,7 +601,6 @@ export default function CreateGiftForm() {
                     setRecipientEmail("");
                     setSenderEmail("");
                     setPresetIdx(1);
-                    setCopied(false);
                     try {
                       if (widgetIdRef.current && window.turnstile?.reset) {
                         window.turnstile.reset(widgetIdRef.current);
