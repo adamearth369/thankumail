@@ -581,8 +581,15 @@ export default function CreateGiftForm() {
           {/* Success */}
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-              <div className="font-medium mb-1">Sent.</div>
-              <div className="text-sm text-emerald-900/80">We’ve delivered your thankümail to the recipient.</div>
+              <div className="font-medium mb-1">Delivered.</div>
+
+              <div className="text-sm text-emerald-900/85">
+                Your thankümail has been sent to <span className="font-medium">{recipientEmail.trim() || "the recipient"}</span>.
+              </div>
+
+              <div className="mt-2 text-xs text-emerald-900/75">
+                If they don’t see it within a minute, ask them to check Spam or Promotions.
+              </div>
 
               {result.emailSent ? (
                 <div className="mt-2 text-xs text-emerald-900/80">Email: sent ✓</div>
@@ -614,7 +621,9 @@ export default function CreateGiftForm() {
                 </button>
               </div>
 
-              <div className="mt-2 text-[11px] text-emerald-900/70">Tip: ask them to check Spam/Promotions.</div>
+              <div className="mt-2 text-[11px] text-emerald-900/70">
+                We don’t show the claim link here to avoid confusion.
+              </div>
             </div>
           ) : null}
 
