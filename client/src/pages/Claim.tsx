@@ -2,7 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
 const API_BASE = "https://api.thankumail.com";
-const TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
+
+const TURNSTILE_SCRIPT_SRC =
+  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+
+// Fallback (Cloudflare test key)
+const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 const FONT_BODY =
   "'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
@@ -51,7 +56,7 @@ function friendlyError(msg: string) {
     /not found/i.test(m) ||
     /invalid or expired/i.test(m) ||
     (/invalid/i.test(m) && /token|link|id/i.test(m)) ||
-    (/expired/i.test(m) && /link|token|id/i.test(m))
+    (/expired/i.test(m) && /link|token|link|id/i.test(m))
   ) {
     return invalidLinkMessage();
   }
@@ -96,6 +101,15 @@ function fireConfettiBurst() {
 export default function Claim() {
   const publicId = getPublicIdFromPath();
 
+  const TURNSTILE_SITE_KEY = useMemo(() => {
+    const envKey = (import.meta as any)?.env?.VITE_TURNSTILE_SITE_KEY
+      ? String((import.meta as any).env.VITE_TURNSTILE_SITE_KEY)
+      : "";
+    return (envKey || FALLBACK_TURNSTILE_SITE_KEY || "").trim();
+  }, []);
+
+  const turnstileConfigured = TURNSTILE_SITE_KEY.length > 0;
+
   const [gift, setGift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -110,9 +124,8 @@ export default function Claim() {
 
   const invalidRef = useRef<boolean>(false);
 
-  const siteKey = TURNSTILE_SITE_KEY || "";
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
-  const [captchaReady, setCaptchaReady] = useState<boolean>(!siteKey);
+  const [captchaReady, setCaptchaReady] = useState<boolean>(!turnstileConfigured);
 
   const tokenRef = useRef<string>("");
   const widgetIdRef = useRef<any>(null);
@@ -123,7 +136,8 @@ export default function Claim() {
 
   const confettiFiredRef = useRef<boolean>(false);
 
-  const shouldShowCaptcha = Boolean(siteKey) && !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+  const needsClaimFlow = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+  const shouldShowCaptcha = turnstileConfigured && needsClaimFlow;
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
   const amountCents = useMemo(() => {
@@ -218,10 +232,10 @@ export default function Claim() {
     setRetryAfterSec(null);
     setClaiming(false);
     tokenRef.current = "";
-    setCaptchaReady(!siteKey ? true : false);
+    setCaptchaReady(!turnstileConfigured);
     setCaptchaRendered(false);
     setCaptchaBlocked(false);
-  }, [alreadyClaimed, siteKey]);
+  }, [alreadyClaimed, turnstileConfigured]);
 
   useEffect(() => {
     if (!hasAmount) return;
@@ -264,7 +278,11 @@ export default function Claim() {
   }
 
   useEffect(() => {
-    if (!siteKey) return;
+    if (!turnstileConfigured) {
+      setTurnstileBooting(false);
+      setCaptchaReady(false);
+      return;
+    }
 
     if (!shouldShowCaptcha) {
       renderedRef.current = false;
@@ -283,15 +301,10 @@ export default function Claim() {
     setTurnstileBooting(true);
     setCaptchaRendered(false);
     setCaptchaBlocked(false);
-  }, [siteKey, shouldShowCaptcha]);
+  }, [turnstileConfigured, shouldShowCaptcha]);
 
   useEffect(() => {
-    if (!siteKey) {
-      setTurnstileBooting(false);
-      setCaptchaReady(true);
-      return;
-    }
-
+    if (!turnstileConfigured) return;
     if (!shouldShowCaptcha) {
       setTurnstileBooting(false);
       return;
@@ -309,7 +322,7 @@ export default function Claim() {
     }
 
     const script = document.createElement("script");
-    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    script.src = TURNSTILE_SCRIPT_SRC;
     script.async = true;
     script.defer = true;
     script.setAttribute("data-turnstile", "1");
@@ -322,14 +335,19 @@ export default function Claim() {
     };
 
     document.body.appendChild(script);
-  }, [siteKey, shouldShowCaptcha]);
+  }, [turnstileConfigured, shouldShowCaptcha]);
 
   useEffect(() => {
-    if (!siteKey) return;
+    if (!turnstileConfigured) return;
     if (!shouldShowCaptcha) return;
     if (renderedRef.current) return;
 
     let cancelled = false;
+
+    const clearContainer = () => {
+      const el = document.getElementById("turnstile-container");
+      if (el) el.innerHTML = "";
+    };
 
     const syncTokenFromResponseInput = () => {
       try {
@@ -362,8 +380,10 @@ export default function Claim() {
       try {
         setTurnstileBooting(false);
 
+        clearContainer();
+
         const id = ts.render(el, {
-          sitekey: siteKey,
+          sitekey: TURNSTILE_SITE_KEY,
           appearance: "always",
           size: "normal",
           callback: (token: string) => {
@@ -414,7 +434,7 @@ export default function Claim() {
       window.clearInterval(interval);
       window.clearTimeout(timeout);
     };
-  }, [siteKey, shouldShowCaptcha]);
+  }, [turnstileConfigured, shouldShowCaptcha, TURNSTILE_SITE_KEY]);
 
   async function postClaim() {
     const r = await fetch(`${API_BASE}/api/gifts/${publicId}/claim`, {
@@ -445,6 +465,13 @@ export default function Claim() {
     if (!canAttemptClaim) return;
 
     (async () => {
+      if (needsClaimFlow && !turnstileConfigured) {
+        setError("Verification is not configured. Please try again later.");
+        setClaiming(false);
+        setRetryAfterSec(null);
+        return;
+      }
+
       setClaiming(true);
       setError("");
       try {
@@ -502,11 +529,16 @@ export default function Claim() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAmount, retryAfterSec, canAttemptClaim]);
+  }, [hasAmount, retryAfterSec, canAttemptClaim, needsClaimFlow, turnstileConfigured]);
 
   async function handleClaimClick() {
     if (!publicId) return;
     if (!canAttemptClaim) return;
+
+    if (needsClaimFlow && !turnstileConfigured) {
+      setError("Verification is not configured. Please try again later.");
+      return;
+    }
 
     if (shouldShowCaptcha && !captchaReady) {
       setError("Please complete the quick verification below.");
@@ -593,10 +625,7 @@ export default function Claim() {
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
-              <div
-                className="text-sm text-slate-500 mb-2"
-                style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}
-              >
+              <div className="text-sm text-slate-500 mb-2" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
                 thankümail
               </div>
               <div style={{ fontFamily: FONT_TITLE, fontWeight: 800 }} className="text-2xl text-slate-900">
@@ -654,9 +683,7 @@ export default function Claim() {
               </h1>
 
               <p className="mt-2 text-slate-700 text-[15px] leading-relaxed md:text-base">
-                {hasAmount
-                  ? "The note was the heart of it. The gift will finalize shortly."
-                  : "The note was the heart of it."}
+                {hasAmount ? "The note was the heart of it. The gift will finalize shortly." : "The note was the heart of it."}
               </p>
 
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
@@ -690,7 +717,11 @@ export default function Claim() {
   }
 
   const buttonDisabled =
-    !canAttemptClaim || claiming || (shouldShowCaptcha ? !captchaReady : false) || (waitingOnDelay ? true : false);
+    !canAttemptClaim ||
+    claiming ||
+    (needsClaimFlow && !turnstileConfigured) ||
+    (shouldShowCaptcha ? !captchaReady : false) ||
+    (waitingOnDelay ? true : false);
 
   return (
     <div
@@ -753,7 +784,11 @@ export default function Claim() {
                 ) : null}
               </div>
 
-              {shouldShowCaptcha ? (
+              {needsClaimFlow && !turnstileConfigured ? (
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Verification is not configured on this build. Please refresh later.
+                </div>
+              ) : shouldShowCaptcha ? (
                 <div className="mt-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
                     <div id="turnstile-container" className="min-h-[76px] flex items-center justify-center" />
