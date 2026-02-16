@@ -14,12 +14,12 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-13_001";
+const VERSION = "routes_v2026-02-16_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_hard_reject_guest_amount_and_message_preset7";
+  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_hard_reject_guest_amount_and_message_preset7_plus_admin_e2e_jobs";
 
 /* -------------------- REMINDER SENDING -------------------- */
 const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
@@ -92,15 +92,13 @@ function getClientIp(req: Request) {
 }
 
 /* -------------------- TURNSTILE -------------------- */
-async function verifyTurnstile(token: string, req: Request) {
+async function verifyTurnstileToken(token: string, ip: string) {
   const secret = process.env.TURNSTILE_SECRET_KEY || "";
   const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
 
   if (!secret) return { ok: true, mode: "not_configured" as const, codes: [] as string[] };
   if (bypass) return { ok: true, mode: "bypass" as const, codes: [] as string[] };
   if (!token) return { ok: false, mode: "enforced" as const, codes: ["missing-input-response"] as string[] };
-
-  const ip = getClientIp(req);
 
   const form = new URLSearchParams();
   form.set("secret", secret);
@@ -119,9 +117,17 @@ async function verifyTurnstile(token: string, req: Request) {
   return { ok, mode: "enforced" as const, codes };
 }
 
+async function verifyTurnstile(token: string, req: Request) {
+  const ip = getClientIp(req);
+  return verifyTurnstileToken(token, ip);
+}
+
 /* -------------------- HELPERS -------------------- */
 function newPublicId() {
   return crypto.randomBytes(16).toString("hex");
+}
+function newJobId() {
+  return crypto.randomBytes(12).toString("hex");
 }
 function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
@@ -289,6 +295,16 @@ const AdminTestCreateGiftSchema = z.object({
   message: z.string().min(1).max(2000),
   amount: z.number().int().min(1000).max(100000),
   deliver: z.boolean().optional().default(false),
+});
+
+/* -------------------- ADMIN: E2E JOBS (TURNSTILE) -------------------- */
+const AdminE2EStartSchema = z.object({
+  recipientEmail: z.string().email(),
+  senderEmail: z.string().email().optional().or(z.literal("")),
+  presetMessageId: z.number().int().min(1).max(7).optional().default(1),
+  turnstileTokenCreate: z.string().min(1),
+  turnstileTokenClaim: z.string().min(1),
+  waitMs: z.number().int().min(0).max(10 * 60 * 1000).optional(),
 });
 
 /* -------------------- LIMITERS -------------------- */
@@ -505,6 +521,49 @@ function queueGiftDelivery(opts: {
   });
 }
 
+/* -------------------- ADMIN: E2E JOB STATE (IN-MEMORY) -------------------- */
+type E2EJobStatus = "queued" | "created_waiting" | "claiming" | "claimed" | "failed";
+type E2EJob = {
+  jobId: string;
+  status: E2EJobStatus;
+  createdAt: string;
+
+  ip: string;
+  recipientEmail: string;
+  senderEmail: string | null;
+  presetMessageId: number;
+
+  publicId: string | null;
+  claimUrl: string | null;
+
+  minDelaySec: number;
+  waitMs: number;
+
+  turnstileCreateOk: boolean;
+  turnstileClaimOk: boolean | null;
+
+  error: string | null;
+  codes: string[] | null;
+};
+
+const e2eJobs = new Map<string, E2EJob>();
+
+function pruneE2EJobs() {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000; // keep 2h
+
+  e2eJobs.forEach((j, jobId) => {
+    const ms = toMs(j.createdAt);
+    if (ms && ms < cutoff) {
+      e2eJobs.delete(jobId);
+    }
+  });
+}
+
+// Best-effort prune every 10 minutes
+try {
+  setInterval(pruneE2EJobs, 10 * 60 * 1000).unref?.();
+} catch {}
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
   app.use("/api", (req: Request, res: any, next: any) => {
@@ -544,7 +603,252 @@ export function registerRoutes(app: Express): Server {
       routesMarker: ROUTES_MARKER,
       testingAdminToolsEnabled: ENABLE_TESTING_ADMIN_TOOLS,
       registeredAuthMode: "x-user-id (temporary)",
+      adminE2EJobs: true,
     });
+  });
+
+  /* -------------------- ADMIN: E2E START (TURNSTILE CREATE + SCHEDULE CLAIM) -------------------- */
+  app.post("/api/admin/test/e2e/start", async (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+
+    if (!ENABLE_TESTING_ADMIN_TOOLS) {
+      return res.status(403).json({
+        ok: false,
+        error: "Testing admin tools disabled",
+        code: "TESTING_TOOLS_DISABLED",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    const parsed = AdminE2EStartSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+    }
+
+    const ip = getClientIp(req);
+    const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
+    const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
+    const presetMessageId = Number(parsed.data.presetMessageId || 1);
+    const tokenCreate = safeStr(parsed.data.turnstileTokenCreate).trim();
+    const tokenClaim = safeStr(parsed.data.turnstileTokenClaim).trim();
+
+    if (!recipientEmail || !isEmail(recipientEmail)) {
+      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+    }
+    if (isBlockedEmailDomain(recipientEmail)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Recipient email domain not allowed",
+        field: "recipientEmail",
+        code: "BLOCKED_EMAIL_DOMAIN",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    const msg = presetMessageById(presetMessageId);
+    if (!msg) {
+      return res.status(400).json({
+        ok: false,
+        error: "Choose a preset message (1–7)",
+        field: "presetMessageId",
+        code: "PRESET_REQUIRED",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
+    const waitMsDefault = minDelaySec > 0 ? minDelaySec * 1000 + 2_000 : 0;
+    const waitMs = typeof parsed.data.waitMs === "number" ? Math.max(waitMsDefault, Number(parsed.data.waitMs)) : waitMsDefault;
+
+    // Verify Turnstile for CREATE
+    const tCreate = await verifyTurnstileToken(tokenCreate, ip);
+    if (!tCreate.ok) {
+      const codes = tCreate.codes || [];
+      const missing = codes.includes("missing-input-response");
+      return res.status(400).json({
+        ok: false,
+        error: missing ? "Missing CAPTCHA token" : "CAPTCHA failed",
+        field: "turnstileTokenCreate",
+        codes,
+        code: "TURNSTILE_FAILED",
+        version: VERSION,
+        commit: COMMIT,
+      });
+    }
+
+    const jobId = newJobId();
+    const publicId = newPublicId();
+    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
+
+    const job: E2EJob = {
+      jobId,
+      status: "queued",
+      createdAt: new Date().toISOString(),
+
+      ip,
+      recipientEmail,
+      senderEmail,
+      presetMessageId,
+
+      publicId: null,
+      claimUrl: null,
+
+      minDelaySec,
+      waitMs,
+
+      turnstileCreateOk: true,
+      turnstileClaimOk: null,
+
+      error: null,
+      codes: null,
+    };
+
+    e2eJobs.set(jobId, job);
+
+    try {
+      await db.insert(gifts).values({
+        publicId,
+        senderEmail,
+        recipientEmail,
+        recipientPhone: null,
+
+        messageMode: "preset",
+        presetMessageId,
+
+        message: msg,
+
+        amount: null,
+
+        isClaimed: false,
+        reminderCount: 0,
+        lastReminderSentAt: null,
+        returnedToSenderAt: null,
+        claimedAt: null,
+      } as any);
+
+      job.status = "created_waiting";
+      job.publicId = publicId;
+      job.claimUrl = claimUrl;
+      e2eJobs.set(jobId, job);
+
+      logEvent("admin_e2e_created", { jobId, publicId, waitMs, minDelaySec });
+
+      // schedule claim
+      setTimeout(() => {
+        void (async () => {
+          const cur = e2eJobs.get(jobId);
+          if (!cur) return;
+
+          // Re-check gift exists + not claimed/returned
+          cur.status = "claiming";
+          e2eJobs.set(jobId, cur);
+
+          try {
+            const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
+            const gift: any = rows?.[0];
+            if (!gift) {
+              cur.status = "failed";
+              cur.error = "Not found";
+              cur.codes = null;
+              e2eJobs.set(jobId, cur);
+              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "not_found" });
+              return;
+            }
+
+            if (gift.returnedToSenderAt) {
+              cur.status = "failed";
+              cur.error = "Returned to sender";
+              cur.codes = ["RETURNED_TO_SENDER"];
+              e2eJobs.set(jobId, cur);
+              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "returned_to_sender" });
+              return;
+            }
+
+            if (gift.isClaimed) {
+              cur.status = "failed";
+              cur.error = "Already claimed";
+              cur.codes = ["ALREADY_CLAIMED"];
+              e2eJobs.set(jobId, cur);
+              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "already_claimed" });
+              return;
+            }
+
+            // Verify Turnstile for CLAIM
+            const tClaim = await verifyTurnstileToken(tokenClaim, ip);
+            if (!tClaim.ok) {
+              const codes = tClaim.codes || [];
+              cur.status = "failed";
+              cur.turnstileClaimOk = false;
+              cur.error = codes.includes("missing-input-response") ? "Missing CAPTCHA token" : "CAPTCHA failed";
+              cur.codes = codes;
+              e2eJobs.set(jobId, cur);
+              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "turnstile_failed", codes });
+              return;
+            }
+
+            cur.turnstileClaimOk = true;
+            e2eJobs.set(jobId, cur);
+
+            await db
+              .update(gifts)
+              .set({ isClaimed: true, claimedAt: new Date() })
+              .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
+
+            cur.status = "claimed";
+            e2eJobs.set(jobId, cur);
+            logEvent("admin_e2e_claim_ok", { jobId, publicId });
+          } catch (e: any) {
+            const err = safeStr(e?.message) || "Server error";
+            const stack = safeStr(e?.stack) || "";
+            cur.status = "failed";
+            cur.error = err;
+            cur.codes = null;
+            e2eJobs.set(jobId, cur);
+            logEvent("admin_e2e_claim_error", { jobId, publicId, err, stack });
+          }
+        })().catch(() => {});
+      }, waitMs).unref?.();
+    } catch (e: any) {
+      const err = safeStr(e?.message) || "Server error";
+      const stack = safeStr(e?.stack) || "";
+      job.status = "failed";
+      job.error = err;
+      e2eJobs.set(jobId, job);
+      logEvent("admin_e2e_create_error", { jobId, err, stack });
+
+      return res.status(500).json({ ok: false, error: "Server error", detail: err, version: VERSION, commit: COMMIT });
+    }
+
+    return res.json({
+      ok: true,
+      jobId,
+      status: "created_waiting",
+      publicId,
+      claimUrl,
+      minDelaySec,
+      waitMs,
+      pollUrl: `/api/admin/test/e2e/jobs/${jobId}`,
+      version: VERSION,
+      commit: COMMIT,
+    });
+  });
+
+  /* -------------------- ADMIN: E2E JOB STATUS -------------------- */
+  app.get("/api/admin/test/e2e/jobs/:jobId", async (req, res) => {
+    const auth = requireAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+
+    const jobId = safeStr(req.params.jobId).trim();
+    if (!jobId) return res.status(400).json({ ok: false, error: "Invalid jobId", version: VERSION, commit: COMMIT });
+
+    const job = e2eJobs.get(jobId);
+    if (!job) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
+
+    return res.json({ ok: true, job, version: VERSION, commit: COMMIT });
   });
 
   /* -------------------- ADMIN: TEST CREATE (NO TURNSTILE) -------------------- */
