@@ -1,3 +1,6 @@
+// WHERE TO PASTE: shared/schema.ts
+// ACTION: Full file replacement (paste exactly)
+
 import { pgTable, pgEnum, text, serial, integer, boolean, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -105,10 +108,11 @@ export const insertGiftSchema = createInsertSchema(gifts)
     const mode = String(val?.messageMode || "custom");
     if (mode === "preset") {
       const pid = Number(val?.presetMessageId);
-      if (!Number.isInteger(pid) || pid < 1 || pid > 5) {
+      // IMPORTANT: presets are 1..7 (matches client preset carousel + API)
+      if (!Number.isInteger(pid) || pid < 1 || pid > 7) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Choose a preset message (1–5)",
+          message: "Choose a preset message (1–7)",
           path: ["presetMessageId"],
         });
       }
