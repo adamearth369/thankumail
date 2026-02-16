@@ -531,23 +531,13 @@ export default function CreateGiftForm() {
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
               <div className="font-medium mb-1">Sent.</div>
-              <div className="text-sm text-emerald-900/80">
-                We’ve delivered your thankümail to the recipient.
-              </div>
+              <div className="text-sm text-emerald-900/80">We’ve delivered your thankümail to the recipient.</div>
 
               {result.emailSent ? (
-                <div className="mt-2 text-xs text-emerald-900/80">
-                  Email: sent ✓ <span className="text-emerald-900/60">(usually arrives within 1–3 minutes)</span>
-                </div>
+                <div className="mt-2 text-xs text-emerald-900/80">Email: sent ✓</div>
               ) : result.deliveryOk ? (
-                <div className="mt-2 text-xs text-emerald-900/80">
-                  Delivery: queued ✓ <span className="text-emerald-900/60">(may take a couple minutes)</span>
-                </div>
+                <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
-
-              <div className="mt-2 text-[11px] text-emerald-900/70">
-                If they don’t see it, ask them to check Spam/Promotions and search “thankumail”.
-              </div>
 
               {result.deliveryError ? (
                 <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
@@ -574,9 +564,7 @@ export default function CreateGiftForm() {
                 </button>
               </div>
 
-              <div className="mt-2 text-[11px] text-emerald-900/70">
-                For safety, we don’t show the claim link here.
-              </div>
+              <div className="mt-2 text-[11px] text-emerald-900/70">For safety, we don’t show the claim link here.</div>
             </div>
           ) : null}
 
