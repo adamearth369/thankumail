@@ -1,6 +1,7 @@
 import { Switch, Route } from "wouter";
 import Home from "./pages/Home";
 import Claim from "./pages/Claim";
+import TurnstileTool from "./pages/TurnstileTool";
 import NotFound from "./pages/not-found";
 
 function Router() {
@@ -8,6 +9,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/claim/:publicId" component={Claim} />
+      <Route path="/tools/turnstile" component={TurnstileTool} />
       <Route component={NotFound} />
     </Switch>
   );
