@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/pages/Claim.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -113,6 +110,7 @@ export default function Claim() {
   const retryTimerRef = useRef<number | null>(null);
 
   const [error, setError] = useState("");
+  // "ok" = claimed successfully *this session* (do NOT set from initial load)
   const [ok, setOk] = useState(false);
   const [alreadyClaimed, setAlreadyClaimed] = useState(false);
 
@@ -174,6 +172,9 @@ export default function Claim() {
       invalidRef.current = false;
       confettiFiredRef.current = false;
 
+      // IMPORTANT: never carry "just claimed" across refresh
+      setOk(false);
+
       try {
         const r = await fetch(`${API_BASE}/api/gifts/${publicId}`, { method: "GET" });
         const j: any = await safeJson(r);
@@ -193,8 +194,11 @@ export default function Claim() {
         }
 
         setGift(j);
-        setAlreadyClaimed(Boolean(j?.isClaimed));
-        if (Boolean(j?.isClaimed)) setOk(true);
+
+        const claimed = Boolean(j?.isClaimed);
+        setAlreadyClaimed(claimed);
+
+        // If it’s already claimed on load, show "already claimed" state (not the "Received." success screen)
         setError("");
       } catch (e: any) {
         const msg = String(e?.message || "Failed to load thankümail");
@@ -252,67 +256,6 @@ export default function Claim() {
       }
     };
   }, [hasAmount, retryAfterSec]);
-
-  // Auto attempt after countdown hits 0 (gift-amount only)
-  useEffect(() => {
-    if (!hasAmount) return;
-    if (retryAfterSec === null) return;
-    if (retryAfterSec !== 0) return;
-    if (!canAttemptClaim) return;
-
-    (async () => {
-      setClaiming(true);
-      setError("");
-      try {
-        const { r, j } = await postClaim();
-
-        if (j?.__notJson || j?.__badJson) {
-          throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
-        }
-
-        if (!r.ok) {
-          const code = String(j?.code || "");
-          const msg = String(j?.error || "Claim failed");
-
-          if (isInvalidLinkSignal(r.status, code, msg)) {
-            lockInvalidLink();
-            return;
-          }
-
-          if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
-            setAlreadyClaimed(true);
-            setOk(true);
-            setError("");
-            return;
-          }
-
-          if (code === "TURNSTILE_FAILED") {
-            hardResetTurnstile();
-            if (!invalidRef.current) setError("Verification expired — please verify again.");
-            return;
-          }
-
-          throw new Error(msg);
-        }
-
-        setOk(true);
-        setAlreadyClaimed(true);
-        setError("");
-
-        try {
-          const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
-          const jj: any = await safeJson(rr);
-          if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
-        } catch {}
-      } catch (e: any) {
-        if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
-      } finally {
-        setClaiming(false);
-        setRetryAfterSec(null);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAmount, retryAfterSec, canAttemptClaim]);
 
   function hardResetTurnstile() {
     try {
@@ -487,6 +430,85 @@ export default function Claim() {
     return { r, j };
   }
 
+  async function refreshGiftSilently() {
+    try {
+      const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
+      const jj: any = await safeJson(rr);
+      if (rr.ok && !(jj?.__notJson || jj?.__badJson)) {
+        setGift(jj);
+        setAlreadyClaimed(Boolean(jj?.isClaimed));
+      }
+    } catch {}
+  }
+
+  // Auto attempt after countdown hits 0 (gift-amount only)
+  useEffect(() => {
+    if (!hasAmount) return;
+    if (retryAfterSec === null) return;
+    if (retryAfterSec !== 0) return;
+    if (!canAttemptClaim) return;
+
+    (async () => {
+      setClaiming(true);
+      setError("");
+      try {
+        const claimedBefore = Boolean(gift?.isClaimed) || alreadyClaimed;
+
+        const { r, j } = await postClaim();
+
+        if (j?.__notJson || j?.__badJson) {
+          throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
+        }
+
+        if (!r.ok) {
+          const code = String(j?.code || "");
+          const msg = String(j?.error || "Claim failed");
+
+          if (isInvalidLinkSignal(r.status, code, msg)) {
+            lockInvalidLink();
+            return;
+          }
+
+          if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
+            setAlreadyClaimed(true);
+            setOk(false);
+            setError("");
+            await refreshGiftSilently();
+            return;
+          }
+
+          if (code === "TURNSTILE_FAILED") {
+            hardResetTurnstile();
+            if (!invalidRef.current) setError("Verification expired — please verify again.");
+            return;
+          }
+
+          throw new Error(msg);
+        }
+
+        // Some deployments return 200 with isClaimed:true even when already claimed.
+        if (claimedBefore || Boolean(j?.isClaimed && gift?.isClaimed)) {
+          setAlreadyClaimed(true);
+          setOk(false);
+          setError("");
+          await refreshGiftSilently();
+          return;
+        }
+
+        setOk(true);
+        setAlreadyClaimed(true);
+        setError("");
+        await refreshGiftSilently();
+      } catch (e: any) {
+        if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
+      } finally {
+        setClaiming(false);
+        setRetryAfterSec(null);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAmount, retryAfterSec, canAttemptClaim]);
+
   async function handleClaimClick() {
     if (!publicId) return;
     if (!canAttemptClaim) return;
@@ -500,6 +522,8 @@ export default function Claim() {
     setError("");
 
     try {
+      const claimedBefore = Boolean(gift?.isClaimed) || alreadyClaimed;
+
       const { r, j } = await postClaim();
 
       if (j?.__notJson || j?.__badJson) {
@@ -525,8 +549,9 @@ export default function Claim() {
 
         if (r.status === 409 || code === "ALREADY_CLAIMED" || /already claimed/i.test(msg)) {
           setAlreadyClaimed(true);
-          setOk(true);
+          setOk(false);
           setError("");
+          await refreshGiftSilently();
           return;
         }
 
@@ -539,15 +564,20 @@ export default function Claim() {
         throw new Error(msg);
       }
 
+      // 200 OK but already claimed: show claimed state (not success)
+      if (claimedBefore) {
+        setAlreadyClaimed(true);
+        setOk(false);
+        setError("");
+        await refreshGiftSilently();
+        return;
+      }
+
+      // Success this session
       setOk(true);
       setAlreadyClaimed(true);
       setError("");
-
-      try {
-        const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
-        const jj: any = await safeJson(rr);
-        if (rr.ok && !(jj?.__notJson || jj?.__badJson)) setGift(jj);
-      } catch {}
+      await refreshGiftSilently();
     } catch (e: any) {
       if (!invalidRef.current) setError(friendlyError(e?.message || "Claim failed"));
     } finally {
@@ -564,7 +594,10 @@ export default function Claim() {
 
   if (loading) {
     return (
-      <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
+      <div
+        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+      >
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
@@ -584,7 +617,10 @@ export default function Claim() {
 
   if ((error && !gift) || invalidRef.current) {
     return (
-      <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
+      <div
+        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+      >
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 p-6 text-slate-900">
@@ -604,7 +640,10 @@ export default function Claim() {
     }
 
     return (
-      <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
+      <div
+        className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+      >
         <div className="min-h-screen bg-black/40" style={shellStyle}>
           <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
             <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
@@ -612,7 +651,10 @@ export default function Claim() {
                 thankümail
               </div>
 
-              <h1 className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+              <h1
+                className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight"
+                style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
+              >
                 Received.
               </h1>
 
@@ -657,7 +699,10 @@ export default function Claim() {
     (waitingOnDelay ? true : false);
 
   return (
-    <div className="min-h-screen text-white bg-cover bg-center bg-no-repeat" style={{ backgroundImage: "url('/images/hero-background.png')" }}>
+    <div
+      className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
+      style={{ backgroundImage: "url('/images/hero-background.png')" }}
+    >
       <div className="min-h-screen bg-black/40" style={shellStyle}>
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
@@ -665,7 +710,10 @@ export default function Claim() {
               thankümail
             </div>
 
-            <h1 className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight" style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}>
+            <h1
+              className="mt-2 text-3xl md:text-4xl text-slate-900 tracking-tight"
+              style={{ fontFamily: FONT_TITLE, fontWeight: 800 }}
+            >
               A note for you.
             </h1>
 
