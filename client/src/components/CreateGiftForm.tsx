@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -44,7 +47,7 @@ declare global {
           "refresh-timeout"?: "auto" | "manual";
           size?: "normal" | "compact";
           [k: string]: any;
-        }
+        },
       ) => string;
       reset: (widgetId?: string) => void;
       remove: (widgetId?: string) => void;
@@ -116,6 +119,9 @@ export default function CreateGiftForm() {
   // Guest scope: email-only + preset-only + no amount
   const [recipientEmail, setRecipientEmail] = useState("");
 
+  // Abuse-control (hidden): sender email used for rate limits; never shown to recipient
+  const [senderEmail, setSenderEmail] = useState("");
+
   // Default to preset #2 (index 1)
   const [presetIdx, setPresetIdx] = useState<number>(1);
 
@@ -146,14 +152,16 @@ export default function CreateGiftForm() {
 
   const canSubmit = useMemo(() => {
     const re = recipientEmail.trim();
+    const se = senderEmail.trim();
     return (
       !submitting &&
       isEmail(re) &&
+      isEmail(se) &&
       presetOk &&
       token.length >= 20 &&
       TURNSTILE_SITE_KEY.length > 0
     );
-  }, [submitting, recipientEmail, presetOk, token, TURNSTILE_SITE_KEY]);
+  }, [submitting, recipientEmail, senderEmail, presetOk, token, TURNSTILE_SITE_KEY]);
 
   const showRetry =
     fieldError === "turnstile" ||
@@ -317,11 +325,19 @@ export default function CreateGiftForm() {
     setResult(null);
 
     const re = recipientEmail.trim();
+    const se = senderEmail.trim();
 
     if (!isEmail(re)) {
       setSubmitting(false);
       setFieldError("recipientEmail");
       setErrorWithLock("Please enter a valid recipient email.", "none");
+      return;
+    }
+
+    if (!isEmail(se)) {
+      setSubmitting(false);
+      setFieldError("senderEmail");
+      setErrorWithLock("Please enter a valid sender email.", "none");
       return;
     }
 
@@ -346,6 +362,7 @@ export default function CreateGiftForm() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          senderEmail: se,
           recipientEmail: re,
           messageMode: "preset",
           presetMessageId,
@@ -387,6 +404,7 @@ export default function CreateGiftForm() {
       fireConfettiBurst();
 
       setRecipientEmail("");
+      setSenderEmail("");
       setPresetIdx(1);
 
       try {
@@ -421,6 +439,17 @@ export default function CreateGiftForm() {
     <div className="w-full max-w-xl mx-auto">
       <form onSubmit={onSubmit} className="rounded-2xl border border-slate-300 bg-white p-5 shadow-soft text-slate-900">
         <div className="space-y-4">
+          {/* Hidden sender email for abuse limits (not shown in UI) */}
+          <input
+            type="email"
+            autoComplete="email"
+            tabIndex={-1}
+            aria-hidden="true"
+            value={senderEmail}
+            onChange={(e) => setSenderEmail(e.target.value)}
+            className="hidden"
+          />
+
           <div>
             <input
               value={recipientEmail}
@@ -480,7 +509,9 @@ export default function CreateGiftForm() {
                     onClick={() => selectPreset(i)}
                     className={classNames(
                       "px-2 py-1 rounded-full text-xs border transition cursor-pointer",
-                      active ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
+                      active
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
                     )}
                     aria-label={`Select preset ${i + 1}`}
                   >
@@ -539,9 +570,7 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
-              ) : null}
+              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
 
               <div className="mt-3">
                 <button
@@ -550,6 +579,7 @@ export default function CreateGiftForm() {
                     setResult(null);
                     clearErrorsAndUnlock();
                     setRecipientEmail("");
+                    setSenderEmail("");
                     setPresetIdx(1);
                     try {
                       if (widgetIdRef.current && window.turnstile?.reset) {
