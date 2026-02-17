@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: Full file replacement (paste exactly)
+
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -11,7 +14,7 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-16_002";
+const VERSION = "routes_v2026-02-16_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -660,7 +663,8 @@ export function registerRoutes(app: Express): Server {
 
     const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
     const waitMsDefault = minDelaySec > 0 ? minDelaySec * 1000 + 2_000 : 0;
-    const waitMs = typeof parsed.data.waitMs === "number" ? Math.max(waitMsDefault, Number(parsed.data.waitMs)) : waitMsDefault;
+    const waitMs =
+      typeof parsed.data.waitMs === "number" ? Math.max(waitMsDefault, Number(parsed.data.waitMs)) : waitMsDefault;
 
     // Verify Turnstile for CREATE
     const tCreate = await verifyTurnstileToken(tokenCreate, ip);
@@ -710,6 +714,7 @@ export function registerRoutes(app: Express): Server {
     try {
       await db.insert(gifts).values({
         publicId,
+        senderUserId: null,
         senderEmail,
         recipientEmail,
         recipientPhone: null,
@@ -871,19 +876,31 @@ export function registerRoutes(app: Express): Server {
     const deliver = !!parsed.data.deliver;
 
     if (!recipientEmail && !recipientPhone) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        ok: false,
+        error: "Provide a recipient email or phone",
+        field: "recipient",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        ok: false,
+        error: "Phone must be E.164 like +14165551234",
+        field: "recipientPhone",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid recipient email",
+        field: "recipientEmail",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
     if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
       return res.status(400).json({
@@ -902,6 +919,7 @@ export function registerRoutes(app: Express): Server {
     try {
       await db.insert(gifts).values({
         publicId,
+        senderUserId: null,
         senderEmail,
         recipientEmail: recipientEmail || null,
         recipientPhone: recipientPhone || null,
@@ -1009,9 +1027,7 @@ export function registerRoutes(app: Express): Server {
       if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
 
       if (gift.isClaimed) {
-        return res
-          .status(409)
-          .json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+        return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
       if (gift.returnedToSenderAt) {
         return res.status(409).json({
@@ -1079,19 +1095,31 @@ export function registerRoutes(app: Express): Server {
     const markClaimed = !!parsed.data.markClaimed;
 
     if (!recipientEmail && !recipientPhone) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        ok: false,
+        error: "Provide a recipient email or phone",
+        field: "recipient",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        ok: false,
+        error: "Phone must be E.164 like +14165551234",
+        field: "recipientPhone",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid recipient email",
+        field: "recipientEmail",
+        version: VERSION,
+        commit: COMMIT,
+      });
     }
     if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
       return res.status(400).json({
@@ -1111,6 +1139,7 @@ export function registerRoutes(app: Express): Server {
     try {
       await db.insert(gifts).values({
         publicId,
+        senderUserId: null,
         senderEmail,
         recipientEmail: recipientEmail || null,
         recipientPhone: recipientPhone || null,
@@ -1398,6 +1427,7 @@ export function registerRoutes(app: Express): Server {
   app.post("/api/gifts", createGiftLimiter, async (req, res) => {
     const rawBody: any = req.body || {};
     const registered = isRegistered(req);
+    const senderUserId = registered ? getUserId(req) : null;
 
     const parsed = CreateGiftSchema.safeParse(rawBody);
     if (!parsed.success) {
@@ -1695,6 +1725,7 @@ export function registerRoutes(app: Express): Server {
     try {
       await db.insert(gifts).values({
         publicId,
+        senderUserId,
         senderEmail,
         recipientEmail: recipientEmail || null,
         recipientPhone: recipientPhone || null,
