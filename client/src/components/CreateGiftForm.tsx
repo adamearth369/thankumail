@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -55,10 +58,10 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
-const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const TURNSTILE_SCRIPT_SRC =
+  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 // Cloudflare Turnstile "Always Pass" test sitekey (safe for client-side fallback)
-// NOTE: production site should ideally provide VITE_TURNSTILE_SITE_KEY at build time
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 // IMPORTANT: backend expects presetMessageId in [1..7]
@@ -125,13 +128,9 @@ function getTurnstileSiteKey() {
 }
 
 export default function CreateGiftForm() {
-  // Guest scope: email-only + preset-only + no amount
   const [recipientEmail, setRecipientEmail] = useState("");
-
-  // Abuse-control: sender email used for rate limits; never shown to recipient
   const [senderEmail, setSenderEmail] = useState("");
 
-  // Default to preset #2 (index 1)
   const [presetIdx, setPresetIdx] = useState<number>(1);
 
   const [token, setToken] = useState<string>("");
@@ -144,10 +143,6 @@ export default function CreateGiftForm() {
 
   const [lastSentRecipientEmail, setLastSentRecipientEmail] = useState<string>("");
 
-  // Token UX for PowerShell
-  const [copyStatus, setCopyStatus] = useState<string>("");
-  const copyTimerRef = useRef<number | null>(null);
-
   const widgetIdRef = useRef<string | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
@@ -155,15 +150,24 @@ export default function CreateGiftForm() {
 
   const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
 
-  // BRAND: always use the real ü (U+00FC), never combining diaeresis
   const wordmark = "thankümail";
 
-  const presetOk = useMemo(() => presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length, [presetIdx]);
+  const presetOk = useMemo(
+    () => presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length,
+    [presetIdx],
+  );
 
   const canSubmit = useMemo(() => {
     const re = recipientEmail.trim();
     const se = senderEmail.trim();
-    return !submitting && isEmail(re) && isEmail(se) && presetOk && token.length >= 20 && TURNSTILE_SITE_KEY.length > 0;
+    return (
+      !submitting &&
+      isEmail(re) &&
+      isEmail(se) &&
+      presetOk &&
+      token.length >= 20 &&
+      TURNSTILE_SITE_KEY.length > 0
+    );
   }, [submitting, recipientEmail, senderEmail, presetOk, token, TURNSTILE_SITE_KEY]);
 
   const showRetry =
@@ -193,37 +197,6 @@ export default function CreateGiftForm() {
     setPresetIdx(idx);
   }
 
-  function setCopyToast(msg: string) {
-    setCopyStatus(msg);
-    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
-    copyTimerRef.current = window.setTimeout(() => setCopyStatus(""), 1800);
-  }
-
-  async function copyTokenToClipboard() {
-    const t = String(token || "").trim();
-    if (!t) return;
-
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(t);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = t;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        ta.style.top = "-9999px";
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-      }
-      setCopyToast("Token copied");
-    } catch {
-      setCopyToast("Copy failed");
-    }
-  }
-
   useEffect(() => {
     let cancelled = false;
 
@@ -235,7 +208,9 @@ export default function CreateGiftForm() {
         return;
       }
 
-      const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+      const existing = document.querySelector<HTMLScriptElement>(
+        `script[src="${TURNSTILE_SCRIPT_SRC}"]`,
+      );
       if (!existing) {
         const script = document.createElement("script");
         script.src = TURNSTILE_SCRIPT_SRC;
@@ -256,7 +231,10 @@ export default function CreateGiftForm() {
 
       setTurnstileReady(ok);
       if (!ok) {
-        setErrorWithLock("Verification is taking too long to initialize. Please refresh and try again.", "turnstile");
+        setErrorWithLock(
+          "Verification is taking too long to initialize. Please refresh and try again.",
+          "turnstile",
+        );
       }
     }
 
@@ -303,11 +281,8 @@ export default function CreateGiftForm() {
         sitekey,
         theme: "auto",
         size: "normal",
-
-        // IMPORTANT: this creates a hidden input with the token we can copy if needed
         "response-field": true,
         "response-field-name": "cf-turnstile-response",
-
         callback: (t: string) => {
           setToken(String(t || ""));
           if (errorLockRef.current !== "server") {
@@ -488,13 +463,15 @@ export default function CreateGiftForm() {
 
   return (
     <div className="w-full max-w-xl mx-auto">
-      <form onSubmit={onSubmit} className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal">
+      <form
+        onSubmit={onSubmit}
+        className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal"
+      >
         <div className="space-y-4">
           <div className="space-y-1">
             <div className="text-lg font-outfit font-semibold tracking-tight text-tm-charcoal">
               Send a <span className="font-quicksand font-semibold">{wordmark}</span>
             </div>
-            <div className="text-xs text-tm-charcoal/60">Guest mode: preset message + email delivery. No account needed.</div>
           </div>
 
           <div>
@@ -505,13 +482,13 @@ export default function CreateGiftForm() {
               type="email"
               autoComplete="email"
               aria-label="Your email"
-              placeholder="Your email (sender)"
               className={classNames(
                 inputBase,
-                fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
+                fieldError === "senderEmail"
+                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                  : "",
               )}
             />
-            <div className="mt-1 text-[11px] text-tm-charcoal/60">Used only for abuse protection. Not shared with the recipient.</div>
           </div>
 
           <div>
@@ -522,10 +499,11 @@ export default function CreateGiftForm() {
               type="email"
               autoComplete="email"
               aria-label="Recipient email"
-              placeholder="Recipient email"
               className={classNames(
                 inputBase,
-                fieldError === "recipientEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
+                fieldError === "recipientEmail"
+                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                  : "",
               )}
             />
           </div>
@@ -538,29 +516,9 @@ export default function CreateGiftForm() {
               </div>
             </div>
 
-            <div className="flex items-stretch gap-2">
-              <button
-                type="button"
-                aria-label="Previous message"
-                onClick={() => selectPreset(presetIdx - 1)}
-                className="shrink-0 w-10 rounded-xl border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90 cursor-pointer"
-              >
-                ‹
-              </button>
-
-              <div className="flex-1 text-left rounded-xl border px-3 py-3 bg-tm-cream border-tm-charcoal/20">
-                <div className="text-xs text-tm-charcoal/60 mb-1">Preset</div>
-                <div className="text-sm text-tm-charcoal leading-snug">{currentPreset?.text}</div>
-              </div>
-
-              <button
-                type="button"
-                aria-label="Next message"
-                onClick={() => selectPreset(presetIdx + 1)}
-                className="shrink-0 w-10 rounded-xl border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90 cursor-pointer"
-              >
-                ›
-              </button>
+            <div className="text-left rounded-xl border px-3 py-3 bg-tm-cream border-tm-charcoal/20">
+              <div className="text-xs text-tm-charcoal/60 mb-1">Preset</div>
+              <div className="text-sm text-tm-charcoal leading-snug">{currentPreset?.text}</div>
             </div>
 
             <div className="mt-2 flex flex-wrap gap-2">
@@ -617,48 +575,26 @@ export default function CreateGiftForm() {
                 </button>
               </div>
             ) : null}
-
-            <div className="mt-2 rounded-xl border border-tm-charcoal/10 bg-tm-cream/60 px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] text-tm-charcoal/70">PowerShell create helper (use token immediately; single-use)</div>
-                <div className="flex items-center gap-2">
-                  {copyStatus ? <div className="text-[11px] text-tm-charcoal/70">{copyStatus}</div> : null}
-                  <button
-                    type="button"
-                    disabled={!token || token.length < 20}
-                    onClick={copyTokenToClipboard}
-                    className={classNames(
-                      "rounded-lg border px-2 py-1 text-[11px] font-medium",
-                      token && token.length >= 20
-                        ? "border-tm-charcoal/20 bg-white text-tm-charcoal hover:opacity-90 cursor-pointer"
-                        : "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed",
-                    )}
-                  >
-                    Copy token
-                  </button>
-                </div>
-              </div>
-
-              <textarea
-                readOnly
-                value={token || ""}
-                placeholder="Complete the Human check to generate a token…"
-                className="mt-2 w-full h-[72px] resize-none rounded-lg border border-tm-charcoal/15 bg-white px-2 py-2 text-[11px] text-tm-charcoal/80 placeholder:text-tm-charcoal/40"
-              />
-            </div>
           </div>
 
-          {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+          {error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
 
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
               <div className="font-medium mb-1">Sent.</div>
 
               <div className="text-sm text-emerald-900/85">
-                Your thankümail has been sent to <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
+                Your thankümail has been sent to{" "}
+                <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
               </div>
 
-              <div className="mt-2 text-xs text-emerald-900/75">If they don’t see it within a minute, ask them to check Spam or Promotions.</div>
+              <div className="mt-2 text-xs text-emerald-900/75">
+                If they don’t see it within a minute, ask them to check Spam or Promotions.
+              </div>
 
               {result.emailSent ? (
                 <div className="mt-2 text-xs text-emerald-900/80">Email: sent ✓</div>
@@ -666,7 +602,9 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
+              {result.deliveryError ? (
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+              ) : null}
 
               <div className="mt-3">
                 <button
@@ -687,24 +625,6 @@ export default function CreateGiftForm() {
                 >
                   Send another
                 </button>
-              </div>
-
-              <div className="mt-2 text-[11px] text-emerald-900/70">We don’t show the claim link here to avoid confusion.</div>
-            </div>
-          ) : null}
-
-          {!result?.ok ? (
-            <div className="rounded-xl border border-tm-charcoal/10 bg-tm-cream/60 px-3 py-2 text-[12px] text-tm-charcoal/75">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="inline-flex items-center gap-1">
-                  <span className="text-tm-forest">•</span> No account
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <span className="text-tm-forest">•</span> Preset message only
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <span className="text-tm-forest">•</span> Your email isn’t shown to them
-                </span>
               </div>
             </div>
           ) : null}
@@ -727,8 +647,6 @@ export default function CreateGiftForm() {
               </>
             )}
           </button>
-
-          <div className="text-[11px] text-tm-charcoal/60 text-center">Guest mode: preset messages only. No amount. No account.</div>
         </div>
       </form>
     </div>

@@ -32,22 +32,16 @@ export default function Home() {
             </h1>
 
             <div className="mt-3 text-white/95 text-base sm:text-lg font-medium tracking-wide">
-              Anonymous appreciation by email.
+              Anonymous Appreciation
             </div>
 
             <div className="mt-2 text-sm sm:text-base text-white/85">
-              One message. One moment. No account required.
+              No Strings Attached
             </div>
 
             <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[12px] text-white/90">
               <span className="inline-block h-2 w-2 rounded-full bg-emerald-300" />
               Guest mode: preset note + email delivery
-            </div>
-
-            <div className="mt-4 max-w-xl text-white/85 text-sm leading-relaxed">
-              Choose a short thank-you message and send it instantly.
-              <br />
-              The recipient opens it on a private claim page.
             </div>
           </div>
 
