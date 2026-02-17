@@ -1,3 +1,6 @@
+// WHERE TO PASTE: tailwind.config.cjs
+// ACTION: Full file replacement (paste exactly)
+
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
@@ -10,11 +13,12 @@ module.exports = {
     extend: {
       colors: {
         tm: {
-          forest: "#1F3B2C",
-          cream: "#F3EEFF",
-          amber: "#F2B84B",
-          honey: "#E9C46A",
-          charcoal: "#1F2937",
+          forest: "#1F3D2B",
+          cream: "#F6F1E8",
+          amber: "#F3C969",
+          honey: "#D9B44A",
+          charcoal: "#2A2A2A",
+          card: "#FFFFFF",
         },
       },
       borderRadius: {
@@ -25,6 +29,7 @@ module.exports = {
         soft: "0 10px 30px rgba(0,0,0,0.08)",
       },
       fontFamily: {
+        body: ["DM Sans", "ui-sans-serif", "system-ui", "sans-serif"],
         outfit: ["Outfit", "ui-sans-serif", "system-ui", "sans-serif"],
         quicksand: ["Quicksand", "ui-sans-serif", "system-ui", "sans-serif"],
       },
