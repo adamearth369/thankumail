@@ -539,12 +539,12 @@ export default function CreateGiftForm() {
                     type="button"
                     onClick={() => selectPreset(i)}
                     className={active
-                      ? "px-3 py-1 rounded-full text-xs border-2 border-tm-charcoal bg-tm-charcoal text-white shadow-soft ring-2 ring-tm-honey/40"
+                      ? "px-3 py-1 rounded-full text-xs font-semibold border-2 border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40"
                       : "px-3 py-1 rounded-full text-xs border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white"
                     }
                     aria-label={`Select preset ${i + 1}`}
                   >
-                    {i + 1}
+                    <span className={active ? "text-tm-cream" : "text-tm-charcoal"}>{i + 1}</span>
                   </button>
                 );
               })}
