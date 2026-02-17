@@ -78,6 +78,15 @@ const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
   { id: 7, text: "What you did stayed with me. This is my way of saying thank you." },
 ];
 
+const AMOUNT_PRESETS: Array<{ label: string; cents: number }> = [
+  { label: "$25", cents: 2500 },
+  { label: "$50", cents: 5000 },
+  { label: "$100", cents: 10000 },
+  { label: "$250", cents: 25000 },
+  { label: "$500", cents: 50000 },
+  { label: "$1000", cents: 100000 },
+];
+
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
 }
@@ -130,10 +139,11 @@ function getTurnstileSiteKey() {
   }
 }
 
-function dollarsToCents(v: string) {
-  const n = Number(String(v || "").trim());
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.round(n * 100);
+function centsToLabel(cents: number | null | undefined) {
+  const c = Number(cents);
+  if (!Number.isFinite(c) || c <= 0) return "";
+  const dollars = (c / 100).toFixed(0);
+  return `$${dollars}`;
 }
 
 export default function CreateGiftForm() {
@@ -160,7 +170,9 @@ export default function CreateGiftForm() {
 
   const [messageMode, setMessageMode] = useState<"preset" | "custom">("preset");
   const [customMessage, setCustomMessage] = useState<string>("");
-  const [amountDollars, setAmountDollars] = useState<string>("");
+
+  // Amount preset (cents). Optional for registered.
+  const [amountCents, setAmountCents] = useState<number | null>(null);
 
   const [presetIdx, setPresetIdx] = useState<number>(1);
 
@@ -199,7 +211,7 @@ export default function CreateGiftForm() {
     if (!registeredMode) {
       setMessageMode("preset");
       setCustomMessage("");
-      setAmountDollars("");
+      setAmountCents(null);
       setUserId("");
     } else {
       setUserId((prev) => {
@@ -218,12 +230,9 @@ export default function CreateGiftForm() {
 
   const amountOk = useMemo(() => {
     if (!registeredMode) return true;
-    const raw = String(amountDollars || "").trim();
-    if (!raw) return true; // optional for registered
-    const cents = dollarsToCents(raw);
-    if (cents === null) return false;
-    return cents >= 2500 && cents <= 100000;
-  }, [registeredMode, amountDollars]);
+    if (amountCents === null) return true; // optional
+    return amountCents >= 2500 && amountCents <= 100000;
+  }, [registeredMode, amountCents]);
 
   const authOk = useMemo(() => {
     if (!registeredMode) return true;
@@ -476,16 +485,12 @@ export default function CreateGiftForm() {
       }
     }
 
-    if (registeredMode) {
-      const raw = String(amountDollars || "").trim();
-      if (raw) {
-        const cents = dollarsToCents(raw);
-        if (cents === null || cents < 2500 || cents > 100000) {
-          setSubmitting(false);
-          setFieldError("amount");
-          setErrorWithLock("Amount must be between $25 and $1000.", "none");
-          return;
-        }
+    if (registeredMode && amountCents !== null) {
+      if (amountCents < 2500 || amountCents > 100000) {
+        setSubmitting(false);
+        setFieldError("amount");
+        setErrorWithLock("Amount must be between $25 and $1000.", "none");
+        return;
       }
     }
 
@@ -525,9 +530,8 @@ export default function CreateGiftForm() {
       payload.message = String(customMessage || "").trim();
     }
 
-    if (registeredMode) {
-      const raw = String(amountDollars || "").trim();
-      if (raw) payload.amount = dollarsToCents(raw); // cents
+    if (registeredMode && amountCents !== null) {
+      payload.amount = amountCents; // cents
     }
 
     try {
@@ -575,7 +579,7 @@ export default function CreateGiftForm() {
       setSenderEmail("");
       setPresetIdx(1);
       setCustomMessage("");
-      setAmountDollars("");
+      setAmountCents(null);
       setMessageMode(registeredMode ? "custom" : "preset");
 
       try {
@@ -608,6 +612,13 @@ export default function CreateGiftForm() {
 
   const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
 
+  const chipBase =
+    "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer select-none";
+  const chipOn =
+    "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40";
+  const chipOff =
+    "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white";
+
   return (
     <div className="w-full max-w-xl mx-auto">
       <form
@@ -629,24 +640,14 @@ export default function CreateGiftForm() {
                 <button
                   type="button"
                   onClick={() => setRegisteredMode(false)}
-                  className={classNames(
-                    "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer",
-                    !registeredMode
-                      ? "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft"
-                      : "border-tm-charcoal/20 bg-white text-tm-charcoal hover:opacity-90",
-                  )}
+                  className={classNames(chipBase, !registeredMode ? chipOn : chipOff)}
                 >
                   Guest
                 </button>
                 <button
                   type="button"
                   onClick={() => setRegisteredMode(true)}
-                  className={classNames(
-                    "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer",
-                    registeredMode
-                      ? "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft"
-                      : "border-tm-charcoal/20 bg-white text-tm-charcoal hover:opacity-90",
-                  )}
+                  className={classNames(chipBase, registeredMode ? chipOn : chipOff)}
                 >
                   Registered
                 </button>
@@ -655,36 +656,31 @@ export default function CreateGiftForm() {
 
             {registeredMode ? (
               <div className="mt-3">
-                <div className="mb-1 text-xs font-medium text-tm-charcoal/80">User id (temporary)</div>
                 <input
                   value={userId}
                   onChange={(e) => setUserId(e.target.value)}
                   type="text"
                   autoComplete="off"
                   aria-label="User id"
+                  placeholder={`User id (default: ${DEFAULT_DEV_USER_ID})`}
                   className={classNames(
                     inputBase,
-                    fieldError === "userId"
-                      ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                      : "",
+                    fieldError === "userId" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
                   )}
                 />
-                <div className="mt-1 text-[11px] text-tm-charcoal/60">
-                  Default is <span className="font-mono">{DEFAULT_DEV_USER_ID}</span> (backend uses header{" "}
-                  <span className="font-mono">x-user-id</span>).
-                </div>
               </div>
             ) : null}
           </div>
 
+          {/* EMAILS (no duplicate titles; placeholder only) */}
           <div>
-            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Sender email</div>
             <input
               value={senderEmail}
               onChange={(e) => setSenderEmail(e.target.value)}
               type="email"
               autoComplete="email"
               aria-label="Your email"
+              placeholder="Sender email"
               className={classNames(
                 inputBase,
                 fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
@@ -693,13 +689,13 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Recipient email</div>
             <input
               value={recipientEmail}
               onChange={(e) => setRecipientEmail(e.target.value)}
               type="email"
               autoComplete="email"
               aria-label="Recipient email"
+              placeholder="Recipient email"
               className={classNames(
                 inputBase,
                 fieldError === "recipientEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
@@ -716,24 +712,14 @@ export default function CreateGiftForm() {
                   <button
                     type="button"
                     onClick={() => setMessageMode("preset")}
-                    className={classNames(
-                      "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer",
-                      messageMode === "preset"
-                        ? "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft"
-                        : "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90",
-                    )}
+                    className={classNames(chipBase, messageMode === "preset" ? chipOn : chipOff)}
                   >
                     Preset
                   </button>
                   <button
                     type="button"
                     onClick={() => setMessageMode("custom")}
-                    className={classNames(
-                      "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer",
-                      messageMode === "custom"
-                        ? "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft"
-                        : "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90",
-                    )}
+                    className={classNames(chipBase, messageMode === "custom" ? chipOn : chipOff)}
                   >
                     Custom
                   </button>
@@ -742,14 +728,12 @@ export default function CreateGiftForm() {
 
               {messageMode === "custom" ? (
                 <div className="mt-3">
-                  <div className="mb-1 text-xs font-medium text-tm-charcoal/80">
-                    Your message <span className="text-tm-charcoal/60">(max 280)</span>
-                  </div>
                   <textarea
                     value={customMessage}
                     onChange={(e) => setCustomMessage(e.target.value)}
                     rows={5}
                     aria-label="Custom message"
+                    placeholder="Write a short message (max 280)"
                     className={classNames(
                       inputBase,
                       "resize-none py-2",
@@ -757,7 +741,7 @@ export default function CreateGiftForm() {
                     )}
                   />
                   <div className="mt-1 flex items-center justify-between text-[11px] text-tm-charcoal/60">
-                    <span>Keep it simple. One clear line of appreciation.</span>
+                    <span />
                     <span className={customMessage.trim().length > 280 ? "text-red-600" : ""}>
                       {customMessage.trim().length}/280
                     </span>
@@ -778,7 +762,6 @@ export default function CreateGiftForm() {
               </div>
 
               <div className="text-left rounded-xl border px-3 py-3 bg-tm-cream border-tm-charcoal/20">
-                <div className="text-xs text-tm-charcoal/60 mb-1">Preset</div>
                 <div className="text-sm text-tm-charcoal leading-snug">{currentPreset?.text}</div>
               </div>
 
@@ -790,14 +773,17 @@ export default function CreateGiftForm() {
                       key={p.id}
                       type="button"
                       onClick={() => selectPreset(i)}
-                      className={
-                        active
-                          ? "px-3 py-1 rounded-full text-xs font-semibold border-2 border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40"
-                          : "px-3 py-1 rounded-full text-xs border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white"
-                      }
+                      className={active ? chipOn : chipOff}
+                      style={{
+                        padding: "0.25rem 0.75rem",
+                        borderRadius: "9999px",
+                        borderWidth: active ? 2 : 1,
+                        fontSize: "0.75rem",
+                        fontWeight: active ? 700 : 400,
+                      }}
                       aria-label={`Select preset ${i + 1}`}
                     >
-                      <span className="text-current">{i + 1}</span>
+                      {i + 1}
                     </button>
                   );
                 })}
@@ -805,26 +791,43 @@ export default function CreateGiftForm() {
             </div>
           ) : null}
 
-          {/* AMOUNT (registered only; optional; dollars input; sent as cents) */}
+          {/* AMOUNT PRESETS (registered only; optional) */}
           {registeredMode ? (
             <div>
-              <div className="mb-1 text-xs font-medium text-tm-charcoal/80">
-                Gift amount <span className="text-tm-charcoal/60">(optional, $25 min)</span>
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div className="text-sm font-medium text-tm-charcoal">Gift amount (optional)</div>
+                <div className="text-xs text-tm-charcoal/60">
+                  {amountCents === null ? "none" : centsToLabel(amountCents)}
+                </div>
               </div>
-              <input
-                value={amountDollars}
-                onChange={(e) => setAmountDollars(e.target.value)}
-                inputMode="decimal"
-                aria-label="Amount in dollars"
-                className={classNames(
-                  inputBase,
-                  fieldError === "amount" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
-                )}
-                placeholder=""
-              />
-              <div className="mt-1 text-[11px] text-tm-charcoal/60">
-                Enter dollars (example: 25). We send cents to the API.
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAmountCents(null)}
+                  className={classNames(chipBase, amountCents === null ? chipOn : chipOff)}
+                >
+                  None
+                </button>
+
+                {AMOUNT_PRESETS.map((a) => {
+                  const active = amountCents === a.cents;
+                  return (
+                    <button
+                      key={a.cents}
+                      type="button"
+                      onClick={() => setAmountCents(a.cents)}
+                      className={classNames(chipBase, active ? chipOn : chipOff)}
+                    >
+                      {a.label}
+                    </button>
+                  );
+                })}
               </div>
+
+              {fieldError === "amount" ? (
+                <div className="mt-2 text-xs text-red-600">Choose an amount between $25 and $1000.</div>
+              ) : null}
             </div>
           ) : null}
 
@@ -900,7 +903,7 @@ export default function CreateGiftForm() {
                     setSenderEmail("");
                     setPresetIdx(1);
                     setCustomMessage("");
-                    setAmountDollars("");
+                    setAmountCents(null);
                     setLastSentRecipientEmail("");
                     try {
                       if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
