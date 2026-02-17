@@ -459,7 +459,8 @@ export default function CreateGiftForm() {
     "placeholder:text-tm-charcoal/60 placeholder:opacity-100 border-tm-charcoal/30 " +
     "focus:border-tm-charcoal focus:ring-2 focus:ring-tm-honey/30";
 
-  const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
+  const currentPreset =
+    PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -475,7 +476,9 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Sender email</div>
+            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">
+              Sender email
+            </div>
             <input
               value={senderEmail}
               onChange={(e) => setSenderEmail(e.target.value)}
@@ -492,7 +495,9 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">Recipient email</div>
+            <div className="mb-1 text-xs font-medium text-tm-charcoal/80">
+              Recipient email
+            </div>
             <input
               value={recipientEmail}
               onChange={(e) => setRecipientEmail(e.target.value)}
@@ -510,7 +515,9 @@ export default function CreateGiftForm() {
 
           <div>
             <div className="flex items-center justify-between gap-3 mb-2">
-              <div className="text-sm font-medium text-tm-charcoal">Choose a message</div>
+              <div className="text-sm font-medium text-tm-charcoal">
+                Choose a message
+              </div>
               <div className="text-xs text-tm-charcoal/60">
                 {presetIdx + 1}/{PRESET_MESSAGES.length}
               </div>
@@ -518,7 +525,9 @@ export default function CreateGiftForm() {
 
             <div className="text-left rounded-xl border px-3 py-3 bg-tm-cream border-tm-charcoal/20">
               <div className="text-xs text-tm-charcoal/60 mb-1">Preset</div>
-              <div className="text-sm text-tm-charcoal leading-snug">{currentPreset?.text}</div>
+              <div className="text-sm text-tm-charcoal leading-snug">
+                {currentPreset?.text}
+              </div>
             </div>
 
             <div className="mt-2 flex flex-wrap gap-2">
@@ -529,12 +538,10 @@ export default function CreateGiftForm() {
                     key={p.id}
                     type="button"
                     onClick={() => selectPreset(i)}
-                    className={classNames(
-                      "px-2 py-1 rounded-full text-xs border transition cursor-pointer",
-                      active
-                        ? "border-tm-charcoal bg-tm-charcoal text-tm-cream"
-                        : "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:opacity-90",
-                    )}
+                    className={active
+                      ? "px-3 py-1 rounded-full text-xs border-2 border-tm-charcoal bg-tm-charcoal text-white shadow-soft ring-2 ring-tm-honey/40"
+                      : "px-3 py-1 rounded-full text-xs border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white"
+                    }
                     aria-label={`Select preset ${i + 1}`}
                   >
                     {i + 1}
@@ -545,7 +552,9 @@ export default function CreateGiftForm() {
           </div>
 
           <div>
-            <div className="text-sm font-medium text-tm-charcoal mb-2">Human check</div>
+            <div className="text-sm font-medium text-tm-charcoal mb-2">
+              Human check
+            </div>
 
             <div
               id="tm-turnstile"
@@ -589,7 +598,10 @@ export default function CreateGiftForm() {
 
               <div className="text-sm text-emerald-900/85">
                 Your thankümail has been sent to{" "}
-                <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
+                <span className="font-medium">
+                  {lastSentRecipientEmail || "the recipient"}
+                </span>
+                .
               </div>
 
               <div className="mt-2 text-xs text-emerald-900/75">
@@ -597,13 +609,19 @@ export default function CreateGiftForm() {
               </div>
 
               {result.emailSent ? (
-                <div className="mt-2 text-xs text-emerald-900/80">Email: sent ✓</div>
+                <div className="mt-2 text-xs text-emerald-900/80">
+                  Email: sent ✓
+                </div>
               ) : result.deliveryOk ? (
-                <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
+                <div className="mt-2 text-xs text-emerald-900/80">
+                  Delivery: queued ✓
+                </div>
               ) : null}
 
               {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+                <div className="mt-2 text-emerald-900/80">
+                  Delivery note: {result.deliveryError}
+                </div>
               ) : null}
 
               <div className="mt-3">
@@ -617,7 +635,8 @@ export default function CreateGiftForm() {
                     setPresetIdx(1);
                     setLastSentRecipientEmail("");
                     try {
-                      if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
+                      if (widgetIdRef.current && window.turnstile?.reset)
+                        window.turnstile.reset(widgetIdRef.current);
                     } catch {}
                     setToken("");
                   }}
@@ -643,7 +662,8 @@ export default function CreateGiftForm() {
               "Sending…"
             ) : (
               <>
-                Send <span className="font-quicksand font-semibold">{wordmark}</span>
+                Send{" "}
+                <span className="font-quicksand font-semibold">{wordmark}</span>
               </>
             )}
           </button>
