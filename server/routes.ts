@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -14,7 +11,7 @@ import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./ema
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-16_001";
+const VERSION = "routes_v2026-02-16_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -165,20 +162,16 @@ function rawContainsForbiddenGuestKeys(raw: any) {
 const CreateGiftSchema = z
   .object({
     senderEmail: z.string().email().optional().or(z.literal("")),
-
     recipientEmail: z.string().email().optional().or(z.literal("")),
     recipientPhone: z
       .string()
       .optional()
       .or(z.literal(""))
       .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
-
     messageMode: z.enum(["preset", "custom"]).default("preset"),
     presetMessageId: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
-
     message: z.string().optional().or(z.literal("")).default(""),
     amount: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
-
     turnstileToken: z.string().optional().or(z.literal("")),
     debugBypassLimits: z.string().optional().or(z.literal("")),
   })
@@ -610,7 +603,8 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- ADMIN: E2E START (TURNSTILE CREATE + SCHEDULE CLAIM) -------------------- */
   app.post("/api/admin/test/e2e/start", async (req, res) => {
     const auth = requireAdmin(req);
-    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+    if (!auth.ok)
+      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
 
     if (!ENABLE_TESTING_ADMIN_TOOLS) {
       return res.status(403).json({
@@ -624,7 +618,9 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminE2EStartSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const ip = getClientIp(req);
@@ -635,7 +631,9 @@ export function registerRoutes(app: Express): Server {
     const tokenClaim = safeStr(parsed.data.turnstileTokenClaim).trim();
 
     if (!recipientEmail || !isEmail(recipientEmail)) {
-      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
     if (isBlockedEmailDomain(recipientEmail)) {
       return res.status(400).json({
@@ -840,7 +838,8 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- ADMIN: E2E JOB STATUS -------------------- */
   app.get("/api/admin/test/e2e/jobs/:jobId", async (req, res) => {
     const auth = requireAdmin(req);
-    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+    if (!auth.ok)
+      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
 
     const jobId = safeStr(req.params.jobId).trim();
     if (!jobId) return res.status(400).json({ ok: false, error: "Invalid jobId", version: VERSION, commit: COMMIT });
@@ -854,11 +853,14 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- ADMIN: TEST CREATE (NO TURNSTILE) -------------------- */
   app.post("/api/admin/test/create-gift", async (req, res) => {
     const auth = requireAdmin(req);
-    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+    if (!auth.ok)
+      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
 
     const parsed = AdminTestCreateGiftSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
@@ -869,13 +871,19 @@ export function registerRoutes(app: Express): Server {
     const deliver = !!parsed.data.deliver;
 
     if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
-      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
       return res.status(400).json({
@@ -935,11 +943,14 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- ADMIN: GIFTS RESET (FAST TESTING) -------------------- */
   app.post("/api/admin/gifts/reset", async (req, res) => {
     const auth = requireAdmin(req);
-    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+    if (!auth.ok)
+      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
 
     const parsed = AdminGiftResetSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const publicId = safeStr(parsed.data.publicId).trim();
@@ -971,7 +982,8 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- ADMIN: ADVANCE lastReminderSentAt BACKWARDS (SAFE TESTING-ONLY) -------------------- */
   app.post("/api/admin/gifts/advance-reminder-time", async (req, res) => {
     const auth = requireAdmin(req);
-    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+    if (!auth.ok)
+      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
 
     if (!ENABLE_TESTING_ADMIN_TOOLS) {
       return res.status(403).json({
@@ -985,7 +997,9 @@ export function registerRoutes(app: Express): Server {
 
     const parsed = AdminAdvanceReminderTimeSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const publicId = safeStr(parsed.data.publicId).trim();
@@ -995,14 +1009,28 @@ export function registerRoutes(app: Express): Server {
       if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
 
       if (gift.isClaimed) {
-        return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+        return res
+          .status(409)
+          .json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
       }
       if (gift.returnedToSenderAt) {
-        return res.status(409).json({ ok: false, error: "Already returned to sender", code: "ALREADY_RETURNED", version: VERSION, commit: COMMIT });
+        return res.status(409).json({
+          ok: false,
+          error: "Already returned to sender",
+          code: "ALREADY_RETURNED",
+          version: VERSION,
+          commit: COMMIT,
+        });
       }
       const reminderCount = Number(gift.reminderCount || 0);
       if (reminderCount >= REMINDER_MAX) {
-        return res.status(409).json({ ok: false, error: "Reminder max already reached", code: "REMINDER_MAX_REACHED", version: VERSION, commit: COMMIT });
+        return res.status(409).json({
+          ok: false,
+          error: "Reminder max already reached",
+          code: "REMINDER_MAX_REACHED",
+          version: VERSION,
+          commit: COMMIT,
+        });
       }
 
       const gapMs = getReminderGapMs();
@@ -1015,7 +1043,15 @@ export function registerRoutes(app: Express): Server {
 
       logEvent("admin_advance_reminder_time", { publicId, reminderCount, newLast: newLast.toISOString(), gapMs });
 
-      return res.json({ ok: true, publicId, reminderCount, lastReminderSentAt: newLast.toISOString(), gapMs, version: VERSION, commit: COMMIT });
+      return res.json({
+        ok: true,
+        publicId,
+        reminderCount,
+        lastReminderSentAt: newLast.toISOString(),
+        gapMs,
+        version: VERSION,
+        commit: COMMIT,
+      });
     } catch (e: any) {
       logEvent("admin_advance_reminder_time_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
       return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
@@ -1025,11 +1061,14 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- ADMIN: GIFTS SEED (FAST TESTING, NO TURNSTILE) -------------------- */
   app.post("/api/admin/gifts/seed", async (req, res) => {
     const auth = requireAdmin(req);
-    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+    if (!auth.ok)
+      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
 
     const parsed = AdminGiftSeedSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
@@ -1040,13 +1079,19 @@ export function registerRoutes(app: Express): Server {
     const markClaimed = !!parsed.data.markClaimed;
 
     if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
     }
     if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && !isEmail(recipientEmail)) {
-      return res.status(400).json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
     }
     if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
       return res.status(400).json({
@@ -1092,17 +1137,21 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- ADMIN: REMINDERS (TARGETABLE) -------------------- */
   app.post("/api/admin/reminders/send", async (req, res) => {
     const auth = requireAdmin(req);
-    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
+    if (!auth.ok)
+      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
 
     const parsed = AdminRemindersSchema.safeParse(req.body || {});
     if (!parsed.success) {
-      return res.status(400).json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
     }
 
     const dryRun = !!parsed.data.dryRun;
     const limit = Number(parsed.data.limit) || 25;
 
-    const olderThanMinutesRaw = typeof parsed.data.olderThanMinutes === "number" ? Number(parsed.data.olderThanMinutes) : null;
+    const olderThanMinutesRaw =
+      typeof parsed.data.olderThanMinutes === "number" ? Number(parsed.data.olderThanMinutes) : null;
     const olderThanHoursRaw = typeof parsed.data.olderThanHours === "number" ? Number(parsed.data.olderThanHours) : 24;
 
     const olderThanMs =
@@ -1478,9 +1527,6 @@ export function registerRoutes(app: Express): Server {
       } else {
         // Registered: if amount included, enforce auth + min $25
         if (amountCents !== null && Number.isFinite(amountCents) && amountCents > 0) {
-          if (!registered) {
-            return res.status(401).json({ error: "Authentication required", code: "AUTH_REQUIRED", version: VERSION, commit: COMMIT });
-          }
           if (!Number.isFinite(amountCents) || amountCents <= 0) {
             return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
           }
