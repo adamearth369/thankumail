@@ -64,6 +64,9 @@ const TURNSTILE_SCRIPT_SRC =
 // Cloudflare Turnstile "Always Pass" test sitekey (safe for client-side fallback)
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
+// TEMP registered user id default
+const DEFAULT_DEV_USER_ID = "dev-1";
+
 // IMPORTANT: backend expects presetMessageId in [1..7]
 const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
   { id: 1, text: "I just wanted you to know how much you are appreciated. Thank you for being you." },
@@ -148,9 +151,10 @@ export default function CreateGiftForm() {
 
   const [userId, setUserId] = useState<string>(() => {
     try {
-      return localStorage.getItem("tm_user_id") || "";
+      const saved = (localStorage.getItem("tm_user_id") || "").trim();
+      return saved || DEFAULT_DEV_USER_ID;
     } catch {
-      return "";
+      return DEFAULT_DEV_USER_ID;
     }
   });
 
@@ -186,7 +190,7 @@ export default function CreateGiftForm() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("tm_user_id", userId || "");
+      localStorage.setItem("tm_user_id", (userId || "").trim());
     } catch {}
   }, [userId]);
 
@@ -197,13 +201,15 @@ export default function CreateGiftForm() {
       setCustomMessage("");
       setAmountDollars("");
       setUserId("");
+    } else {
+      setUserId((prev) => {
+        const v = String(prev || "").trim();
+        return v ? v : DEFAULT_DEV_USER_ID;
+      });
     }
   }, [registeredMode]);
 
-  const presetOk = useMemo(
-    () => presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length,
-    [presetIdx],
-  );
+  const presetOk = useMemo(() => presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length, [presetIdx]);
 
   const customOk = useMemo(() => {
     const msg = String(customMessage || "").trim();
@@ -291,9 +297,7 @@ export default function CreateGiftForm() {
         return;
       }
 
-      const existing = document.querySelector<HTMLScriptElement>(
-        `script[src="${TURNSTILE_SCRIPT_SRC}"]`,
-      );
+      const existing = document.querySelector<HTMLScriptElement>(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
       if (!existing) {
         const script = document.createElement("script");
         script.src = TURNSTILE_SCRIPT_SRC;
@@ -666,7 +670,8 @@ export default function CreateGiftForm() {
                   )}
                 />
                 <div className="mt-1 text-[11px] text-tm-charcoal/60">
-                  This is a temporary dev switch (backend uses header <span className="font-mono">x-user-id</span>).
+                  Default is <span className="font-mono">{DEFAULT_DEV_USER_ID}</span> (backend uses header{" "}
+                  <span className="font-mono">x-user-id</span>).
                 </div>
               </div>
             ) : null}
@@ -785,9 +790,10 @@ export default function CreateGiftForm() {
                       key={p.id}
                       type="button"
                       onClick={() => selectPreset(i)}
-                      className={active
-                        ? "px-3 py-1 rounded-full text-xs font-semibold border-2 border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40"
-                        : "px-3 py-1 rounded-full text-xs border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white"
+                      className={
+                        active
+                          ? "px-3 py-1 rounded-full text-xs font-semibold border-2 border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40"
+                          : "px-3 py-1 rounded-full text-xs border border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white"
                       }
                       aria-label={`Select preset ${i + 1}`}
                     >
