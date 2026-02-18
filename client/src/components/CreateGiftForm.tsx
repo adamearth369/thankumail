@@ -58,14 +58,12 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
-const TURNSTILE_SCRIPT_SRC =
-  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 // Cloudflare Turnstile "Always Pass" test sitekey (safe for client-side fallback)
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
-// TEMP registered user id default
-const DEFAULT_DEV_USER_ID = "dev-1";
+const SESSION_KEY = "tm_session_token";
 
 // IMPORTANT: backend expects presetMessageId in [1..7]
 const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
@@ -146,27 +144,20 @@ function centsToLabel(cents: number | null | undefined) {
   return `$${dollars}`;
 }
 
+function getSessionToken() {
+  try {
+    return String(localStorage.getItem(SESSION_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export default function CreateGiftForm() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [senderEmail, setSenderEmail] = useState("");
 
-  // Registered stub (backend uses x-user-id)
-  const [registeredMode, setRegisteredMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("tm_registered_mode") === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  const [userId, setUserId] = useState<string>(() => {
-    try {
-      const saved = (localStorage.getItem("tm_user_id") || "").trim();
-      return saved || DEFAULT_DEV_USER_ID;
-    } catch {
-      return DEFAULT_DEV_USER_ID;
-    }
-  });
+  const [sessionToken, setSessionToken] = useState<string>(() => getSessionToken());
+  const isRegistered = Boolean(sessionToken);
 
   const [messageMode, setMessageMode] = useState<"preset" | "custom">("preset");
   const [customMessage, setCustomMessage] = useState<string>("");
@@ -194,32 +185,25 @@ export default function CreateGiftForm() {
   const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
   const wordmark = "thankümail";
 
+  // Keep UI aligned with locked scope:
+  // Guests: preset-only, no amount
+  // Registered: preset/custom, amount optional
   useEffect(() => {
-    try {
-      localStorage.setItem("tm_registered_mode", registeredMode ? "true" : "false");
-    } catch {}
-  }, [registeredMode]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("tm_user_id", (userId || "").trim());
-    } catch {}
-  }, [userId]);
-
-  // If guest, force preset + clear registered-only fields
-  useEffect(() => {
-    if (!registeredMode) {
+    if (!isRegistered) {
       setMessageMode("preset");
       setCustomMessage("");
       setAmountCents(null);
-      setUserId("");
-    } else {
-      setUserId((prev) => {
-        const v = String(prev || "").trim();
-        return v ? v : DEFAULT_DEV_USER_ID;
-      });
     }
-  }, [registeredMode]);
+  }, [isRegistered]);
+
+  // Cross-tab/session updates
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === SESSION_KEY) setSessionToken(getSessionToken());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const presetOk = useMemo(() => presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length, [presetIdx]);
 
@@ -229,21 +213,15 @@ export default function CreateGiftForm() {
   }, [customMessage]);
 
   const amountOk = useMemo(() => {
-    if (!registeredMode) return true;
+    if (!isRegistered) return true;
     if (amountCents === null) return true; // optional
     return amountCents >= 2500 && amountCents <= 100000;
-  }, [registeredMode, amountCents]);
-
-  const authOk = useMemo(() => {
-    if (!registeredMode) return true;
-    return String(userId || "").trim().length > 0;
-  }, [registeredMode, userId]);
+  }, [isRegistered, amountCents]);
 
   const canSubmit = useMemo(() => {
     const re = recipientEmail.trim();
     const se = senderEmail.trim();
-
-    const msgOk = messageMode === "preset" ? presetOk : customOk;
+    const msgOk = isRegistered ? (messageMode === "preset" ? presetOk : customOk) : presetOk;
 
     return (
       !submitting &&
@@ -251,7 +229,6 @@ export default function CreateGiftForm() {
       isEmail(se) &&
       msgOk &&
       amountOk &&
-      authOk &&
       token.length >= 20 &&
       TURNSTILE_SITE_KEY.length > 0
     );
@@ -259,11 +236,11 @@ export default function CreateGiftForm() {
     submitting,
     recipientEmail,
     senderEmail,
+    isRegistered,
     messageMode,
     presetOk,
     customOk,
     amountOk,
-    authOk,
     token,
     TURNSTILE_SITE_KEY,
   ]);
@@ -459,17 +436,7 @@ export default function CreateGiftForm() {
       return;
     }
 
-    if (registeredMode) {
-      const uid = String(userId || "").trim();
-      if (!uid) {
-        setSubmitting(false);
-        setFieldError("userId");
-        setErrorWithLock("Registered mode requires a user id (temporary auth).", "none");
-        return;
-      }
-    }
-
-    if (messageMode === "custom") {
+    if (isRegistered && messageMode === "custom") {
       const msg = String(customMessage || "").trim();
       if (!msg) {
         setSubmitting(false);
@@ -485,7 +452,7 @@ export default function CreateGiftForm() {
       }
     }
 
-    if (registeredMode && amountCents !== null) {
+    if (isRegistered && amountCents !== null) {
       if (amountCents < 2500 || amountCents > 100000) {
         setSubmitting(false);
         setFieldError("amount");
@@ -512,26 +479,30 @@ export default function CreateGiftForm() {
     const presetMessageId = PRESET_MESSAGES[presetIdx]?.id ?? 2;
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (registeredMode) {
-      const uid = String(userId || "").trim();
-      if (uid) headers["x-user-id"] = uid;
-    }
+    const st = getSessionToken();
+    if (st) headers["Authorization"] = `Bearer ${st}`;
 
     const payload: any = {
       senderEmail: se,
       recipientEmail: re,
-      messageMode,
       turnstileToken: token,
     };
 
-    if (messageMode === "preset") {
+    // Locked scope enforcement on client:
+    if (!st) {
+      payload.messageMode = "preset";
       payload.presetMessageId = presetMessageId;
+      // no amount
     } else {
-      payload.message = String(customMessage || "").trim();
-    }
+      payload.messageMode = messageMode;
 
-    if (registeredMode && amountCents !== null) {
-      payload.amount = amountCents; // cents
+      if (messageMode === "preset") {
+        payload.presetMessageId = presetMessageId;
+      } else {
+        payload.message = String(customMessage || "").trim();
+      }
+
+      if (amountCents !== null) payload.amountCents = amountCents;
     }
 
     try {
@@ -580,7 +551,7 @@ export default function CreateGiftForm() {
       setPresetIdx(1);
       setCustomMessage("");
       setAmountCents(null);
-      setMessageMode(registeredMode ? "custom" : "preset");
+      setMessageMode("preset");
 
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
@@ -605,6 +576,16 @@ export default function CreateGiftForm() {
     }
   }
 
+  function signOut() {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+    } catch {}
+    setSessionToken("");
+    setMessageMode("preset");
+    setCustomMessage("");
+    setAmountCents(null);
+  }
+
   const inputBase =
     "w-full rounded-xl border px-3 py-2 outline-none bg-tm-cream text-tm-charcoal " +
     "placeholder:text-tm-charcoal/60 placeholder:opacity-100 border-tm-charcoal/30 " +
@@ -612,12 +593,10 @@ export default function CreateGiftForm() {
 
   const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
 
-  const chipBase =
-    "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer select-none";
+  const chipBase = "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer select-none";
   const chipOn =
     "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40";
-  const chipOff =
-    "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white";
+  const chipOff = "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white";
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -632,47 +611,36 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
-          {/* MODE TOGGLE */}
+          {/* AUTH STRIP */}
           <div className="rounded-2xl border border-tm-charcoal/15 bg-tm-cream px-3 py-3">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-medium text-tm-charcoal">Mode</div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setRegisteredMode(false)}
-                  className={classNames(chipBase, !registeredMode ? chipOn : chipOff)}
-                >
-                  Guest
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRegisteredMode(true)}
-                  className={classNames(chipBase, registeredMode ? chipOn : chipOff)}
-                >
-                  Registered
-                </button>
+              <div className="text-sm font-medium text-tm-charcoal">
+                {isRegistered ? "Registered mode" : "Guest mode"}
               </div>
+
+              {isRegistered ? (
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className={classNames(chipBase, chipOff)}
+                >
+                  Sign out
+                </button>
+              ) : (
+                <a href="/login" className={classNames(chipBase, chipOn)}>
+                  Sign in
+                </a>
+              )}
             </div>
 
-            {registeredMode ? (
-              <div className="mt-3">
-                <input
-                  value={userId}
-                  onChange={(e) => setUserId(e.target.value)}
-                  type="text"
-                  autoComplete="off"
-                  aria-label="User id"
-                  placeholder={`User id (default: ${DEFAULT_DEV_USER_ID})`}
-                  className={classNames(
-                    inputBase,
-                    fieldError === "userId" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
-                  )}
-                />
-              </div>
-            ) : null}
+            <div className="mt-2 text-xs text-tm-charcoal/70">
+              {isRegistered
+                ? "Custom message + optional gift amounts are unlocked."
+                : "Guests can send preset messages only (no amount)."}
+            </div>
           </div>
 
-          {/* EMAILS (no duplicate titles; placeholder only) */}
+          {/* EMAILS */}
           <div>
             <input
               value={senderEmail}
@@ -683,7 +651,9 @@ export default function CreateGiftForm() {
               placeholder="Sender email"
               className={classNames(
                 inputBase,
-                fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
+                fieldError === "senderEmail"
+                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                  : "",
               )}
             />
           </div>
@@ -698,13 +668,15 @@ export default function CreateGiftForm() {
               placeholder="Recipient email"
               className={classNames(
                 inputBase,
-                fieldError === "recipientEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
+                fieldError === "recipientEmail"
+                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                  : "",
               )}
             />
           </div>
 
-          {/* MESSAGE MODE (registered only can choose) */}
-          {registeredMode ? (
+          {/* MESSAGE MODE (registered only) */}
+          {isRegistered ? (
             <div className="rounded-2xl border border-tm-charcoal/15 bg-white p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm font-medium text-tm-charcoal">Message</div>
@@ -737,7 +709,9 @@ export default function CreateGiftForm() {
                     className={classNames(
                       inputBase,
                       "resize-none py-2",
-                      fieldError === "message" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
+                      fieldError === "message"
+                        ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                        : "",
                     )}
                   />
                   <div className="mt-1 flex items-center justify-between text-[11px] text-tm-charcoal/60">
@@ -752,7 +726,7 @@ export default function CreateGiftForm() {
           ) : null}
 
           {/* PRESET SELECTOR (guest always + registered when preset) */}
-          {(!registeredMode || messageMode === "preset") ? (
+          {(!isRegistered || messageMode === "preset") ? (
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="text-sm font-medium text-tm-charcoal">Choose a message</div>
@@ -792,7 +766,7 @@ export default function CreateGiftForm() {
           ) : null}
 
           {/* AMOUNT PRESETS (registered only; optional) */}
-          {registeredMode ? (
+          {isRegistered ? (
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="text-sm font-medium text-tm-charcoal">Gift amount (optional)</div>
@@ -826,7 +800,9 @@ export default function CreateGiftForm() {
               </div>
 
               {fieldError === "amount" ? (
-                <div className="mt-2 text-xs text-red-600">Choose an amount between $25 and $1000.</div>
+                <div className="mt-2 text-xs text-red-600">
+                  Choose one of: 25, 50, 100, 250, 500, 1000.
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -906,7 +882,8 @@ export default function CreateGiftForm() {
                     setAmountCents(null);
                     setLastSentRecipientEmail("");
                     try {
-                      if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
+                      if (widgetIdRef.current && window.turnstile?.reset)
+                        window.turnstile.reset(widgetIdRef.current);
                     } catch {}
                     setToken("");
                   }}
