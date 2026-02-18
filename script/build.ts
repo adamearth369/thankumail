@@ -18,6 +18,12 @@ function envTrue(v: string | undefined) {
   return String(v || "").toLowerCase() === "true";
 }
 
+function copyIfExists(src: string, dest: string) {
+  if (!fs.existsSync(src)) return;
+  ensureDir(path.dirname(dest));
+  fs.copyFileSync(src, dest);
+}
+
 async function main() {
   const root = process.cwd();
   const distDir = path.resolve(root, "dist");
@@ -70,6 +76,11 @@ async function main() {
       "zod",
     ],
   });
+
+  // Ensure disposable domains file is present in the runtime artifact
+  const srcDisposable = path.resolve(root, "server", "disposableDomains.txt");
+  copyIfExists(srcDisposable, path.resolve(distDir, "server", "disposableDomains.txt"));
+  copyIfExists(srcDisposable, path.resolve(distDir, "disposableDomains.txt"));
 
   console.log("server build complete");
 }
