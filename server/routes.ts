@@ -7,18 +7,19 @@ import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { and, asc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
+import dns from "node:dns/promises";
 
 import { db } from "./db";
 import { gifts, users, authMagicLinks, authSessions } from "@shared/schema";
 import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-17_002";
+const VERSION = "routes_v2026-02-17_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1";
 
 /* -------------------- AMOUNTS -------------------- */
 const ALLOWED_AMOUNTS_DOLLARS = [25, 50, 100, 250, 500, 1000] as const;
@@ -29,6 +30,22 @@ const MIN_AMOUNT_CENTS_REGISTERED = 25 * 100;
 const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const TURNSTILE_SECRET_KEY = (process.env.TURNSTILE_SECRET_KEY || "").trim();
 const TURNSTILE_BYPASS = String(process.env.TURNSTILE_BYPASS || "false").toLowerCase() === "true";
+
+/* -------------------- AUTH HARDENING -------------------- */
+const AUTH_MAGIC_LINK_TTL_MS = 10 * 60 * 1000; // 10 minutes (requested)
+const AUTH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const AUTH_RETURN_TOKEN =
+  String(process.env.AUTH_RETURN_TOKEN ?? "true").toLowerCase() === "true"; // dev-friendly; set false to never return token
+const AUTH_MX_VALIDATE_ENABLED =
+  String(process.env.AUTH_MX_VALIDATE_ENABLED ?? "false").toLowerCase() === "true";
+
+// Disposable email prep: optional comma-separated domain list (exact domains), e.g. "mailinator.com,tempmail.com"
+const DISPOSABLE_EMAIL_DOMAINS = new Set(
+  String(process.env.DISPOSABLE_EMAIL_DOMAINS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 /* -------------------- LIMITS -------------------- */
 const DAILY_LIMIT_IP = Math.max(0, Number(process.env.DAILY_LIMIT_IP ?? 10));
@@ -69,6 +86,35 @@ function moneyToCents(dollars: number) {
   return Number.isFinite(cents) ? cents : 0;
 }
 
+function normalizeEmail(e: string) {
+  return String(e || "").trim().toLowerCase();
+}
+
+function extractDomain(email: string) {
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return "";
+  return email.slice(at + 1).trim().toLowerCase();
+}
+
+function isDisposableEmail(email: string) {
+  const d = extractDomain(email);
+  if (!d) return false;
+  if (!DISPOSABLE_EMAIL_DOMAINS.size) return false;
+  return DISPOSABLE_EMAIL_DOMAINS.has(d);
+}
+
+async function mxLooksValid(domain: string) {
+  if (!AUTH_MX_VALIDATE_ENABLED) return { ok: true, reason: "disabled" as const };
+  if (!domain) return { ok: false, reason: "no-domain" as const };
+  try {
+    const mx = await dns.resolveMx(domain);
+    if (!Array.isArray(mx) || mx.length === 0) return { ok: false, reason: "no-mx" as const };
+    return { ok: true, reason: "ok" as const };
+  } catch {
+    return { ok: false, reason: "dns-failed" as const };
+  }
+}
+
 async function verifyTurnstile(turnstileToken: string, remoteip: string) {
   if (!TURNSTILE_SECRET_KEY) {
     return { ok: true, mode: "disabled" as const, codes: [] as string[] };
@@ -99,6 +145,11 @@ function isAdmin(req: Request) {
   }
   const x = String(req.headers["x-admin-token"] || "").trim();
   return Boolean(x && x === ADMIN_TOKEN);
+}
+
+function shouldRequireTurnstile() {
+  // Most logical: enforce when configured and not bypassing
+  return Boolean(TURNSTILE_SECRET_KEY) && !TURNSTILE_BYPASS;
 }
 
 /* -------------------- DAILY COUNTS -------------------- */
@@ -208,9 +259,16 @@ const limiterCreateGift = rateLimit({
   legacyHeaders: false,
 });
 
-const limiterAuth = rateLimit({
+const limiterAuthRequest = rateLimit({
   windowMs: 60_000,
-  max: 20,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const limiterAuthConsume = rateLimit({
+  windowMs: 60_000,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -247,6 +305,14 @@ export function registerRoutes(app: Express): Server {
         mode: TURNSTILE_SECRET_KEY ? (TURNSTILE_BYPASS ? "bypass" : "enforced") : "disabled",
       },
 
+      auth: {
+        magicLinkTtlMs: AUTH_MAGIC_LINK_TTL_MS,
+        sessionTtlMs: AUTH_SESSION_TTL_MS,
+        returnToken: AUTH_RETURN_TOKEN,
+        mxValidateEnabled: AUTH_MX_VALIDATE_ENABLED,
+        disposableListSize: DISPOSABLE_EMAIL_DOMAINS.size,
+      },
+
       limits: {
         dailyLimitIp: DAILY_LIMIT_IP,
         dailyLimitSender: DAILY_LIMIT_SENDER,
@@ -272,8 +338,8 @@ export function registerRoutes(app: Express): Server {
     });
   });
 
-  /* -------------------- AUTH: MAGIC LINK -------------------- */
-  app.post("/api/auth/request", limiterAuth, async (req, res) => {
+  /* -------------------- AUTH: MAGIC LINK (HARDENED) -------------------- */
+  app.post("/api/auth/request", limiterAuthRequest, async (req, res) => {
     try {
       const ip = getIp(req);
       const parsed = zAuthRequest.safeParse(req.body || {});
@@ -286,10 +352,32 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      const email = String(parsed.data.email || "").trim().toLowerCase();
-      const turnstileToken = parsed.data.turnstileToken;
+      const email = normalizeEmail(parsed.data.email);
+      const domain = extractDomain(email);
+      const turnstileToken = String(parsed.data.turnstileToken || "").trim();
 
-      const v = await verifyTurnstile(String(turnstileToken || ""), ip);
+      if (!domain) {
+        return res.status(400).json({
+          error: "Invalid email",
+          field: "email",
+          code: "INVALID_EMAIL",
+          version: VERSION,
+        });
+      }
+
+      // Require Turnstile when configured and not bypassing
+      if (shouldRequireTurnstile()) {
+        if (!turnstileToken) {
+          return res.status(400).json({
+            error: "Missing CAPTCHA token",
+            field: "turnstileToken",
+            code: "TURNSTILE_REQUIRED",
+            version: VERSION,
+          });
+        }
+      }
+
+      const v = await verifyTurnstile(turnstileToken, ip);
       if (!v.ok) {
         return res.status(400).json({
           error: "Missing or invalid CAPTCHA token",
@@ -300,24 +388,32 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Ensure user exists (users.id is TEXT hex)
-      const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
-
-      let userId = String(existing?.[0]?.id || "");
-      if (!userId) {
-        userId = crypto.randomBytes(16).toString("hex");
-        await db.insert(users).values({
-          id: userId,
-          email,
-          createdAt: now(),
-          lastLoginAt: null,
+      // Disposable email blocking (prep) — if configured, enforce now
+      if (isDisposableEmail(email)) {
+        return res.status(400).json({
+          error: "Email provider not supported",
+          field: "email",
+          code: "DISPOSABLE_EMAIL_BLOCKED",
+          version: VERSION,
         });
       }
 
-      // Store magic link (table stores email, not userId)
+      // MX validation hook (optional)
+      const mx = await mxLooksValid(domain);
+      if (!mx.ok) {
+        return res.status(400).json({
+          error: "Email domain not deliverable",
+          field: "email",
+          code: "MX_INVALID",
+          reason: mx.reason,
+          version: VERSION,
+        });
+      }
+
+      // Create one-time token (store only hash)
       const rawToken = randomToken(24);
       const tokenHash = sha256Hex(rawToken);
-      const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+      const expiresAt = new Date(Date.now() + AUTH_MAGIC_LINK_TTL_MS);
       const ua = String(req.headers["user-agent"] || "").slice(0, 500);
 
       await db.insert(authMagicLinks).values({
@@ -330,9 +426,21 @@ export function registerRoutes(app: Express): Server {
         createdAt: now(),
       });
 
+      // IMPORTANT: inbox ownership is proven only on /consume; no session here.
+      // If your email-sending layer handles auth emails elsewhere, keep this response shape stable.
+
+      if (AUTH_RETURN_TOKEN) {
+        return res.json({
+          ok: true,
+          token: rawToken,
+          expiresAt: expiresAt.toISOString(),
+          version: VERSION,
+        });
+      }
+
       return res.json({
         ok: true,
-        token: rawToken,
+        sent: true,
         expiresAt: expiresAt.toISOString(),
         version: VERSION,
       });
@@ -346,7 +454,7 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post("/api/auth/consume", limiterAuth, async (req, res) => {
+  app.post("/api/auth/consume", limiterAuthConsume, async (req, res) => {
     try {
       const parsed = zAuthConsume.safeParse(req.body || {});
       if (!parsed.success) {
@@ -360,42 +468,91 @@ export function registerRoutes(app: Express): Server {
 
       const tokenHash = sha256Hex(parsed.data.token);
 
-      const row = await db
-        .select({
-          id: authMagicLinks.id,
-          email: authMagicLinks.email,
-          expiresAt: authMagicLinks.expiresAt,
-          consumedAt: authMagicLinks.consumedAt,
-        })
-        .from(authMagicLinks)
-        .where(eq(authMagicLinks.tokenHash, tokenHash))
-        .limit(1);
+      // Atomically consume (prevents reuse)
+      const consumed = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(authMagicLinks)
+          .set({ consumedAt: now() })
+          .where(
+            and(
+              eq(authMagicLinks.tokenHash, tokenHash),
+              isNull(authMagicLinks.consumedAt),
+              gtTime(authMagicLinks.expiresAt, new Date())
+            )
+          )
+          .returning({
+            id: authMagicLinks.id,
+            email: authMagicLinks.email,
+            expiresAt: authMagicLinks.expiresAt,
+          });
 
-      const link = row?.[0];
-      if (!link) {
+        if (updated?.length) {
+          return { ok: true as const, email: String(updated[0].email || "").trim().toLowerCase() };
+        }
+
+        // Determine reason for failure (invalid vs used vs expired)
+        const row = await tx
+          .select({
+            consumedAt: authMagicLinks.consumedAt,
+            expiresAt: authMagicLinks.expiresAt,
+          })
+          .from(authMagicLinks)
+          .where(eq(authMagicLinks.tokenHash, tokenHash))
+          .limit(1);
+
+        const link = row?.[0];
+        if (!link) return { ok: false as const, code: "MAGIC_LINK_INVALID" as const };
+        if (link.consumedAt) return { ok: false as const, code: "MAGIC_LINK_USED" as const };
+        if (link.expiresAt && new Date(link.expiresAt).getTime() <= Date.now())
+          return { ok: false as const, code: "MAGIC_LINK_EXPIRED" as const };
+
+        return { ok: false as const, code: "MAGIC_LINK_INVALID" as const };
+      });
+
+      if (!consumed.ok) {
+        const msg =
+          consumed.code === "MAGIC_LINK_USED"
+            ? "Link already used"
+            : consumed.code === "MAGIC_LINK_EXPIRED"
+              ? "Link expired"
+              : "Invalid or expired link";
+
         return res.status(400).json({
-          error: "Invalid or expired link",
-          code: "MAGIC_LINK_INVALID",
-          version: VERSION,
-        });
-      }
-      if (link.consumedAt) {
-        return res.status(400).json({
-          error: "Link already used",
-          code: "MAGIC_LINK_USED",
-          version: VERSION,
-        });
-      }
-      if (link.expiresAt && new Date(link.expiresAt).getTime() <= Date.now()) {
-        return res.status(400).json({
-          error: "Link expired",
-          code: "MAGIC_LINK_EXPIRED",
+          error: msg,
+          code: consumed.code,
           version: VERSION,
         });
       }
 
-      // Ensure user exists for that email
-      const email = String(link.email || "").trim().toLowerCase();
+      const email = normalizeEmail(consumed.email);
+      const domain = extractDomain(email);
+
+      // Re-run disposable/MX checks here too (defense-in-depth)
+      if (!domain) {
+        return res.status(400).json({
+          error: "Invalid email",
+          code: "INVALID_EMAIL",
+          version: VERSION,
+        });
+      }
+      if (isDisposableEmail(email)) {
+        return res.status(400).json({
+          error: "Email provider not supported",
+          code: "DISPOSABLE_EMAIL_BLOCKED",
+          version: VERSION,
+        });
+      }
+      const mx = await mxLooksValid(domain);
+      if (!mx.ok) {
+        return res.status(400).json({
+          error: "Email domain not deliverable",
+          code: "MX_INVALID",
+          reason: mx.reason,
+          version: VERSION,
+        });
+      }
+
+      // Ensure user exists (ownership proven now)
       const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
 
       let userId = String(existing?.[0]?.id || "");
@@ -409,14 +566,14 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
+      // Issue session token (only after verification)
       const sessionToken = randomToken(32);
       const sessionHash = sha256Hex(sessionToken);
-      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const expiresAt = new Date(Date.now() + AUTH_SESSION_TTL_MS);
       const ip = getIp(req);
       const ua = String(req.headers["user-agent"] || "").slice(0, 500);
 
       await db.transaction(async (tx) => {
-        await tx.update(authMagicLinks).set({ consumedAt: now() }).where(eq(authMagicLinks.id, link.id));
         await tx.insert(authSessions).values({
           userId,
           sessionHash,
@@ -426,6 +583,7 @@ export function registerRoutes(app: Express): Server {
           userAgent: ua || null,
           createdAt: now(),
         });
+
         await tx.update(users).set({ lastLoginAt: now() }).where(eq(users.id, userId));
       });
 
@@ -554,8 +712,7 @@ export function registerRoutes(app: Express): Server {
 
       // Message enforcement
       let finalMessageMode: "preset" | "custom" = (messageMode as any) || "preset";
-      let finalPresetMessageId: number | null =
-        presetMessageId == null ? null : Number(presetMessageId);
+      let finalPresetMessageId: number | null = presetMessageId == null ? null : Number(presetMessageId);
       let finalMessage: string = message ? String(message).trim() : "";
 
       if (!isRegistered) {
@@ -640,9 +797,7 @@ export function registerRoutes(app: Express): Server {
       // Create gift
       const publicId = crypto.randomBytes(16).toString("hex");
       const claimUrl =
-        (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") +
-        "/" +
-        publicId;
+        (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") + "/" + publicId;
 
       const inserted = await db
         .insert(gifts)
@@ -671,6 +826,7 @@ export function registerRoutes(app: Express): Server {
         .returning({ id: gifts.id });
 
       const giftId = Number(inserted?.[0]?.id || 0);
+      void giftId;
 
       // Send gift email (best-effort)
       let emailSent = false;
@@ -883,9 +1039,7 @@ export function registerRoutes(app: Express): Server {
         }
 
         const claimUrl =
-          (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") +
-          "/" +
-          pid;
+          (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") + "/" + pid;
 
         try {
           await sendReminderEmail({
@@ -998,4 +1152,10 @@ export function registerRoutes(app: Express): Server {
 
   const httpServer = createServer(app);
   return httpServer;
+}
+
+/* -------------------- DRIZZLE HELPERS -------------------- */
+function gtTime(col: any, d: Date) {
+  // drizzle-orm helper wrapper to keep this file self-contained
+  return sql`${col} > ${d}`;
 }
