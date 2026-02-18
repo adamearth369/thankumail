@@ -16,12 +16,12 @@ import { gifts, users, authMagicLinks, authSessions } from "@shared/schema";
 import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-18_001";
+const VERSION = "routes_v2026-02-18_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v1";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v2";
 
 /* -------------------- AMOUNTS -------------------- */
 const ALLOWED_AMOUNTS_DOLLARS = [25, 50, 100, 250, 500, 1000] as const;
@@ -45,11 +45,27 @@ const AUTH_MX_VALIDATE_ENABLED =
  * Disposable emails:
  * - Primary source: server/disposableDomains.txt (one domain per line)
  * - Optional overrides: DISPOSABLE_EMAIL_DOMAINS env (comma-separated exact domains)
+ *
+ * Note: In production (Render), runtime CWD + dist layout can vary.
+ * We attempt a robust set of locations.
  */
-function loadDisposableDomainsFromFile(): Set<string> {
+function loadDisposableDomainsFromFile(): { set: Set<string>; loadedFrom: string | null } {
+  const cwd = process.cwd();
+
   const candidates = [
-    path.resolve(process.cwd(), "server", "disposableDomains.txt"),
-    path.resolve(process.cwd(), "disposableDomains.txt"),
+    // repo-root style
+    path.resolve(cwd, "server", "disposableDomains.txt"),
+    path.resolve(cwd, "disposableDomains.txt"),
+
+    // dist shipped artifacts (common on Render)
+    path.resolve(cwd, "dist", "server", "disposableDomains.txt"),
+    path.resolve(cwd, "dist", "disposableDomains.txt"),
+
+    // relative to this compiled file location (best effort)
+    path.resolve(__dirname, "server", "disposableDomains.txt"),
+    path.resolve(__dirname, "disposableDomains.txt"),
+    path.resolve(__dirname, "..", "server", "disposableDomains.txt"),
+    path.resolve(__dirname, "..", "disposableDomains.txt"),
   ];
 
   for (const p of candidates) {
@@ -62,15 +78,17 @@ function loadDisposableDomainsFromFile(): Set<string> {
         .filter(Boolean)
         .filter((s) => !s.startsWith("#"))
         .filter((s) => !s.startsWith("//"));
-      return new Set(lines);
+      return { set: new Set(lines), loadedFrom: p };
     } catch {
       // ignore and fall through
     }
   }
-  return new Set();
+  return { set: new Set(), loadedFrom: null };
 }
 
-const DISPOSABLE_EMAIL_DOMAINS_FILE = loadDisposableDomainsFromFile();
+const DISPOSABLE_FILE = loadDisposableDomainsFromFile();
+const DISPOSABLE_EMAIL_DOMAINS_FILE = DISPOSABLE_FILE.set;
+const DISPOSABLE_EMAIL_DOMAINS_FILE_PATH = DISPOSABLE_FILE.loadedFrom;
 
 const DISPOSABLE_EMAIL_DOMAINS_ENV = new Set(
   String(process.env.DISPOSABLE_EMAIL_DOMAINS || "")
@@ -349,6 +367,7 @@ export function registerRoutes(app: Express): Server {
         disposableListSize: DISPOSABLE_EMAIL_DOMAINS.size,
         disposableFileLoaded: DISPOSABLE_EMAIL_DOMAINS_FILE.size > 0,
         disposableEnvLoaded: DISPOSABLE_EMAIL_DOMAINS_ENV.size > 0,
+        disposableFilePath: DISPOSABLE_EMAIL_DOMAINS_FILE_PATH,
       },
 
       limits: {
