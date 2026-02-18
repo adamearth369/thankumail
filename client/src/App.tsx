@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/App.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import { Switch, Route } from "wouter";
 
 import Home from "./pages/Home";
@@ -8,6 +5,7 @@ import Claim from "./pages/Claim";
 import TurnstileTool from "./pages/turnstile-tool";
 import NotFound from "./pages/not-found";
 
+// FIXED PATHS (files live in client/src, not pages)
 import Login from "./Login";
 import AuthConsume from "./AuthConsume";
 
