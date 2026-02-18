@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/App.tsx
+// ACTION: Full file replacement
+
 import { Switch, Route } from "wouter";
 
 import Home from "./pages/Home";
@@ -5,9 +8,9 @@ import Claim from "./pages/Claim";
 import TurnstileTool from "./pages/turnstile-tool";
 import NotFound from "./pages/not-found";
 
-// FIXED PATHS (files live in client/src, not pages)
-import Login from "./Login";
-import AuthConsume from "./AuthConsume";
+// FIX: correct folder (Render Linux build is case-sensitive)
+import Login from "./pages/Login";
+import AuthConsume from "./pages/AuthConsume";
 
 export default function App() {
   return (
