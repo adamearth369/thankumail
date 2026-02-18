@@ -12,6 +12,45 @@ function isE164(s: string) {
 /* -------------------- ENUMS -------------------- */
 export const messageModeEnum = pgEnum("message_mode", ["preset", "custom"]);
 
+/* -------------------- AUTH TABLES (MAGIC LINK) -------------------- */
+/**
+ * NOTE:
+ * - We use text IDs so we can generate IDs server-side (crypto hex) without relying on uuid extensions.
+ * - Email is stored normalized (lowercased/trimmed) at write time in routes.
+ */
+export const users = pgTable("users", {
+  id: text("id").primaryKey(), // server-generated (hex)
+  email: text("email").notNull().unique(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+});
+
+export const authMagicLinks = pgTable("auth_magic_links", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull(), // normalized email
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const authSessions = pgTable("auth_sessions", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(), // references users.id (soft ref to avoid migration coupling)
+  sessionHash: text("session_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 /* -------------------- TABLES -------------------- */
 export const gifts = pgTable("gifts", {
   id: serial("id").primaryKey(),
@@ -138,3 +177,7 @@ export const insertGiftSchema = createInsertSchema(gifts)
 
 export type Gift = typeof gifts.$inferSelect;
 export type InsertGift = z.infer<typeof insertGiftSchema>;
+
+export type User = typeof users.$inferSelect;
+export type AuthMagicLink = typeof authMagicLinks.$inferSelect;
+export type AuthSession = typeof authSessions.$inferSelect;
