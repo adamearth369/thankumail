@@ -1,10 +1,13 @@
+// WHERE TO PASTE: server/index.ts
+// ACTION: Full file replacement (paste exactly)
+
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import path from "path";
 import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-02-11_001";
+const INDEX_VERSION = "api_index_v2026-02-17_001";
 
 /* -------------------- APP -------------------- */
 const app: Express = express();
@@ -15,16 +18,35 @@ app.set("trust proxy", 1);
 /* -------------------- CORS (THANKUMAIL.COM -> API) -------------------- */
 const ALLOWED_ORIGINS = new Set<string>(["https://thankumail.com", "https://www.thankumail.com"]);
 
-app.use((req: Request, res: Response, next: NextFunction) => {
+function setCors(req: Request, res: Response) {
   const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
 
   if (origin && ALLOWED_ORIGINS.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-admin-token");
-  }
 
+    // Allow standard methods + preflight
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+
+    // IMPORTANT: include headers the browser may send
+    // - authorization (registered sessions)
+    // - x-user-id (your client currently sends this)
+    // - x-admin-token (admin endpoints)
+    // - content-type (json)
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, x-user-id, x-admin-token",
+    );
+
+    // optional, but helps reduce repeated preflights
+    res.setHeader("Access-Control-Max-Age", "600");
+  }
+}
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  setCors(req, res);
+
+  // Always end preflight with correct headers
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
