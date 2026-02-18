@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Login.tsx
+// ACTION: Full file replacement
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 
@@ -13,8 +16,9 @@ type ApiError = {
 
 type AuthRequestOk = {
   ok: true;
-  token: string;
+  token?: string;
   expiresAt: string;
+  sent?: boolean;
   version?: string;
 };
 
@@ -42,6 +46,7 @@ declare global {
       ) => string;
       reset: (widgetId?: string) => void;
       remove: (widgetId?: string) => void;
+      getResponse?: (widgetId?: string) => string;
     };
   }
 }
@@ -166,10 +171,11 @@ export default function Login() {
         sitekey,
         theme: "auto",
         size: "normal",
-        "response-field": true,
-        "response-field-name": "cf-turnstile-response",
+        // CRITICAL: do NOT use response-field on React forms; rely on callbacks + getResponse
+        "response-field": false,
         callback: (t: string) => {
-          setToken(String(t || ""));
+          const tt = String(t || "").trim();
+          setToken(tt);
           setError("");
         },
         "expired-callback": () => setToken(""),
@@ -200,6 +206,19 @@ export default function Login() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnstileReady, TURNSTILE_SITE_KEY]);
 
+  function readTurnstileToken() {
+    const fromState = String(token || "").trim();
+    if (fromState) return fromState;
+
+    try {
+      const wid = widgetIdRef.current || undefined;
+      const t = String(window.turnstile?.getResponse?.(wid) || "").trim();
+      if (t) return t;
+    } catch {}
+
+    return "";
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
@@ -212,7 +231,9 @@ export default function Login() {
       setError("Enter a valid email.");
       return;
     }
-    if (!token) {
+
+    const t = readTurnstileToken();
+    if (!t) {
       setSubmitting(false);
       setError("Please complete the verification.");
       return;
@@ -222,7 +243,7 @@ export default function Login() {
       const resp = await fetch(`${API_BASE}/api/auth/request`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: em, turnstileToken: token }),
+        body: JSON.stringify({ email: em, turnstileToken: t }),
       });
 
       let data: any = null;
@@ -265,7 +286,7 @@ export default function Login() {
     "placeholder:text-tm-charcoal/60 placeholder:opacity-100 border-tm-charcoal/30 " +
     "focus:border-tm-charcoal focus:ring-2 focus:ring-tm-honey/30";
 
-  const canSubmit = !submitting && isEmail(email) && token.length >= 20;
+  const canSubmit = !submitting && isEmail(email) && readTurnstileToken().length >= 20;
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -299,20 +320,27 @@ export default function Login() {
 
           {result?.ok ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-              <div className="font-medium">Magic link token created.</div>
-              <div className="mt-2 break-all text-xs text-emerald-900/80">
-                Token: <span className="font-mono">{result.token}</span>
-              </div>
-              <div className="mt-2 text-xs text-emerald-900/70">Expires: {result.expiresAt}</div>
+              <div className="font-medium">{result.token ? "Magic link token created." : "Magic link sent."}</div>
 
-              <div className="mt-3">
-                <Link
-                  href={`/auth/consume?token=${encodeURIComponent(result.token)}`}
-                  className="inline-block rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-50"
-                >
-                  Consume token now
-                </Link>
-              </div>
+              {result.token ? (
+                <>
+                  <div className="mt-2 break-all text-xs text-emerald-900/80">
+                    Token: <span className="font-mono">{result.token}</span>
+                  </div>
+                  <div className="mt-2 text-xs text-emerald-900/70">Expires: {result.expiresAt}</div>
+
+                  <div className="mt-3">
+                    <Link
+                      href={`/auth/consume?token=${encodeURIComponent(result.token)}`}
+                      className="inline-block rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-50"
+                    >
+                      Consume token now
+                    </Link>
+                  </div>
+                </>
+              ) : (
+                <div className="mt-2 text-xs text-emerald-900/70">Expires: {result.expiresAt}</div>
+              )}
             </div>
           ) : null}
 
