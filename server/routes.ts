@@ -4,1871 +4,996 @@
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
-import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { eq, and, gte, asc, lte, isNull } from "drizzle-orm";
+import { z } from "zod";
+import { and, asc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 
 import { db } from "./db";
-import { gifts } from "@shared/schema";
+import { gifts, users, authMagicLinks, authSessions } from "@shared/schema";
 import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
-import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-16_003";
+const VERSION = "routes_v2026-02-17_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_custom_or_preset_min25_v1_hard_reject_guest_amount_and_message_preset7_plus_admin_e2e_jobs";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1";
 
-/* -------------------- REMINDER SENDING -------------------- */
-const REMINDER_SENDING_ENABLED = (process.env.REMINDER_SENDING_ENABLED || "true").toLowerCase() !== "false";
-
-/* -------------------- TESTING ADMIN TOOLS -------------------- */
-const ENABLE_TESTING_ADMIN_TOOLS = (process.env.ENABLE_TESTING_ADMIN_TOOLS || "").toLowerCase() === "true";
-
-/* -------------------- STRUCTURED LOGGING -------------------- */
-function logEvent(event: string, fields: Record<string, any> = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
-}
-function safeStr(v: any) {
-  return typeof v === "string" ? v : "";
-}
-function toMs(d: any) {
-  const t = d instanceof Date ? d.getTime() : new Date(d).getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-/* -------------------- AUTH (TEMP STUB FOR REGISTERED) -------------------- */
-/**
- * TEMP: "registered" is indicated by header `x-user-id`.
- * Frontend does not send this yet. This allows deterministic backend gating now.
- */
-function getUserId(req: Request) {
-  const v = safeStr(req.headers["x-user-id"]).trim();
-  return v || null;
-}
-function isRegistered(req: Request) {
-  return !!getUserId(req);
-}
-
-/* -------------------- PRESET MESSAGES (LOCKED v1) -------------------- */
-const PRESET_MESSAGES = [
-  "I just wanted you to know how much you are appreciated. Thank you for being you.",
-  "Your support made a bigger difference than you realize. I’m truly grateful.",
-  "You showed up when it mattered most. That means everything. Thank you.",
-  "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you.",
-  "You mattered more in that moment than you probably realized. Thank you.",
-  "What you did made a positive difference for those around you. I’m grateful. Thank you.",
-  "What you did stayed with me. This is my way of saying thank you.",
-];
-
-function presetMessageById(id: number) {
-  const i = Number(id);
-  if (!Number.isInteger(i) || i < 1 || i > PRESET_MESSAGES.length) return null;
-  return PRESET_MESSAGES[i - 1];
-}
-
-/* -------------------- CLAIM SITE BASE URL -------------------- */
-function getClaimSiteBaseUrl(req: Request) {
-  const env = process.env.PUBLIC_SITE_URL || process.env.PUBLIC_CLAIM_BASE_URL || "";
-  if (env) return env.replace(/\/+$/, "");
-
-  const hard = "https://thankumail.com";
-  if (hard) return hard.replace(/\/+$/, "");
-
-  const proto = (req.headers["x-forwarded-proto"] || "https").toString();
-  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
-  return `${proto}://${host}`.replace(/\/+$/, "");
-}
-
-/* -------------------- IP -------------------- */
-function getClientIp(req: Request) {
-  const cf = safeStr(req.headers["cf-connecting-ip"]);
-  if (cf) return cf;
-  const xff = safeStr(req.headers["x-forwarded-for"]);
-  if (xff) return xff.split(",")[0].trim();
-  return safeStr((req.socket as any)?.remoteAddress);
-}
+/* -------------------- AMOUNTS -------------------- */
+const ALLOWED_AMOUNTS_DOLLARS = [25, 50, 100, 250, 500, 1000] as const;
+const ALLOWED_AMOUNTS_CENTS = new Set(ALLOWED_AMOUNTS_DOLLARS.map((d) => d * 100));
+const MIN_AMOUNT_CENTS_REGISTERED = 25 * 100;
 
 /* -------------------- TURNSTILE -------------------- */
-async function verifyTurnstileToken(token: string, ip: string) {
-  const secret = process.env.TURNSTILE_SECRET_KEY || "";
-  const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
+const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const TURNSTILE_SECRET_KEY = (process.env.TURNSTILE_SECRET_KEY || "").trim();
+const TURNSTILE_BYPASS = String(process.env.TURNSTILE_BYPASS || "false").toLowerCase() === "true";
 
-  if (!secret) return { ok: true, mode: "not_configured" as const, codes: [] as string[] };
-  if (bypass) return { ok: true, mode: "bypass" as const, codes: [] as string[] };
-  if (!token) return { ok: false, mode: "enforced" as const, codes: ["missing-input-response"] as string[] };
+/* -------------------- LIMITS -------------------- */
+const DAILY_LIMIT_IP = Math.max(0, Number(process.env.DAILY_LIMIT_IP ?? 10));
+const DAILY_LIMIT_SENDER = Math.max(0, Number(process.env.DAILY_LIMIT_SENDER ?? 0));
+const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE ?? 3)); // reserved (phone disabled in locked scope)
 
-  const form = new URLSearchParams();
-  form.set("secret", secret);
-  form.set("response", token);
-  if (ip) form.set("remoteip", ip);
+const MIN_CLAIM_DELAY_SEC = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC ?? 60));
+const SMS_DUPLICATE_WINDOW_SEC = Math.max(0, Number(process.env.SMS_DUPLICATE_WINDOW_SEC ?? 90)); // reserved
 
-  const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: form.toString(),
-  });
+const REMINDER_GAP_MS = Math.max(1_000, Number(process.env.REMINDER_GAP_MS ?? 172800000)); // 48h default
+const REMINDER_MAX = Math.max(0, Number(process.env.REMINDER_MAX ?? 3));
+const REMINDER_SENDING_ENABLED =
+  String(process.env.REMINDER_SENDING_ENABLED ?? "true").toLowerCase() === "true";
 
-  const json: any = await resp.json().catch(() => ({}));
-  const ok = !!json?.success;
-  const codes: string[] = Array.isArray(json?.["error-codes"]) ? json["error-codes"] : [];
-  return { ok, mode: "enforced" as const, codes };
-}
-
-async function verifyTurnstile(token: string, req: Request) {
-  const ip = getClientIp(req);
-  return verifyTurnstileToken(token, ip);
-}
+/* -------------------- ADMIN -------------------- */
+const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || "").trim();
 
 /* -------------------- HELPERS -------------------- */
-function newPublicId() {
-  return crypto.randomBytes(16).toString("hex");
-}
-function newJobId() {
-  return crypto.randomBytes(12).toString("hex");
-}
-function isE164(s: string) {
-  return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
-}
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
-}
-function toInt(v: any) {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : NaN;
+function now() {
+  return new Date();
 }
 
-/* -------------------- BLOCKED EMAIL DOMAINS -------------------- */
-const BLOCKED_EMAIL_DOMAINS = new Set(["domain.com", "example.com", "test.com", "mailinator.com", "10minutemail.com"]);
-
-function isBlockedEmailDomain(email: string) {
-  const e = String(email || "").trim().toLowerCase();
-  const parts = e.split("@");
-  if (parts.length !== 2) return false;
-  const domain = parts[1].trim();
-  return BLOCKED_EMAIL_DOMAINS.has(domain);
+function getIp(req: Request) {
+  const xf = (req.headers["x-forwarded-for"] || "") as string;
+  return (xf.split(",")[0] || "").trim() || req.socket.remoteAddress || "";
 }
 
-/* -------------------- RAW PAYLOAD GUARD (DEFENSE-IN-DEPTH) -------------------- */
-function hasOwn(obj: any, key: string) {
-  return !!obj && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
-}
-function rawContainsForbiddenGuestKeys(raw: any) {
-  const hasAmount = hasOwn(raw, "amount");
-  const hasMessage = hasOwn(raw, "message");
-  return { hasAmount, hasMessage, forbidden: hasAmount || hasMessage };
+function sha256Hex(input: string) {
+  return crypto.createHash("sha256").update(input).digest("hex");
 }
 
-/* -------------------- VALIDATION (LOCKED SCOPE) -------------------- */
-const CreateGiftSchema = z
-  .object({
-    senderEmail: z.string().email().optional().or(z.literal("")),
-    recipientEmail: z.string().email().optional().or(z.literal("")),
-    recipientPhone: z
-      .string()
-      .optional()
-      .or(z.literal(""))
-      .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
-    messageMode: z.enum(["preset", "custom"]).default("preset"),
-    presetMessageId: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
-    message: z.string().optional().or(z.literal("")).default(""),
-    amount: z.union([z.number().int(), z.string(), z.null(), z.undefined()]).optional(),
-    turnstileToken: z.string().optional().or(z.literal("")),
-    debugBypassLimits: z.string().optional().or(z.literal("")),
-  })
-  .superRefine((val: any, ctx) => {
-    const mode = String(val?.messageMode || "preset");
+function randomToken(bytes = 32) {
+  return crypto.randomBytes(bytes).toString("hex");
+}
 
-    const hasEmail = !!String(val?.recipientEmail || "").trim();
-    const hasPhone = !!String(val?.recipientPhone || "").trim();
+function moneyToCents(dollars: number) {
+  const cents = Math.round((Number(dollars) || 0) * 100);
+  return Number.isFinite(cents) ? cents : 0;
+}
 
-    if (!hasEmail && !hasPhone) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Provide a recipient email or phone",
-        path: ["recipient"],
-      });
-    }
+async function verifyTurnstile(turnstileToken: string, remoteip: string) {
+  if (!TURNSTILE_SECRET_KEY) {
+    return { ok: true, mode: "disabled" as const, codes: [] as string[] };
+  }
+  if (TURNSTILE_BYPASS) {
+    return { ok: true, mode: "bypass" as const, codes: [] as string[] };
+  }
 
-    if (mode === "preset") {
-      const pid = toInt(val?.presetMessageId);
-      if (!Number.isInteger(pid) || pid < 1 || pid > 7) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Choose a preset message (1–7)",
-          path: ["presetMessageId"],
-        });
-      }
-      return;
-    }
+  const body = new URLSearchParams();
+  body.set("secret", TURNSTILE_SECRET_KEY);
+  body.set("response", String(turnstileToken || ""));
+  if (remoteip) body.set("remoteip", remoteip);
 
-    // custom (registered path; auth enforced in route)
-    const msg = String(val?.message ?? "").trim();
-    if (!msg) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Message is required",
-        path: ["message"],
-      });
-    }
-    if (msg.length > 280) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Message must be 280 characters or less",
-        path: ["message"],
-      });
-    }
+  const r = await fetch(TURNSTILE_VERIFY_URL, { method: "POST", body });
+  const j: any = await r.json().catch(() => ({}));
 
-    const amtRaw = val?.amount;
-    const amt = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
-    if (amt !== null) {
-      if (!Number.isFinite(amt) || amt <= 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Amount must be a positive number of cents",
-          path: ["amount"],
-        });
-      } else if (amt < 2500) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Minimum amount is $25",
-          path: ["amount"],
-        });
-      } else if (amt > 100000) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Maximum amount is $1000",
-          path: ["amount"],
-        });
-      }
-    }
-  });
+  const success = Boolean(j && j.success);
+  const codes: string[] = Array.isArray(j?.["error-codes"]) ? j["error-codes"] : [];
+  return { ok: success, mode: "enforced" as const, codes };
+}
 
-const ClaimSchema = z.object({
-  turnstileToken: z.string().optional().or(z.literal("")),
+function isAdmin(req: Request) {
+  if (!ADMIN_TOKEN) return false;
+  const auth = String(req.headers.authorization || "");
+  if (auth.toLowerCase().startsWith("bearer ")) {
+    const t = auth.slice("bearer ".length).trim();
+    if (t && t === ADMIN_TOKEN) return true;
+  }
+  const x = String(req.headers["x-admin-token"] || "").trim();
+  return Boolean(x && x === ADMIN_TOKEN);
+}
+
+/* -------------------- DAILY COUNTS -------------------- */
+/**
+ * Schema note:
+ * - gifts does NOT have senderIp column.
+ * - To avoid crashes, we enforce per-IP via a runtime memory counter ONLY (best-effort)
+ *   unless you later add sender_ip to schema.
+ */
+const memIpCounts = new Map<string, { day: string; count: number }>();
+function dayKey(d: Date) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+function bumpMemIp(ip: string) {
+  const k = dayKey(new Date());
+  const cur = memIpCounts.get(ip);
+  if (!cur || cur.day !== k) {
+    memIpCounts.set(ip, { day: k, count: 1 });
+    return 1;
+  }
+  cur.count += 1;
+  memIpCounts.set(ip, cur);
+  return cur.count;
+}
+function getMemIp(ip: string) {
+  const k = dayKey(new Date());
+  const cur = memIpCounts.get(ip);
+  if (!cur || cur.day !== k) return 0;
+  return cur.count;
+}
+
+async function countDailyBySenderEmail(senderEmail: string) {
+  if (!DAILY_LIMIT_SENDER) return 0;
+  if (!senderEmail) return 0;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const rows = await db
+    .select({ c: sql<number>`count(*)` })
+    .from(gifts)
+    .where(and(eq(gifts.senderEmail, senderEmail), gte(gifts.createdAt, start)));
+  return Number(rows?.[0]?.c || 0);
+}
+
+/* -------------------- AUTH -------------------- */
+type Authed = { isAuthed: true; userId: string; sessionToken: string } | { isAuthed: false };
+
+async function getAuth(req: Request): Promise<Authed> {
+  const auth = String(req.headers.authorization || "");
+  if (!auth.toLowerCase().startsWith("bearer ")) return { isAuthed: false };
+  const sessionToken = auth.slice("bearer ".length).trim();
+  if (!sessionToken) return { isAuthed: false };
+
+  const sessionHash = sha256Hex(sessionToken);
+
+  const row = await db
+    .select({
+      userId: authSessions.userId,
+      expiresAt: authSessions.expiresAt,
+      revokedAt: authSessions.revokedAt,
+    })
+    .from(authSessions)
+    .where(eq(authSessions.sessionHash, sessionHash))
+    .limit(1);
+
+  const s = row?.[0];
+  if (!s) return { isAuthed: false };
+  if (s.revokedAt) return { isAuthed: false };
+  if (s.expiresAt && new Date(s.expiresAt).getTime() <= Date.now()) return { isAuthed: false };
+
+  return { isAuthed: true, userId: String(s.userId), sessionToken };
+}
+
+/* -------------------- VALIDATION -------------------- */
+const zEmail = z.string().trim().email();
+
+const zCreateGift = z.object({
+  recipientEmail: zEmail.optional().nullable(),
+  senderEmail: zEmail.optional().nullable(),
+
+  messageMode: z.enum(["preset", "custom"]).optional(),
+  presetMessageId: z.coerce.number().int().optional().nullable(),
+  message: z.string().trim().max(280).optional().nullable(),
+
+  amountDollars: z.number().optional().nullable(),
+  amountCents: z.number().int().optional().nullable(),
+
+  turnstileToken: z.string().trim().optional().nullable(),
 });
 
-const AdminRemindersSchema = z.object({
-  dryRun: z.boolean().optional().default(true),
-  limit: z.number().int().min(1).max(500).optional().default(25),
-  olderThanMinutes: z.number().int().min(1).max(24 * 365 * 60).optional(),
-  olderThanHours: z.number().int().min(0).max(24 * 365).optional().default(24),
-  publicId: z.string().optional(),
+const zAuthRequest = z.object({
+  email: zEmail,
+  turnstileToken: z.string().trim().optional().nullable(),
 });
 
-const AdminGiftResetSchema = z.object({
-  publicId: z.string().min(1),
+const zAuthConsume = z.object({
+  token: z.string().trim().min(10),
 });
 
-const AdminGiftSeedSchema = z.object({
-  senderEmail: z.string().email().optional().or(z.literal("")),
-  recipientEmail: z.string().email().optional().or(z.literal("")),
-  recipientPhone: z
-    .string()
-    .optional()
-    .or(z.literal(""))
-    .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
-  message: z.string().min(1).max(2000),
-  amount: z.number().int().min(1000).max(100000),
-  markClaimed: z.boolean().optional().default(false),
-});
-
-const AdminAdvanceReminderTimeSchema = z.object({
-  publicId: z.string().min(1),
-});
-
-/* -------------------- ADMIN: TEST CREATE (NO TURNSTILE) -------------------- */
-const AdminTestCreateGiftSchema = z.object({
-  senderEmail: z.string().email().optional().or(z.literal("")),
-  recipientEmail: z.string().email().optional().or(z.literal("")),
-  recipientPhone: z
-    .string()
-    .optional()
-    .or(z.literal(""))
-    .refine((v) => !v || isE164(v), { message: "Phone must be E.164 like +14165551234" }),
-  message: z.string().min(1).max(2000),
-  amount: z.number().int().min(1000).max(100000),
-  deliver: z.boolean().optional().default(false),
-});
-
-/* -------------------- ADMIN: E2E JOBS (TURNSTILE) -------------------- */
-const AdminE2EStartSchema = z.object({
-  recipientEmail: z.string().email(),
-  senderEmail: z.string().email().optional().or(z.literal("")),
-  presetMessageId: z.number().int().min(1).max(7).optional().default(1),
-  turnstileTokenCreate: z.string().min(1),
-  turnstileTokenClaim: z.string().min(1),
-  waitMs: z.number().int().min(0).max(10 * 60 * 1000).optional(),
-});
-
-/* -------------------- LIMITERS -------------------- */
-const createGiftLimiter = rateLimit({
+/* -------------------- RATE LIMITERS -------------------- */
+const limiterCreateGift = rateLimit({
   windowMs: 60_000,
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
 });
-const claimLimiter = rateLimit({
+
+const limiterAuth = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const limiterAdmin = rateLimit({
   windowMs: 60_000,
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-/* -------------------- DUPLICATE WINDOW -------------------- */
-const SMS_DUPLICATE_WINDOW_SEC = Math.max(10, Number(process.env.SMS_DUPLICATE_WINDOW_SEC || 90));
-
-/* -------------------- DAILY LIMITS (24h) -------------------- */
-const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const DAILY_LIMIT_IP = Math.max(0, Number(process.env.DAILY_LIMIT_IP || 10));
-const DAILY_LIMIT_SENDER = Math.max(0, Number(process.env.DAILY_LIMIT_SENDER || 5));
-const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE || 3));
-
-async function enforceDailyLimit(opts: { kind: "sender" | "phone"; value: string; limit: number }) {
-  const { kind, value, limit } = opts;
-  if (!limit || limit <= 0) return { ok: true as const };
-
-  const cutoff = new Date(Date.now() - DAILY_WINDOW_MS);
-
-  let col: any = null;
-  if (kind === "sender") col = (gifts as any).senderEmail;
-  if (kind === "phone") col = (gifts as any).recipientPhone;
-  if (!col) return { ok: true as const };
-
-  const rows = await db
-    .select({ createdAt: gifts.createdAt })
-    .from(gifts)
-    .where(and(eq(col, value), gte(gifts.createdAt, cutoff)))
-    .orderBy(asc(gifts.createdAt));
-
-  const count = rows?.length || 0;
-  if (count < limit) return { ok: true as const, count };
-
-  const oldestMs = toMs(rows?.[0]?.createdAt);
-  const retryAfterSec = oldestMs ? Math.max(1, Math.ceil((oldestMs + DAILY_WINDOW_MS - Date.now()) / 1000)) : 24 * 3600;
-  return { ok: false as const, count, limit, retryAfterSec };
-}
-
-type Bucket = { count: number; windowStartMs: number };
-const ipBucket = new Map<string, Bucket>();
-
-function enforceIpDailyLimit(ip: string, limit: number) {
-  if (!limit || limit <= 0) return { ok: true as const };
-
-  const key = ip || "unknown";
-  const now = Date.now();
-  const b = ipBucket.get(key);
-
-  if (!b || now - b.windowStartMs >= DAILY_WINDOW_MS) {
-    ipBucket.set(key, { count: 1, windowStartMs: now });
-    return { ok: true as const, count: 1 };
-  }
-
-  if (b.count >= limit) {
-    const retryAfterSec = Math.max(1, Math.ceil((b.windowStartMs + DAILY_WINDOW_MS - now) / 1000));
-    return { ok: false as const, count: b.count, limit, retryAfterSec };
-  }
-
-  b.count += 1;
-  ipBucket.set(key, b);
-  return { ok: true as const, count: b.count };
-}
-
-function canBypassLimits(parsedBody: any) {
-  const secret = safeStr(process.env.DEBUG_BYPASS_LIMITS_SECRET || "");
-  if (!secret) return false;
-  const token = safeStr(parsedBody?.debugBypassLimits || "").trim();
-  return token && token === secret;
-}
-
-/* -------------------- ADMIN AUTH -------------------- */
-function requireAdmin(req: Request) {
-  const expected = safeStr(process.env.ADMIN_TOKEN || "");
-  if (!expected) return { ok: false as const, status: 500, error: "ADMIN_TOKEN not configured" };
-
-  const got = safeStr(req.headers["x-admin-token"]).trim();
-  if (!got || got !== expected) return { ok: false as const, status: 401, error: "Unauthorized" };
-
-  return { ok: true as const };
-}
-
-/* -------------------- REMINDERS POLICY -------------------- */
-const DEFAULT_REMINDER_GAP_MS = 2 * 24 * 60 * 60 * 1000; // 48h
-const REMINDER_MAX = 3;
-
-function getReminderGapMs() {
-  const raw = Number(process.env.REMINDER_INTERVAL_MS || 0);
-  return raw > 0 ? raw : DEFAULT_REMINDER_GAP_MS;
-}
-
-/* -------------------- CORS -------------------- */
-function isAllowedOrigin(origin: string) {
-  if (!origin) return false;
-  if (origin === "https://thankumail.com") return true;
-  if (origin === "https://www.thankumail.com") return true;
-  if (/^https?:\/\/localhost:\d+$/.test(origin)) return true;
-  if (/^https?:\/\/127\.0\.0\.1:\d+$/.test(origin)) return true;
-  return false;
-}
-
-function corsForApi(req: Request, res: any) {
-  const origin = safeStr(req.headers.origin);
-  if (origin && isAllowedOrigin(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-admin-token, x-user-id");
-    res.setHeader("Access-Control-Max-Age", "600");
-  }
-}
-
-/* -------------------- BACKGROUND DELIVERY -------------------- */
-function queueGiftDelivery(opts: {
-  req: Request;
-  publicId: string;
-  claimUrl: string;
-  amountCents: number;
-  senderEmail: string | null;
-  recipientEmail: string;
-  recipientPhone: string;
-  message: string;
-}) {
-  const { req, publicId, claimUrl, amountCents, senderEmail, recipientEmail, recipientPhone, message } = opts;
-
-  void (async () => {
-    const start = Date.now();
-    logEvent("gift_delivery_start", {
-      publicId,
-      hasEmail: !!recipientEmail,
-      hasPhone: !!recipientPhone,
-      toEmailDomain: recipientEmail ? recipientEmail.split("@")[1] || "" : "",
-      toPhone: recipientPhone ? recipientPhone.slice(0, 4) + "…" : "",
-      amountCents,
-    });
-
-    let emailOk: boolean | null = null;
-    let smsOk: boolean | null = null;
-    let emailErr = "";
-    let smsErr = "";
-
-    if (recipientEmail) {
-      try {
-        const emailRes = await sendGiftEmail({
-          to: recipientEmail,
-          publicId,
-          claimUrl,
-          amountCents,
-          senderEmail: senderEmail || undefined,
-          message,
-        } as any);
-
-        if (!emailRes.ok) {
-          emailOk = false;
-          emailErr = safeStr((emailRes as any).error) || "Email failed";
-          logEvent("gift_email_send_failed", { publicId, err: emailErr });
-        } else {
-          emailOk = true;
-          logEvent("gift_email_send_ok", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
-        }
-      } catch (e: any) {
-        emailOk = false;
-        emailErr = safeStr(e?.message) || "Email failed";
-        logEvent("gift_email_send_error", { publicId, err: emailErr });
-      }
-    }
-
-    if (recipientPhone) {
-      try {
-        const smsRes: any = await sendGiftSms({
-          to: recipientPhone,
-          publicId,
-          claimUrl,
-          amountCents,
-          senderEmail: senderEmail || undefined,
-          message,
-        } as any);
-
-        if (!smsRes.ok) {
-          smsOk = false;
-          smsErr = safeStr(smsRes?.error) || "SMS failed";
-          logEvent("gift_sms_send_failed", { publicId, err: smsErr });
-        } else {
-          smsOk = true;
-          logEvent("gift_sms_send_ok", { publicId });
-        }
-      } catch (e: any) {
-        smsOk = false;
-        smsErr = safeStr(e?.message) || "SMS failed";
-        logEvent("gift_sms_send_error", { publicId, err: smsErr });
-      }
-    }
-
-    logEvent("gift_delivery_done", {
-      publicId,
-      emailOk,
-      smsOk,
-      tookMs: Date.now() - start,
-      origin: safeStr(req.headers.origin),
-    });
-  })().catch((e: any) => {
-    logEvent("gift_delivery_fatal", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
-  });
-}
-
-/* -------------------- ADMIN: E2E JOB STATE (IN-MEMORY) -------------------- */
-type E2EJobStatus = "queued" | "created_waiting" | "claiming" | "claimed" | "failed";
-type E2EJob = {
-  jobId: string;
-  status: E2EJobStatus;
-  createdAt: string;
-
-  ip: string;
-  recipientEmail: string;
-  senderEmail: string | null;
-  presetMessageId: number;
-
-  publicId: string | null;
-  claimUrl: string | null;
-
-  minDelaySec: number;
-  waitMs: number;
-
-  turnstileCreateOk: boolean;
-  turnstileClaimOk: boolean | null;
-
-  error: string | null;
-  codes: string[] | null;
-};
-
-const e2eJobs = new Map<string, E2EJob>();
-
-function pruneE2EJobs() {
-  const cutoff = Date.now() - 2 * 60 * 60 * 1000; // keep 2h
-
-  e2eJobs.forEach((j, jobId) => {
-    const ms = toMs(j.createdAt);
-    if (ms && ms < cutoff) {
-      e2eJobs.delete(jobId);
-    }
-  });
-}
-
-// Best-effort prune every 10 minutes
-try {
-  setInterval(pruneE2EJobs, 10 * 60 * 1000).unref?.();
-} catch {}
-
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
-  app.use("/api", (req: Request, res: any, next: any) => {
-    corsForApi(req, res);
-    if (req.method === "OPTIONS") return res.status(204).end();
-    return next();
+  /* -------------------- HEALTH/VERSION -------------------- */
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      version: VERSION,
+      commit: COMMIT,
+      marker: ROUTES_MARKER,
+      ts: new Date().toISOString(),
+    });
   });
-
-  app.get("/api/health", (_req, res) => res.json({ ok: true, version: VERSION, commit: COMMIT }));
 
   app.get("/api/version", (_req, res) => {
-    const bypass = (process.env.TURNSTILE_BYPASS || "").toLowerCase() === "true";
-    const configured = !!(process.env.TURNSTILE_SECRET_KEY || "");
-    const mode = !configured ? "not_configured" : bypass ? "bypass" : "enforced";
-    const gapMs = getReminderGapMs();
-
-    return res.json({
-      ok: true,
+    res.json({
       version: VERSION,
       commit: COMMIT,
-      env: process.env.NODE_ENV || "",
-      minClaimDelaySec: Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60)),
-      smsDuplicateWindowSec: SMS_DUPLICATE_WINDOW_SEC,
-      dailyLimitIp: DAILY_LIMIT_IP,
-      dailyLimitSender: DAILY_LIMIT_SENDER,
-      dailyLimitPhone: DAILY_LIMIT_PHONE,
-      turnstileMode: mode,
-      turnstileBypass: bypass,
-      turnstileConfigured: configured,
-      debugBypassLimitsConfigured: !!process.env.DEBUG_BYPASS_LIMITS_SECRET,
-      remindersRoute: true,
-      reminderGapMs: gapMs,
-      reminderGapConfigured: !!process.env.REMINDER_INTERVAL_MS,
-      reminderMax: REMINDER_MAX,
-      getGiftRoute: true,
-      reminderSendingEnabled: REMINDER_SENDING_ENABLED,
       routesMarker: ROUTES_MARKER,
-      testingAdminToolsEnabled: ENABLE_TESTING_ADMIN_TOOLS,
-      registeredAuthMode: "x-user-id (temporary)",
-      adminE2EJobs: true,
-    });
-  });
 
-  /* -------------------- ADMIN: E2E START (TURNSTILE CREATE + SCHEDULE CLAIM) -------------------- */
-  app.post("/api/admin/test/e2e/start", async (req, res) => {
-    const auth = requireAdmin(req);
-    if (!auth.ok)
-      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
-
-    if (!ENABLE_TESTING_ADMIN_TOOLS) {
-      return res.status(403).json({
-        ok: false,
-        error: "Testing admin tools disabled",
-        code: "TESTING_TOOLS_DISABLED",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    const parsed = AdminE2EStartSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const ip = getClientIp(req);
-    const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
-    const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
-    const presetMessageId = Number(parsed.data.presetMessageId || 1);
-    const tokenCreate = safeStr(parsed.data.turnstileTokenCreate).trim();
-    const tokenClaim = safeStr(parsed.data.turnstileTokenClaim).trim();
-
-    if (!recipientEmail || !isEmail(recipientEmail)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
-    }
-    if (isBlockedEmailDomain(recipientEmail)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Recipient email domain not allowed",
-        field: "recipientEmail",
-        code: "BLOCKED_EMAIL_DOMAIN",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    const msg = presetMessageById(presetMessageId);
-    if (!msg) {
-      return res.status(400).json({
-        ok: false,
-        error: "Choose a preset message (1–7)",
-        field: "presetMessageId",
-        code: "PRESET_REQUIRED",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
-    const waitMsDefault = minDelaySec > 0 ? minDelaySec * 1000 + 2_000 : 0;
-    const waitMs =
-      typeof parsed.data.waitMs === "number" ? Math.max(waitMsDefault, Number(parsed.data.waitMs)) : waitMsDefault;
-
-    // Verify Turnstile for CREATE
-    const tCreate = await verifyTurnstileToken(tokenCreate, ip);
-    if (!tCreate.ok) {
-      const codes = tCreate.codes || [];
-      const missing = codes.includes("missing-input-response");
-      return res.status(400).json({
-        ok: false,
-        error: missing ? "Missing CAPTCHA token" : "CAPTCHA failed",
-        field: "turnstileTokenCreate",
-        codes,
-        code: "TURNSTILE_FAILED",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    const jobId = newJobId();
-    const publicId = newPublicId();
-    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
-
-    const job: E2EJob = {
-      jobId,
-      status: "queued",
-      createdAt: new Date().toISOString(),
-
-      ip,
-      recipientEmail,
-      senderEmail,
-      presetMessageId,
-
-      publicId: null,
-      claimUrl: null,
-
-      minDelaySec,
-      waitMs,
-
-      turnstileCreateOk: true,
-      turnstileClaimOk: null,
-
-      error: null,
-      codes: null,
-    };
-
-    e2eJobs.set(jobId, job);
-
-    try {
-      await db.insert(gifts).values({
-        publicId,
-        senderUserId: null,
-        senderEmail,
-        recipientEmail,
-        recipientPhone: null,
-
-        messageMode: "preset",
-        presetMessageId,
-
-        message: msg,
-
-        amount: null,
-
-        isClaimed: false,
-        reminderCount: 0,
-        lastReminderSentAt: null,
-        returnedToSenderAt: null,
-        claimedAt: null,
-      } as any);
-
-      job.status = "created_waiting";
-      job.publicId = publicId;
-      job.claimUrl = claimUrl;
-      e2eJobs.set(jobId, job);
-
-      logEvent("admin_e2e_created", { jobId, publicId, waitMs, minDelaySec });
-
-      // schedule claim
-      setTimeout(() => {
-        void (async () => {
-          const cur = e2eJobs.get(jobId);
-          if (!cur) return;
-
-          // Re-check gift exists + not claimed/returned
-          cur.status = "claiming";
-          e2eJobs.set(jobId, cur);
-
-          try {
-            const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
-            const gift: any = rows?.[0];
-            if (!gift) {
-              cur.status = "failed";
-              cur.error = "Not found";
-              cur.codes = null;
-              e2eJobs.set(jobId, cur);
-              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "not_found" });
-              return;
-            }
-
-            if (gift.returnedToSenderAt) {
-              cur.status = "failed";
-              cur.error = "Returned to sender";
-              cur.codes = ["RETURNED_TO_SENDER"];
-              e2eJobs.set(jobId, cur);
-              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "returned_to_sender" });
-              return;
-            }
-
-            if (gift.isClaimed) {
-              cur.status = "failed";
-              cur.error = "Already claimed";
-              cur.codes = ["ALREADY_CLAIMED"];
-              e2eJobs.set(jobId, cur);
-              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "already_claimed" });
-              return;
-            }
-
-            // Verify Turnstile for CLAIM
-            const tClaim = await verifyTurnstileToken(tokenClaim, ip);
-            if (!tClaim.ok) {
-              const codes = tClaim.codes || [];
-              cur.status = "failed";
-              cur.turnstileClaimOk = false;
-              cur.error = codes.includes("missing-input-response") ? "Missing CAPTCHA token" : "CAPTCHA failed";
-              cur.codes = codes;
-              e2eJobs.set(jobId, cur);
-              logEvent("admin_e2e_claim_failed", { jobId, publicId, reason: "turnstile_failed", codes });
-              return;
-            }
-
-            cur.turnstileClaimOk = true;
-            e2eJobs.set(jobId, cur);
-
-            await db
-              .update(gifts)
-              .set({ isClaimed: true, claimedAt: new Date() })
-              .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
-
-            cur.status = "claimed";
-            e2eJobs.set(jobId, cur);
-            logEvent("admin_e2e_claim_ok", { jobId, publicId });
-          } catch (e: any) {
-            const err = safeStr(e?.message) || "Server error";
-            const stack = safeStr(e?.stack) || "";
-            cur.status = "failed";
-            cur.error = err;
-            cur.codes = null;
-            e2eJobs.set(jobId, cur);
-            logEvent("admin_e2e_claim_error", { jobId, publicId, err, stack });
-          }
-        })().catch(() => {});
-      }, waitMs).unref?.();
-    } catch (e: any) {
-      const err = safeStr(e?.message) || "Server error";
-      const stack = safeStr(e?.stack) || "";
-      job.status = "failed";
-      job.error = err;
-      e2eJobs.set(jobId, job);
-      logEvent("admin_e2e_create_error", { jobId, err, stack });
-
-      return res.status(500).json({ ok: false, error: "Server error", detail: err, version: VERSION, commit: COMMIT });
-    }
-
-    return res.json({
-      ok: true,
-      jobId,
-      status: "created_waiting",
-      publicId,
-      claimUrl,
-      minDelaySec,
-      waitMs,
-      pollUrl: `/api/admin/test/e2e/jobs/${jobId}`,
-      version: VERSION,
-      commit: COMMIT,
-    });
-  });
-
-  /* -------------------- ADMIN: E2E JOB STATUS -------------------- */
-  app.get("/api/admin/test/e2e/jobs/:jobId", async (req, res) => {
-    const auth = requireAdmin(req);
-    if (!auth.ok)
-      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
-
-    const jobId = safeStr(req.params.jobId).trim();
-    if (!jobId) return res.status(400).json({ ok: false, error: "Invalid jobId", version: VERSION, commit: COMMIT });
-
-    const job = e2eJobs.get(jobId);
-    if (!job) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
-
-    return res.json({ ok: true, job, version: VERSION, commit: COMMIT });
-  });
-
-  /* -------------------- ADMIN: TEST CREATE (NO TURNSTILE) -------------------- */
-  app.post("/api/admin/test/create-gift", async (req, res) => {
-    const auth = requireAdmin(req);
-    if (!auth.ok)
-      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
-
-    const parsed = AdminTestCreateGiftSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
-    const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
-    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
-    const message = safeStr(parsed.data.message);
-    const amount = Number(parsed.data.amount);
-    const deliver = !!parsed.data.deliver;
-
-    if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({
-        ok: false,
-        error: "Provide a recipient email or phone",
-        field: "recipient",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-    if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Phone must be E.164 like +14165551234",
-        field: "recipientPhone",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-    if (recipientEmail && !isEmail(recipientEmail)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid recipient email",
-        field: "recipientEmail",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-    if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Recipient email domain not allowed",
-        field: "recipientEmail",
-        code: "BLOCKED_EMAIL_DOMAIN",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    const publicId = newPublicId();
-    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
-
-    try {
-      await db.insert(gifts).values({
-        publicId,
-        senderUserId: null,
-        senderEmail,
-        recipientEmail: recipientEmail || null,
-        recipientPhone: recipientPhone || null,
-        messageMode: "custom",
-        presetMessageId: null,
-        message,
-        amount,
-        isClaimed: false,
-        reminderCount: 0,
-        lastReminderSentAt: null,
-        returnedToSenderAt: null,
-        claimedAt: null,
-      } as any);
-
-      logEvent("admin_test_create_gift_ok", { publicId, deliver });
-
-      if (deliver) {
-        queueGiftDelivery({
-          req,
-          publicId,
-          claimUrl,
-          amountCents: amount,
-          senderEmail,
-          recipientEmail,
-          recipientPhone,
-          message,
-        });
-      }
-
-      return res.json({ ok: true, publicId, claimUrl, amount, deliver, version: VERSION, commit: COMMIT });
-    } catch (e: any) {
-      const detail = safeStr(e?.message) || "unknown";
-      const stack = safeStr(e?.stack) || "";
-      logEvent("admin_test_create_gift_error", { err: detail, stack });
-      return res.status(500).json({ ok: false, error: "Server error", detail, version: VERSION, commit: COMMIT });
-    }
-  });
-
-  /* -------------------- ADMIN: GIFTS RESET (FAST TESTING) -------------------- */
-  app.post("/api/admin/gifts/reset", async (req, res) => {
-    const auth = requireAdmin(req);
-    if (!auth.ok)
-      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
-
-    const parsed = AdminGiftResetSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const publicId = safeStr(parsed.data.publicId).trim();
-    try {
-      const rows: any[] = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
-      const gift = rows?.[0];
-      if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
-
-      await db
-        .update(gifts)
-        .set({
-          isClaimed: false,
-          claimedAt: null,
-          reminderCount: 0,
-          lastReminderSentAt: null,
-          returnedToSenderAt: null,
-        } as any)
-        .where(eq(gifts.publicId, publicId));
-
-      logEvent("admin_gift_reset", { publicId });
-
-      return res.json({ ok: true, publicId, version: VERSION, commit: COMMIT });
-    } catch (e: any) {
-      logEvent("admin_gift_reset_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
-    }
-  });
-
-  /* -------------------- ADMIN: ADVANCE lastReminderSentAt BACKWARDS (SAFE TESTING-ONLY) -------------------- */
-  app.post("/api/admin/gifts/advance-reminder-time", async (req, res) => {
-    const auth = requireAdmin(req);
-    if (!auth.ok)
-      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
-
-    if (!ENABLE_TESTING_ADMIN_TOOLS) {
-      return res.status(403).json({
-        ok: false,
-        error: "Testing admin tools disabled",
-        code: "TESTING_TOOLS_DISABLED",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    const parsed = AdminAdvanceReminderTimeSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const publicId = safeStr(parsed.data.publicId).trim();
-    try {
-      const rows: any[] = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
-      const gift = rows?.[0];
-      if (!gift) return res.status(404).json({ ok: false, error: "Not found", version: VERSION, commit: COMMIT });
-
-      if (gift.isClaimed) {
-        return res.status(409).json({ ok: false, error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
-      }
-      if (gift.returnedToSenderAt) {
-        return res.status(409).json({
-          ok: false,
-          error: "Already returned to sender",
-          code: "ALREADY_RETURNED",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-      const reminderCount = Number(gift.reminderCount || 0);
-      if (reminderCount >= REMINDER_MAX) {
-        return res.status(409).json({
-          ok: false,
-          error: "Reminder max already reached",
-          code: "REMINDER_MAX_REACHED",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-
-      const gapMs = getReminderGapMs();
-      const newLast = new Date(Date.now() - gapMs - 2_000);
-
-      await db
-        .update(gifts)
-        .set({ lastReminderSentAt: newLast } as any)
-        .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
-
-      logEvent("admin_advance_reminder_time", { publicId, reminderCount, newLast: newLast.toISOString(), gapMs });
-
-      return res.json({
-        ok: true,
-        publicId,
-        reminderCount,
-        lastReminderSentAt: newLast.toISOString(),
-        gapMs,
-        version: VERSION,
-        commit: COMMIT,
-      });
-    } catch (e: any) {
-      logEvent("admin_advance_reminder_time_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
-    }
-  });
-
-  /* -------------------- ADMIN: GIFTS SEED (FAST TESTING, NO TURNSTILE) -------------------- */
-  app.post("/api/admin/gifts/seed", async (req, res) => {
-    const auth = requireAdmin(req);
-    if (!auth.ok)
-      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
-
-    const parsed = AdminGiftSeedSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
-    const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
-    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
-    const message = safeStr(parsed.data.message);
-    const amount = Number(parsed.data.amount);
-    const markClaimed = !!parsed.data.markClaimed;
-
-    if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({
-        ok: false,
-        error: "Provide a recipient email or phone",
-        field: "recipient",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-    if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Phone must be E.164 like +14165551234",
-        field: "recipientPhone",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-    if (recipientEmail && !isEmail(recipientEmail)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid recipient email",
-        field: "recipientEmail",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-    if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Recipient email domain not allowed",
-        field: "recipientEmail",
-        code: "BLOCKED_EMAIL_DOMAIN",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    const publicId = newPublicId();
-    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
-    const now = new Date();
-
-    try {
-      await db.insert(gifts).values({
-        publicId,
-        senderUserId: null,
-        senderEmail,
-        recipientEmail: recipientEmail || null,
-        recipientPhone: recipientPhone || null,
-        messageMode: "custom",
-        presetMessageId: null,
-        message,
-        amount,
-        isClaimed: markClaimed,
-        reminderCount: 0,
-        lastReminderSentAt: null,
-        returnedToSenderAt: null,
-        claimedAt: markClaimed ? now : null,
-      } as any);
-
-      logEvent("admin_gift_seeded", { publicId, markClaimed });
-
-      return res.json({ ok: true, publicId, claimUrl, amount, seeded: true, markClaimed, version: VERSION, commit: COMMIT });
-    } catch (e: any) {
-      logEvent("gift_seed_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
-    }
-  });
-
-  /* -------------------- ADMIN: REMINDERS (TARGETABLE) -------------------- */
-  app.post("/api/admin/reminders/send", async (req, res) => {
-    const auth = requireAdmin(req);
-    if (!auth.ok)
-      return res.status(auth.status).json({ ok: false, error: auth.error, version: VERSION, commit: COMMIT });
-
-    const parsed = AdminRemindersSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const dryRun = !!parsed.data.dryRun;
-    const limit = Number(parsed.data.limit) || 25;
-
-    const olderThanMinutesRaw =
-      typeof parsed.data.olderThanMinutes === "number" ? Number(parsed.data.olderThanMinutes) : null;
-    const olderThanHoursRaw = typeof parsed.data.olderThanHours === "number" ? Number(parsed.data.olderThanHours) : 24;
-
-    const olderThanMs =
-      olderThanMinutesRaw !== null ? Math.max(0, olderThanMinutesRaw) * 60_000 : Math.max(0, olderThanHoursRaw) * 3600_000;
-
-    const targetPublicId = safeStr(parsed.data.publicId).trim();
-
-    const now = Date.now();
-    const cutoff = new Date(now - olderThanMs);
-
-    const gapMs = getReminderGapMs();
-
-    try {
-      let candidates: any[] = [];
-
-      if (targetPublicId) {
-        const rows: any[] = await db
-          .select()
-          .from(gifts)
-          .where(and(eq(gifts.publicId, targetPublicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
-        candidates = rows || [];
-      } else {
-        const rows: any[] = await db
-          .select()
-          .from(gifts)
-          .where(and(eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt), lte(gifts.createdAt, cutoff)))
-          .orderBy(asc(gifts.createdAt))
-          .limit(limit);
-        candidates = rows || [];
-      }
-
-      const scanned = candidates.length;
-
-      let eligible = 0;
-      let willRemind = 0;
-      let willReturn = 0;
-
-      const toRemind: any[] = [];
-      const toReturn: any[] = [];
-
-      for (const g of candidates) {
-        const publicId = safeStr(g?.publicId);
-        if (!publicId) continue;
-
-        const reminderCount = Number(g?.reminderCount || 0);
-        const lastSentMs = toMs(g?.lastReminderSentAt);
-        const gapOk = !lastSentMs || now - lastSentMs >= gapMs;
-
-        if (reminderCount >= REMINDER_MAX) {
-          willReturn += 1;
-          toReturn.push(g);
-          continue;
-        }
-
-        if (gapOk) {
-          eligible += 1;
-          willRemind += 1;
-          toRemind.push(g);
-        }
-      }
-
-      logEvent("reminders_scan", {
-        dryRun,
-        scanned,
-        eligible,
-        willRemind,
-        willReturn,
-        cutoff: cutoff.toISOString(),
-        olderThanMs,
-        gapMs,
-        olderThanMinutes: olderThanMinutesRaw !== null ? olderThanMinutesRaw : undefined,
-        olderThanHours: olderThanMinutesRaw === null ? olderThanHoursRaw : undefined,
-        targetPublicId: targetPublicId || undefined,
-        sendingEnabled: REMINDER_SENDING_ENABLED,
-      });
-
-      if (dryRun) {
-        return res.json({
-          ok: true,
-          dryRun: true,
-          scanned,
-          eligible,
-          willRemind,
-          willReturn,
-          sendFailed: 0,
-          skippedNoRecipientEmail: 0,
-          skippedBlockedDomain: 0,
-          skippedSendingDisabled: REMINDER_SENDING_ENABLED ? 0 : willRemind,
-          cutoff: cutoff.toISOString(),
-          olderThanMs,
-          gapMs,
-          reminderMax: REMINDER_MAX,
-          targetPublicId: targetPublicId || undefined,
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-
-      let reminded = 0;
-      let returned = 0;
-      let sendFailed = 0;
-      let skippedNoRecipientEmail = 0;
-      let skippedBlockedDomain = 0;
-      let skippedSendingDisabled = 0;
-
-      for (const g of toRemind) {
-        const publicId = safeStr(g?.publicId);
-        if (!publicId) continue;
-
-        const recipientEmail = safeStr(g?.recipientEmail).trim();
-        const senderEmail = safeStr(g?.senderEmail).trim();
-        const amount = Number(g?.amount || 0);
-        const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
-
-        if (!isEmail(recipientEmail)) {
-          skippedNoRecipientEmail += 1;
-          logEvent("reminder_skipped_no_recipient_email", { publicId });
-          continue;
-        }
-
-        if (isBlockedEmailDomain(recipientEmail)) {
-          skippedBlockedDomain += 1;
-          logEvent("reminder_skipped_blocked_domain", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
-          continue;
-        }
-
-        if (!REMINDER_SENDING_ENABLED) {
-          skippedSendingDisabled += 1;
-          logEvent("reminder_skipped_sending_disabled", { publicId });
-          continue;
-        }
-
-        const r = await sendReminderEmail({
-          to: recipientEmail,
-          publicId,
-          claimUrl,
-          amountCents: amount,
-          senderEmail: isEmail(senderEmail) ? senderEmail : undefined,
-        });
-
-        if (!r.ok) {
-          sendFailed += 1;
-          logEvent("reminder_send_failed", { publicId, err: safeStr((r as any)?.error) });
-          continue;
-        }
-
-        logEvent("reminder_send_ok", { publicId, toDomain: recipientEmail.split("@")[1] || "" });
-
-        const nextCount = Number(g?.reminderCount || 0) + 1;
-
-        await db
-          .update(gifts)
-          .set({ reminderCount: nextCount, lastReminderSentAt: new Date() } as any)
-          .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
-
-        reminded += 1;
-        logEvent("reminder_marked", { publicId, reminderCount: nextCount });
-
-        if (nextCount >= REMINDER_MAX) {
-          await db
-            .update(gifts)
-            .set({ returnedToSenderAt: new Date() } as any)
-            .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
-
-          returned += 1;
-          logEvent("returned_to_sender_marked_after_final_reminder", { publicId });
-
-          if (isEmail(senderEmail)) {
-            const rr = await sendReturnToSenderEmail({
-              to: senderEmail,
-              publicId,
-              amountCents: amount,
-              reason: "Unclaimed after 3 reminders",
-            });
-
-            if (!rr.ok) {
-              sendFailed += 1;
-              logEvent("return_to_sender_email_failed", { publicId, err: safeStr((rr as any)?.error) });
-            } else {
-              logEvent("return_to_sender_email_ok", { publicId, toDomain: senderEmail.split("@")[1] || "" });
-            }
-          }
-        }
-      }
-
-      for (const g of toReturn) {
-        const publicId = safeStr(g?.publicId);
-        if (!publicId) continue;
-
-        const senderEmail = safeStr(g?.senderEmail).trim();
-        const amount = Number(g?.amount || 0);
-
-        await db
-          .update(gifts)
-          .set({ returnedToSenderAt: new Date() } as any)
-          .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false), isNull((gifts as any).returnedToSenderAt)));
-
-        returned += 1;
-        logEvent("returned_to_sender_marked", { publicId });
-
-        if (REMINDER_SENDING_ENABLED && isEmail(senderEmail)) {
-          const r = await sendReturnToSenderEmail({
-            to: senderEmail,
-            publicId,
-            amountCents: amount,
-            reason: "Unclaimed after 3 reminders",
-          });
-
-          if (!r.ok) {
-            sendFailed += 1;
-            logEvent("return_to_sender_email_failed", { publicId, err: safeStr((r as any)?.error) });
-          } else {
-            logEvent("return_to_sender_email_ok", { publicId, toDomain: senderEmail.split("@")[1] || "" });
-          }
-        }
-      }
-
-      return res.json({
-        ok: true,
-        dryRun: false,
-        scanned,
-        eligible,
-        reminded,
-        returned,
-        sendFailed,
-        skippedNoRecipientEmail,
-        skippedBlockedDomain,
-        skippedSendingDisabled,
-        cutoff: cutoff.toISOString(),
-        olderThanMs,
-        gapMs,
+      turnstile: {
+        configured: Boolean(TURNSTILE_SECRET_KEY),
+        bypass: TURNSTILE_BYPASS,
+        mode: TURNSTILE_SECRET_KEY ? (TURNSTILE_BYPASS ? "bypass" : "enforced") : "disabled",
+      },
+
+      limits: {
+        dailyLimitIp: DAILY_LIMIT_IP,
+        dailyLimitSender: DAILY_LIMIT_SENDER,
+        dailyLimitPhone: DAILY_LIMIT_PHONE,
+        minClaimDelaySec: MIN_CLAIM_DELAY_SEC,
+        smsDuplicateWindowSec: SMS_DUPLICATE_WINDOW_SEC,
+      },
+
+      reminders: {
+        reminderGapMs: REMINDER_GAP_MS,
         reminderMax: REMINDER_MAX,
-        targetPublicId: targetPublicId || undefined,
-        version: VERSION,
-        commit: COMMIT,
+        reminderSendingEnabled: REMINDER_SENDING_ENABLED,
+      },
+
+      lockedScope: {
+        guest: { delivery: "email-only", message: "preset-only", amount: "none" },
+        registered: {
+          delivery: "email-only",
+          message: "preset-or-custom",
+          amount: `optional (allowed: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}; min $25 when present)`,
+        },
+      },
+    });
+  });
+
+  /* -------------------- AUTH: MAGIC LINK -------------------- */
+  app.post("/api/auth/request", limiterAuth, async (req, res) => {
+    try {
+      const ip = getIp(req);
+      const parsed = zAuthRequest.safeParse(req.body || {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
+          issues: parsed.error.issues,
+          version: VERSION,
+        });
+      }
+
+      const email = String(parsed.data.email || "").trim().toLowerCase();
+      const turnstileToken = parsed.data.turnstileToken;
+
+      const v = await verifyTurnstile(String(turnstileToken || ""), ip);
+      if (!v.ok) {
+        return res.status(400).json({
+          error: "Missing or invalid CAPTCHA token",
+          field: "turnstileToken",
+          code: "TURNSTILE_FAILED",
+          codes: v.codes,
+          version: VERSION,
+        });
+      }
+
+      // Ensure user exists (users.id is TEXT hex)
+      const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+
+      let userId = String(existing?.[0]?.id || "");
+      if (!userId) {
+        userId = crypto.randomBytes(16).toString("hex");
+        await db.insert(users).values({
+          id: userId,
+          email,
+          createdAt: now(),
+          lastLoginAt: null,
+        });
+      }
+
+      // Store magic link (table stores email, not userId)
+      const rawToken = randomToken(24);
+      const tokenHash = sha256Hex(rawToken);
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+      const ua = String(req.headers["user-agent"] || "").slice(0, 500);
+
+      await db.insert(authMagicLinks).values({
+        email,
+        tokenHash,
+        expiresAt,
+        consumedAt: null,
+        ip,
+        userAgent: ua || null,
+        createdAt: now(),
       });
-    } catch (e: any) {
-      logEvent("reminders_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      return res.status(500).json({ ok: false, error: "Server error", version: VERSION, commit: COMMIT });
+
+      return res.json({
+        ok: true,
+        token: rawToken,
+        expiresAt: expiresAt.toISOString(),
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Auth request failed",
+        code: "AUTH_REQUEST_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
     }
+  });
+
+  app.post("/api/auth/consume", limiterAuth, async (req, res) => {
+    try {
+      const parsed = zAuthConsume.safeParse(req.body || {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
+          issues: parsed.error.issues,
+          version: VERSION,
+        });
+      }
+
+      const tokenHash = sha256Hex(parsed.data.token);
+
+      const row = await db
+        .select({
+          id: authMagicLinks.id,
+          email: authMagicLinks.email,
+          expiresAt: authMagicLinks.expiresAt,
+          consumedAt: authMagicLinks.consumedAt,
+        })
+        .from(authMagicLinks)
+        .where(eq(authMagicLinks.tokenHash, tokenHash))
+        .limit(1);
+
+      const link = row?.[0];
+      if (!link) {
+        return res.status(400).json({
+          error: "Invalid or expired link",
+          code: "MAGIC_LINK_INVALID",
+          version: VERSION,
+        });
+      }
+      if (link.consumedAt) {
+        return res.status(400).json({
+          error: "Link already used",
+          code: "MAGIC_LINK_USED",
+          version: VERSION,
+        });
+      }
+      if (link.expiresAt && new Date(link.expiresAt).getTime() <= Date.now()) {
+        return res.status(400).json({
+          error: "Link expired",
+          code: "MAGIC_LINK_EXPIRED",
+          version: VERSION,
+        });
+      }
+
+      // Ensure user exists for that email
+      const email = String(link.email || "").trim().toLowerCase();
+      const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+
+      let userId = String(existing?.[0]?.id || "");
+      if (!userId) {
+        userId = crypto.randomBytes(16).toString("hex");
+        await db.insert(users).values({
+          id: userId,
+          email,
+          createdAt: now(),
+          lastLoginAt: null,
+        });
+      }
+
+      const sessionToken = randomToken(32);
+      const sessionHash = sha256Hex(sessionToken);
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const ip = getIp(req);
+      const ua = String(req.headers["user-agent"] || "").slice(0, 500);
+
+      await db.transaction(async (tx) => {
+        await tx.update(authMagicLinks).set({ consumedAt: now() }).where(eq(authMagicLinks.id, link.id));
+        await tx.insert(authSessions).values({
+          userId,
+          sessionHash,
+          expiresAt,
+          revokedAt: null,
+          ip,
+          userAgent: ua || null,
+          createdAt: now(),
+        });
+        await tx.update(users).set({ lastLoginAt: now() }).where(eq(users.id, userId));
+      });
+
+      return res.json({
+        ok: true,
+        sessionToken,
+        expiresAt: expiresAt.toISOString(),
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Auth consume failed",
+        code: "AUTH_CONSUME_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
+  app.get("/api/me", async (req, res) => {
+    const a = await getAuth(req);
+    if (!a.isAuthed) {
+      return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+    }
+
+    const row = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        createdAt: users.createdAt,
+        lastLoginAt: users.lastLoginAt,
+      })
+      .from(users)
+      .where(eq(users.id, a.userId))
+      .limit(1);
+
+    return res.json({ ok: true, user: row?.[0] || null, version: VERSION });
   });
 
   /* -------------------- GIFTS: CREATE -------------------- */
-  app.post("/api/gifts", createGiftLimiter, async (req, res) => {
-    const rawBody: any = req.body || {};
-    const registered = isRegistered(req);
-    const senderUserId = registered ? getUserId(req) : null;
-
-    const parsed = CreateGiftSchema.safeParse(rawBody);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const ip = getClientIp(req);
-
-    const senderEmail = safeStr(parsed.data.senderEmail).trim() || null;
-
-    const recipientEmail = safeStr(parsed.data.recipientEmail).trim();
-    const recipientPhone = safeStr(parsed.data.recipientPhone).trim();
-
-    const messageMode = (safeStr((parsed.data as any).messageMode) || "preset") as "preset" | "custom";
-    const presetIdRaw = (parsed.data as any).presetMessageId;
-    const presetId = presetIdRaw === null || presetIdRaw === undefined || presetIdRaw === "" ? null : toInt(presetIdRaw);
-
-    const rawMessage = safeStr((parsed.data as any).message);
-
-    const amtRaw = (parsed.data as any).amount;
-    const amountCents = amtRaw === null || amtRaw === undefined || amtRaw === "" ? null : toInt(amtRaw);
-
-    if (!recipientEmail && !recipientPhone) {
-      return res.status(400).json({ error: "Provide a recipient email or phone", field: "recipient", version: VERSION, commit: COMMIT });
-    }
-
-    if (recipientEmail && !isEmail(recipientEmail)) {
-      return res.status(400).json({ error: "Invalid recipient email", field: "recipientEmail", version: VERSION, commit: COMMIT });
-    }
-
-    if (recipientEmail && isBlockedEmailDomain(recipientEmail)) {
-      return res.status(400).json({
-        error: "Recipient email domain not allowed",
-        field: "recipientEmail",
-        code: "BLOCKED_EMAIL_DOMAIN",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    if (recipientPhone && !isE164(recipientPhone)) {
-      return res.status(400).json({ error: "Phone must be E.164 like +14165551234", field: "recipientPhone", version: VERSION, commit: COMMIT });
-    }
-
-    // Locked scope for now: email-only delivery (guest + registered)
-    if (recipientPhone) {
-      return res.status(400).json({
-        error: "SMS delivery is not enabled in the current scope",
-        field: "recipientPhone",
-        code: "SMS_DISABLED_SCOPE",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    // -------------------- GUEST MODE HARD LOCK --------------------
-    // If not registered, ONLY preset mode is allowed (avoid confusing AUTH_REQUIRED for guests).
-    if (!registered && messageMode !== "preset") {
-      return res.status(400).json({
-        error: "Guest Thankümail is preset-only",
-        field: "messageMode",
-        code: "GUEST_PRESET_ONLY",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    // -------------------- SERVER-AUTHORITATIVE MESSAGE --------------------
-    let finalMessage = "";
-    let finalPresetId: number | null = null;
-
-    if (messageMode === "preset") {
-      // Guest: hard reject forbidden keys (old cached clients)
-      if (!registered) {
-        const forbidden = rawContainsForbiddenGuestKeys(rawBody);
-        if (forbidden.forbidden) {
-          const issues: any[] = [];
-          if (forbidden.hasAmount) {
-            issues.push({ code: "custom", message: "Guest Thankümail does not include a gift amount", path: ["amount"] });
-          }
-          if (forbidden.hasMessage) {
-            issues.push({ code: "custom", message: "Guest Thankümail message is preset-only", path: ["message"] });
-          }
-          return res.status(400).json({
-            error: "Invalid payload",
-            issues,
-            code: "GUEST_FORBIDDEN_FIELDS",
-            version: VERSION,
-            commit: COMMIT,
-          });
-        }
-      }
-
-      const presetMsg = presetMessageById(Number(presetId));
-      if (!presetMsg) {
-        return res.status(400).json({
-          error: "Choose a preset message (1–7)",
-          field: "presetMessageId",
-          code: "PRESET_REQUIRED",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-      finalMessage = presetMsg;
-      finalPresetId = Number(presetId);
-
-      // Guest: email required + no amount
-      if (!registered) {
-        if (!recipientEmail) {
-          return res.status(400).json({
-            error: "Guest Thankümail requires recipient email",
-            field: "recipientEmail",
-            code: "GUEST_EMAIL_REQUIRED",
-            version: VERSION,
-            commit: COMMIT,
-          });
-        }
-        if (amountCents !== null && Number.isFinite(amountCents) && amountCents > 0) {
-          return res.status(400).json({
-            error: "Guest Thankümail does not include a gift amount",
-            field: "amount",
-            code: "GUEST_NO_AMOUNT",
-            version: VERSION,
-            commit: COMMIT,
-          });
-        }
-      } else {
-        // Registered: if amount included, enforce auth + min $25
-        if (amountCents !== null && Number.isFinite(amountCents) && amountCents > 0) {
-          if (!Number.isFinite(amountCents) || amountCents <= 0) {
-            return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
-          }
-          if (amountCents < 2500) {
-            return res.status(400).json({ error: "Minimum amount is $25", field: "amount", code: "AMOUNT_MIN", version: VERSION, commit: COMMIT });
-          }
-          if (amountCents > 100000) {
-            return res.status(400).json({ error: "Maximum amount is $1000", field: "amount", code: "AMOUNT_MAX", version: VERSION, commit: COMMIT });
-          }
-        }
-      }
-    } else {
-      // custom (registered)
-      if (!registered) {
-        return res.status(401).json({
-          error: "Authentication required",
-          code: "AUTH_REQUIRED",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-
-      finalMessage = String(rawMessage || "").trim();
-      if (!finalMessage) {
-        return res.status(400).json({ error: "Message is required", field: "message", code: "MESSAGE_REQUIRED", version: VERSION, commit: COMMIT });
-      }
-      if (finalMessage.length > 280) {
-        return res.status(400).json({
-          error: "Message must be 280 characters or less",
-          field: "message",
-          code: "MESSAGE_TOO_LONG",
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-
-      if (amountCents !== null) {
-        if (!Number.isFinite(amountCents) || amountCents <= 0) {
-          return res.status(400).json({ error: "Amount must be positive", field: "amount", code: "AMOUNT_INVALID", version: VERSION, commit: COMMIT });
-        }
-        if (amountCents < 2500) {
-          return res.status(400).json({ error: "Minimum amount is $25", field: "amount", code: "AMOUNT_MIN", version: VERSION, commit: COMMIT });
-        }
-        if (amountCents > 100000) {
-          return res.status(400).json({ error: "Maximum amount is $1000", field: "amount", code: "AMOUNT_MAX", version: VERSION, commit: COMMIT });
-        }
-      }
-    }
-
-    // -------------------- TURNSTILE --------------------
-    const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
-    if (!t.ok) {
-      const codes = t.codes || [];
-      const missing = codes.includes("missing-input-response");
-      return res.status(400).json({
-        error: missing ? "Missing CAPTCHA token" : "CAPTCHA failed",
-        field: "turnstileToken",
-        codes,
-        code: "TURNSTILE_FAILED",
-        version: VERSION,
-        commit: COMMIT,
-      });
-    }
-
-    // -------------------- LIMITS --------------------
-    const bypassLimits = canBypassLimits(parsed.data);
-    if (!bypassLimits) {
-      const ipLim = enforceIpDailyLimit(ip, DAILY_LIMIT_IP);
-      if (!ipLim.ok) {
-        return res.status(429).json({
-          error: "Daily limit reached for IP",
-          code: "DAILY_LIMIT_IP",
-          field: "ip",
-          retryAfterSec: ipLim.retryAfterSec,
-          version: VERSION,
-          commit: COMMIT,
-        });
-      }
-
-      try {
-        if (senderEmail) {
-          const lim = await enforceDailyLimit({ kind: "sender", value: senderEmail, limit: DAILY_LIMIT_SENDER });
-          if (!lim.ok) {
-            return res.status(429).json({
-              error: "Daily limit reached for sender",
-              code: "DAILY_LIMIT_SENDER",
-              field: "senderEmail",
-              retryAfterSec: lim.retryAfterSec,
-              version: VERSION,
-              commit: COMMIT,
-            });
-          }
-        }
-
-        if (recipientPhone) {
-          const lim = await enforceDailyLimit({ kind: "phone", value: recipientPhone, limit: DAILY_LIMIT_PHONE });
-          if (!lim.ok) {
-            return res.status(429).json({
-              error: "Daily limit reached for recipient phone",
-              code: "DAILY_LIMIT_PHONE",
-              field: "recipientPhone",
-              retryAfterSec: lim.retryAfterSec,
-              version: VERSION,
-              commit: COMMIT,
-            });
-          }
-        }
-      } catch (e: any) {
-        logEvent("rate_limit_check_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      }
-    }
-
-    // Duplicate suppression: only relevant for SMS (currently disabled), keep code inert
-    if (recipientPhone) {
-      const cutoffMs = Date.now() - SMS_DUPLICATE_WINDOW_SEC * 1000;
-
-      try {
-        let rows: any[] = [];
-
-        try {
-          rows = await db
-            .select()
-            .from(gifts)
-            .where(and(eq((gifts as any).recipientPhone, recipientPhone), eq(gifts.message, finalMessage), eq(gifts.isClaimed, false)));
-        } catch {
-          rows = [];
-        }
-
-        if ((!rows || rows.length === 0) && senderEmail) {
-          rows = await db
-            .select()
-            .from(gifts)
-            .where(and(eq((gifts as any).senderEmail, senderEmail), eq(gifts.message, finalMessage), eq(gifts.isClaimed, false)));
-        }
-
-        const recent = (rows || [])
-          .map((r: any) => ({ r, ms: toMs(r?.createdAt) }))
-          .filter((x) => x.ms && x.ms >= cutoffMs)
-          .sort((a, b) => b.ms - a.ms);
-
-        const existing = recent?.[0]?.r;
-        if (existing?.publicId) {
-          const existingClaimUrl = `${getClaimSiteBaseUrl(req)}/claim/${existing.publicId}`;
-          return res.json({
-            ok: true,
-            publicId: existing.publicId,
-            claimUrl: existingClaimUrl,
-            amount: existing.amount ?? null,
-            messageMode: (existing as any).messageMode || "custom",
-            presetMessageId: (existing as any).presetMessageId ?? null,
-            deliveryOk: true,
-            emailSent: false,
-            smsQueued: false,
-            version: VERSION,
-            commit: COMMIT,
-          });
-        }
-      } catch (e: any) {
-        logEvent("sms_duplicate_check_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      }
-    }
-
-    const publicId = newPublicId();
-    const claimUrl = `${getClaimSiteBaseUrl(req)}/claim/${publicId}`;
-
+  app.post("/api/gifts", limiterCreateGift, async (req, res) => {
     try {
-      await db.insert(gifts).values({
-        publicId,
-        senderUserId,
-        senderEmail,
-        recipientEmail: recipientEmail || null,
-        recipientPhone: recipientPhone || null,
+      const ip = getIp(req);
 
-        messageMode,
-        presetMessageId: finalPresetId,
+      // best-effort per-IP daily limit (memory-based)
+      if (DAILY_LIMIT_IP > 0) {
+        const current = getMemIp(ip);
+        if (current >= DAILY_LIMIT_IP) {
+          return res.status(429).json({
+            error: "Daily limit reached",
+            code: "DAILY_LIMIT_IP",
+            retryAfterSec: 60 * 60,
+            version: VERSION,
+          });
+        }
+      }
 
-        message: finalMessage,
+      const parsed = zCreateGift.safeParse(req.body || {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
+          issues: parsed.error.issues,
+          version: VERSION,
+        });
+      }
 
-        amount: amountCents && amountCents > 0 ? amountCents : null,
+      const a = await getAuth(req);
+      const isRegistered = a.isAuthed;
 
-        isClaimed: false,
-        reminderCount: 0,
-        lastReminderSentAt: null,
-        returnedToSenderAt: null,
-        claimedAt: null,
-      } as any);
-
-      queueGiftDelivery({
-        req,
-        publicId,
-        claimUrl,
-        amountCents: amountCents && amountCents > 0 ? amountCents : 0,
-        senderEmail,
+      const {
         recipientEmail,
-        recipientPhone,
-        message: finalMessage,
-      });
+        senderEmail,
+        messageMode,
+        presetMessageId,
+        message,
+        amountDollars,
+        amountCents,
+        turnstileToken,
+      } = parsed.data;
+
+      // Turnstile enforcement
+      const v = await verifyTurnstile(String(turnstileToken || ""), ip);
+      if (!v.ok) {
+        return res.status(400).json({
+          error: "Missing or invalid CAPTCHA token",
+          field: "turnstileToken",
+          code: "TURNSTILE_FAILED",
+          codes: v.codes,
+          version: VERSION,
+        });
+      }
+
+      // Daily limit by sender email (DB-backed)
+      const normSenderEmail = senderEmail ? String(senderEmail).trim().toLowerCase() : "";
+      if (DAILY_LIMIT_SENDER > 0 && normSenderEmail) {
+        const c = await countDailyBySenderEmail(normSenderEmail);
+        if (c >= DAILY_LIMIT_SENDER) {
+          return res.status(429).json({
+            error: "Daily limit reached",
+            code: "DAILY_LIMIT_SENDER",
+            retryAfterSec: 60 * 60,
+            version: VERSION,
+          });
+        }
+      }
+
+      // Locked scope: email-only
+      const toEmail = String(recipientEmail || "").trim().toLowerCase();
+      if (!toEmail) {
+        return res.status(400).json({
+          error: "Recipient email is required",
+          field: "recipientEmail",
+          code: "RECIPIENT_EMAIL_REQUIRED",
+          version: VERSION,
+        });
+      }
+
+      // Determine amount (cents)
+      let finalAmountCents: number | null = null;
+      if (amountCents != null) {
+        finalAmountCents = Number(amountCents);
+      } else if (amountDollars != null) {
+        finalAmountCents = moneyToCents(Number(amountDollars));
+      }
+
+      // Message enforcement
+      let finalMessageMode: "preset" | "custom" = (messageMode as any) || "preset";
+      let finalPresetMessageId: number | null =
+        presetMessageId == null ? null : Number(presetMessageId);
+      let finalMessage: string = message ? String(message).trim() : "";
+
+      if (!isRegistered) {
+        // Guests: preset-only, no amount, no custom message
+        finalMessageMode = "preset";
+        finalMessage = "";
+        if (!Number.isInteger(finalPresetMessageId) || (finalPresetMessageId as number) < 1) {
+          return res.status(400).json({
+            error: "Preset message is required for guests",
+            field: "presetMessageId",
+            code: "GUEST_PRESET_REQUIRED",
+            version: VERSION,
+          });
+        }
+        if (finalAmountCents != null && finalAmountCents !== 0) {
+          return res.status(400).json({
+            error: "Guests cannot include an amount",
+            field: "amountDollars",
+            code: "GUEST_AMOUNT_NOT_ALLOWED",
+            version: VERSION,
+          });
+        }
+        finalAmountCents = null;
+      } else {
+        // Registered: preset or custom; amount optional but if present must be allowed
+        if (finalMessageMode === "custom") {
+          const m = String(finalMessage || "").trim();
+          if (!m) {
+            return res.status(400).json({
+              error: "Message is required for custom mode",
+              field: "message",
+              code: "CUSTOM_MESSAGE_REQUIRED",
+              version: VERSION,
+            });
+          }
+          if (m.length > 280) {
+            return res.status(400).json({
+              error: "Message too long (max 280)",
+              field: "message",
+              code: "MESSAGE_TOO_LONG",
+              version: VERSION,
+            });
+          }
+          finalMessage = m;
+          finalPresetMessageId = null;
+        } else {
+          finalMessageMode = "preset";
+          finalMessage = "";
+          if (!Number.isInteger(finalPresetMessageId) || (finalPresetMessageId as number) < 1) {
+            return res.status(400).json({
+              error: "Preset message is required for preset mode",
+              field: "presetMessageId",
+              code: "PRESET_REQUIRED",
+              version: VERSION,
+            });
+          }
+        }
+
+        if (finalAmountCents != null) {
+          if (finalAmountCents < MIN_AMOUNT_CENTS_REGISTERED) {
+            return res.status(400).json({
+              error: "Minimum amount is $25",
+              field: "amountDollars",
+              code: "MIN_AMOUNT",
+              version: VERSION,
+            });
+          }
+          if (!ALLOWED_AMOUNTS_CENTS.has(finalAmountCents)) {
+            return res.status(400).json({
+              error: `Amount must be one of: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}`,
+              field: "amountDollars",
+              code: "AMOUNT_NOT_ALLOWED",
+              version: VERSION,
+            });
+          }
+        }
+      }
+
+      // bump memory IP counter only after passing validation
+      if (DAILY_LIMIT_IP > 0) bumpMemIp(ip);
+
+      // Create gift
+      const publicId = crypto.randomBytes(16).toString("hex");
+      const claimUrl =
+        (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") +
+        "/" +
+        publicId;
+
+      const inserted = await db
+        .insert(gifts)
+        .values({
+          publicId,
+          senderUserId: isRegistered ? a.userId : null,
+          senderEmail: normSenderEmail || null,
+          recipientEmail: toEmail,
+          recipientPhone: null,
+          deliveryMethod: null,
+
+          messageMode: finalMessageMode,
+          presetMessageId: finalPresetMessageId,
+          message: finalMessage,
+
+          amount: finalAmountCents,
+
+          isClaimed: false,
+          createdAt: now(),
+          claimedAt: null,
+
+          reminderCount: 0,
+          lastReminderSentAt: null,
+          returnedToSenderAt: null,
+        })
+        .returning({ id: gifts.id });
+
+      const giftId = Number(inserted?.[0]?.id || 0);
+
+      // Send gift email (best-effort)
+      let emailSent = false;
+      let deliveryError: string | null = null;
+
+      try {
+        await sendGiftEmail({
+          to: toEmail,
+          publicId,
+          claimUrl,
+          amountCents: finalAmountCents,
+          senderEmail: normSenderEmail || undefined,
+          message: finalMessageMode === "custom" ? (finalMessage || undefined) : undefined,
+        } as any);
+        emailSent = true;
+      } catch (e: any) {
+        deliveryError = String(e?.message || e);
+      }
 
       return res.json({
         ok: true,
         publicId,
         claimUrl,
-        amount: amountCents && amountCents > 0 ? amountCents : null,
-        messageMode,
-        presetMessageId: finalPresetId,
-        deliveryOk: true,
-        emailSent: !!recipientEmail,
-        smsQueued: !!recipientPhone,
+        deliveryOk: emailSent,
+        emailSent,
+        deliveryError: deliveryError || undefined,
         version: VERSION,
-        commit: COMMIT,
       });
-    } catch (e: any) {
-      logEvent("gift_create_error", { err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Create gift failed",
+        code: "CREATE_GIFT_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
     }
   });
 
   /* -------------------- GIFTS: GET -------------------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
-    const publicId = safeStr(req.params.publicId).trim();
-    if (!publicId) return res.status(400).json({ error: "Invalid id", version: VERSION, commit: COMMIT });
-
     try {
-      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
-      const gift: any = rows?.[0];
-      if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
+      const publicId = String(req.params.publicId || "").trim();
+      if (!publicId) {
+        return res.status(400).json({ error: "Missing id", code: "MISSING_ID", version: VERSION });
+      }
 
+      const row = await db
+        .select({
+          publicId: gifts.publicId,
+          senderEmail: gifts.senderEmail,
+          recipientEmail: gifts.recipientEmail,
+          messageMode: gifts.messageMode,
+          presetMessageId: gifts.presetMessageId,
+          message: gifts.message,
+          amount: gifts.amount,
+          createdAt: gifts.createdAt,
+          claimedAt: gifts.claimedAt,
+          isClaimed: gifts.isClaimed,
+        })
+        .from(gifts)
+        .where(eq(gifts.publicId, publicId))
+        .limit(1);
+
+      const g = row?.[0];
+      if (!g) {
+        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
+      }
+
+      // Do not leak recipientEmail
       return res.json({
         ok: true,
-        publicId: gift.publicId,
-        messageMode: gift.messageMode || "custom",
-        presetMessageId: gift.presetMessageId ?? null,
-        message: gift.message,
-        amount: gift.amount ?? null,
-        isClaimed: gift.isClaimed,
-        createdAt: gift.createdAt,
-        claimedAt: gift.claimedAt,
-        reminderCount: gift.reminderCount,
-        lastReminderSentAt: gift.lastReminderSentAt,
-        returnedToSenderAt: gift.returnedToSenderAt,
+        gift: {
+          publicId: g.publicId,
+          senderEmail: g.senderEmail || null,
+          messageMode: (g.messageMode as any) || "preset",
+          presetMessageId: g.presetMessageId ?? null,
+          message: (g.messageMode as any) === "custom" ? g.message || "" : "",
+          amount: g.amount ?? null,
+          createdAt: g.createdAt,
+          claimed: Boolean(g.isClaimed || g.claimedAt),
+        },
         version: VERSION,
-        commit: COMMIT,
       });
-    } catch (e: any) {
-      logEvent("gift_get_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Get gift failed",
+        code: "GET_GIFT_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
     }
   });
 
-  /* -------------------- GIFTS: CLAIM -------------------- */
-  app.post("/api/gifts/:publicId/claim", claimLimiter, async (req, res) => {
-    const publicId = safeStr(req.params.publicId).trim();
-    if (!publicId) return res.status(400).json({ error: "Invalid id", version: VERSION, commit: COMMIT });
-
-    const parsed = ClaimSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues, version: VERSION, commit: COMMIT });
-    }
-
-    const minDelaySec = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC || 60));
-
+  /* -------------------- CLAIM -------------------- */
+  app.post("/api/gifts/:publicId/claim", async (req, res) => {
     try {
-      const rows = await db.select().from(gifts).where(eq(gifts.publicId, publicId));
-      const gift: any = rows?.[0];
-      if (!gift) return res.status(404).json({ error: "Not found", version: VERSION, commit: COMMIT });
+      const publicId = String(req.params.publicId || "").trim();
+      if (!publicId) {
+        return res.status(400).json({ error: "Missing id", code: "MISSING_ID", version: VERSION });
+      }
 
-      if (gift.returnedToSenderAt) {
-        return res.status(410).json({
-          error: "This thankÜmail was returned to sender and can no longer be claimed",
-          code: "RETURNED_TO_SENDER",
-          returnedToSenderAt: gift.returnedToSenderAt,
+      const row = await db
+        .select({
+          id: gifts.id,
+          createdAt: gifts.createdAt,
+          claimedAt: gifts.claimedAt,
+          isClaimed: gifts.isClaimed,
+        })
+        .from(gifts)
+        .where(eq(gifts.publicId, publicId))
+        .limit(1);
+
+      const g = row?.[0];
+      if (!g) {
+        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
+      }
+      if (g.isClaimed || g.claimedAt) {
+        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION });
+      }
+
+      const createdAtMs = g.createdAt ? new Date(g.createdAt).getTime() : 0;
+      const minDelayMs = MIN_CLAIM_DELAY_SEC * 1000;
+      if (createdAtMs && Date.now() - createdAtMs < minDelayMs) {
+        const waitMs = minDelayMs - (Date.now() - createdAtMs);
+        return res.status(429).json({
+          error: "Please wait a moment before claiming",
+          code: "CLAIM_TOO_SOON",
+          retryAfterSec: Math.ceil(waitMs / 1000),
           version: VERSION,
-          commit: COMMIT,
         });
       }
 
-      if (gift.isClaimed) {
-        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION, commit: COMMIT });
+      const updated = await db
+        .update(gifts)
+        .set({ isClaimed: true, claimedAt: now() })
+        .where(and(eq(gifts.id, g.id), eq(gifts.isClaimed, false), isNull(gifts.claimedAt)))
+        .returning({ id: gifts.id });
+
+      if (!updated?.length) {
+        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION });
       }
 
-      if (gift.createdAt && minDelaySec > 0) {
-        const ageMs = Date.now() - new Date(gift.createdAt).getTime();
-        if (ageMs < minDelaySec * 1000) {
-          const retryAfterSec = Math.ceil((minDelaySec * 1000 - ageMs) / 1000);
-          return res.status(429).json({ error: "Please wait before claiming", code: "MIN_DELAY", retryAfterSec, version: VERSION, commit: COMMIT });
+      return res.json({ ok: true, claimed: true, version: VERSION });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Claim failed",
+        code: "CLAIM_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
+  /* -------------------- ADMIN: REMINDERS -------------------- */
+  app.post("/api/admin/reminders/send", limiterAdmin, async (req, res) => {
+    try {
+      if (!ADMIN_TOKEN) {
+        return res.status(503).json({
+          error: "ADMIN_TOKEN not configured",
+          code: "ADMIN_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+      if (!isAdmin(req)) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+      if (!REMINDER_SENDING_ENABLED) {
+        return res.json({ ok: true, sent: 0, skipped: 0, disabled: true, version: VERSION });
+      }
+
+      const limit = Math.max(1, Math.min(50, Number((req.body || {}).limit ?? 20)));
+      const cutoff = new Date(Date.now() - REMINDER_GAP_MS);
+
+      const rows = await db
+        .select({
+          id: gifts.id,
+          publicId: gifts.publicId,
+          recipientEmail: gifts.recipientEmail,
+          senderEmail: gifts.senderEmail,
+          amount: gifts.amount,
+          isClaimed: gifts.isClaimed,
+          claimedAt: gifts.claimedAt,
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+          returnedToSenderAt: gifts.returnedToSenderAt,
+        })
+        .from(gifts)
+        .where(
+          and(
+            eq(gifts.isClaimed, false),
+            isNull(gifts.claimedAt),
+            isNull(gifts.returnedToSenderAt),
+            lt(gifts.reminderCount, REMINDER_MAX),
+            or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
+            sql`${gifts.recipientEmail} is not null`
+          )
+        )
+        .orderBy(asc(gifts.lastReminderSentAt), asc(gifts.id))
+        .limit(limit);
+
+      let sent = 0;
+      let skipped = 0;
+
+      for (const g of rows) {
+        const pid = String(g.publicId || "");
+        const to = String(g.recipientEmail || "").trim();
+        if (!pid || !to) {
+          skipped++;
+          continue;
+        }
+
+        const claimUrl =
+          (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") +
+          "/" +
+          pid;
+
+        try {
+          await sendReminderEmail({
+            to,
+            publicId: pid,
+            claimUrl,
+            amountCents: g.amount ?? null,
+            senderEmail: g.senderEmail || undefined,
+          } as any);
+
+          await db
+            .update(gifts)
+            .set({
+              reminderCount: Number(g.reminderCount || 0) + 1,
+              lastReminderSentAt: now(),
+            })
+            .where(eq(gifts.id, g.id));
+
+          sent++;
+        } catch {
+          skipped++;
         }
       }
 
-      const t = await verifyTurnstile(safeStr(parsed.data.turnstileToken), req);
-      if (!t.ok) {
-        const codes = t.codes || [];
-        const missing = codes.includes("missing-input-response");
-        return res.status(400).json({
-          error: missing ? "Missing CAPTCHA token" : "CAPTCHA failed",
-          field: "turnstileToken",
-          codes,
-          code: "TURNSTILE_FAILED",
+      return res.json({ ok: true, sent, skipped, scanned: rows.length, version: VERSION });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Reminders send failed",
+        code: "REMINDERS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
+  /* -------------------- ADMIN: RETURN TO SENDER -------------------- */
+  app.post("/api/admin/return-to-sender/send", limiterAdmin, async (req, res) => {
+    try {
+      if (!ADMIN_TOKEN) {
+        return res.status(503).json({
+          error: "ADMIN_TOKEN not configured",
+          code: "ADMIN_NOT_CONFIGURED",
           version: VERSION,
-          commit: COMMIT,
+        });
+      }
+      if (!isAdmin(req)) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const publicId = String((req.body || {}).publicId || "").trim();
+      const reason = String((req.body || {}).reason || "").trim() || undefined;
+
+      if (!publicId) {
+        return res.status(400).json({
+          error: "publicId required",
+          field: "publicId",
+          code: "MISSING_PUBLIC_ID",
+          version: VERSION,
         });
       }
 
-      await db
-        .update(gifts)
-        .set({ isClaimed: true, claimedAt: new Date() })
-        .where(and(eq(gifts.publicId, publicId), eq(gifts.isClaimed, false)));
+      const row = await db
+        .select({
+          id: gifts.id,
+          senderEmail: gifts.senderEmail,
+          amount: gifts.amount,
+          returnedToSenderAt: gifts.returnedToSenderAt,
+        })
+        .from(gifts)
+        .where(eq(gifts.publicId, publicId))
+        .limit(1);
 
-      return res.json({ ok: true, version: VERSION, commit: COMMIT });
-    } catch (e: any) {
-      logEvent("claim_error", { publicId, err: safeStr(e?.message), stack: safeStr(e?.stack) });
-      return res.status(500).json({ error: "Server error", version: VERSION, commit: COMMIT });
+      const g = row?.[0];
+      if (!g) {
+        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
+      }
+      if (g.returnedToSenderAt) {
+        return res.status(409).json({ error: "Already sent", code: "ALREADY_SENT", version: VERSION });
+      }
+
+      const to = String(g.senderEmail || "").trim();
+      if (!to) {
+        return res.status(400).json({ error: "Gift has no sender email", code: "NO_SENDER_EMAIL", version: VERSION });
+      }
+
+      await sendReturnToSenderEmail({
+        to,
+        publicId,
+        amountCents: g.amount ?? null,
+        reason,
+      } as any);
+
+      await db.update(gifts).set({ returnedToSenderAt: now() }).where(eq(gifts.id, g.id));
+
+      return res.json({ ok: true, sent: true, version: VERSION });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Return-to-sender failed",
+        code: "RETURN_TO_SENDER_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
     }
+  });
+
+  /* -------------------- FALLBACK 404 -------------------- */
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
   });
 
   const httpServer = createServer(app);
