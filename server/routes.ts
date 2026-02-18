@@ -8,18 +8,20 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { and, asc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import dns from "node:dns/promises";
+import fs from "node:fs";
+import path from "node:path";
 
 import { db } from "./db";
 import { gifts, users, authMagicLinks, authSessions } from "@shared/schema";
 import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-17_003";
+const VERSION = "routes_v2026-02-18_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v1";
 
 /* -------------------- AMOUNTS -------------------- */
 const ALLOWED_AMOUNTS_DOLLARS = [25, 50, 100, 250, 500, 1000] as const;
@@ -39,13 +41,48 @@ const AUTH_RETURN_TOKEN =
 const AUTH_MX_VALIDATE_ENABLED =
   String(process.env.AUTH_MX_VALIDATE_ENABLED ?? "false").toLowerCase() === "true";
 
-// Disposable email prep: optional comma-separated domain list (exact domains), e.g. "mailinator.com,tempmail.com"
-const DISPOSABLE_EMAIL_DOMAINS = new Set(
+/**
+ * Disposable emails:
+ * - Primary source: server/disposableDomains.txt (one domain per line)
+ * - Optional overrides: DISPOSABLE_EMAIL_DOMAINS env (comma-separated exact domains)
+ */
+function loadDisposableDomainsFromFile(): Set<string> {
+  const candidates = [
+    path.resolve(process.cwd(), "server", "disposableDomains.txt"),
+    path.resolve(process.cwd(), "disposableDomains.txt"),
+  ];
+
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const raw = fs.readFileSync(p, "utf8");
+      const lines = raw
+        .split(/\r?\n/g)
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((s) => !s.startsWith("#"))
+        .filter((s) => !s.startsWith("//"));
+      return new Set(lines);
+    } catch {
+      // ignore and fall through
+    }
+  }
+  return new Set();
+}
+
+const DISPOSABLE_EMAIL_DOMAINS_FILE = loadDisposableDomainsFromFile();
+
+const DISPOSABLE_EMAIL_DOMAINS_ENV = new Set(
   String(process.env.DISPOSABLE_EMAIL_DOMAINS || "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
 );
+
+const DISPOSABLE_EMAIL_DOMAINS = new Set<string>([
+  ...Array.from(DISPOSABLE_EMAIL_DOMAINS_FILE),
+  ...Array.from(DISPOSABLE_EMAIL_DOMAINS_ENV),
+]);
 
 /* -------------------- LIMITS -------------------- */
 const DAILY_LIMIT_IP = Math.max(0, Number(process.env.DAILY_LIMIT_IP ?? 10));
@@ -148,7 +185,6 @@ function isAdmin(req: Request) {
 }
 
 function shouldRequireTurnstile() {
-  // Most logical: enforce when configured and not bypassing
   return Boolean(TURNSTILE_SECRET_KEY) && !TURNSTILE_BYPASS;
 }
 
@@ -311,6 +347,8 @@ export function registerRoutes(app: Express): Server {
         returnToken: AUTH_RETURN_TOKEN,
         mxValidateEnabled: AUTH_MX_VALIDATE_ENABLED,
         disposableListSize: DISPOSABLE_EMAIL_DOMAINS.size,
+        disposableFileLoaded: DISPOSABLE_EMAIL_DOMAINS_FILE.size > 0,
+        disposableEnvLoaded: DISPOSABLE_EMAIL_DOMAINS_ENV.size > 0,
       },
 
       limits: {
@@ -365,7 +403,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Require Turnstile when configured and not bypassing
       if (shouldRequireTurnstile()) {
         if (!turnstileToken) {
           return res.status(400).json({
@@ -388,7 +425,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Disposable email blocking (prep) — if configured, enforce now
       if (isDisposableEmail(email)) {
         return res.status(400).json({
           error: "Email provider not supported",
@@ -398,7 +434,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // MX validation hook (optional)
       const mx = await mxLooksValid(domain);
       if (!mx.ok) {
         return res.status(400).json({
@@ -410,7 +445,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Create one-time token (store only hash)
       const rawToken = randomToken(24);
       const tokenHash = sha256Hex(rawToken);
       const expiresAt = new Date(Date.now() + AUTH_MAGIC_LINK_TTL_MS);
@@ -425,9 +459,6 @@ export function registerRoutes(app: Express): Server {
         userAgent: ua || null,
         createdAt: now(),
       });
-
-      // IMPORTANT: inbox ownership is proven only on /consume; no session here.
-      // If your email-sending layer handles auth emails elsewhere, keep this response shape stable.
 
       if (AUTH_RETURN_TOKEN) {
         return res.json({
@@ -468,7 +499,6 @@ export function registerRoutes(app: Express): Server {
 
       const tokenHash = sha256Hex(parsed.data.token);
 
-      // Atomically consume (prevents reuse)
       const consumed = await db.transaction(async (tx) => {
         const updated = await tx
           .update(authMagicLinks)
@@ -490,7 +520,6 @@ export function registerRoutes(app: Express): Server {
           return { ok: true as const, email: String(updated[0].email || "").trim().toLowerCase() };
         }
 
-        // Determine reason for failure (invalid vs used vs expired)
         const row = await tx
           .select({
             consumedAt: authMagicLinks.consumedAt,
@@ -527,7 +556,6 @@ export function registerRoutes(app: Express): Server {
       const email = normalizeEmail(consumed.email);
       const domain = extractDomain(email);
 
-      // Re-run disposable/MX checks here too (defense-in-depth)
       if (!domain) {
         return res.status(400).json({
           error: "Invalid email",
@@ -552,7 +580,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Ensure user exists (ownership proven now)
       const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
 
       let userId = String(existing?.[0]?.id || "");
@@ -566,7 +593,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Issue session token (only after verification)
       const sessionToken = randomToken(32);
       const sessionHash = sha256Hex(sessionToken);
       const expiresAt = new Date(Date.now() + AUTH_SESSION_TTL_MS);
@@ -628,7 +654,6 @@ export function registerRoutes(app: Express): Server {
     try {
       const ip = getIp(req);
 
-      // best-effort per-IP daily limit (memory-based)
       if (DAILY_LIMIT_IP > 0) {
         const current = getMemIp(ip);
         if (current >= DAILY_LIMIT_IP) {
@@ -665,7 +690,6 @@ export function registerRoutes(app: Express): Server {
         turnstileToken,
       } = parsed.data;
 
-      // Turnstile enforcement
       const v = await verifyTurnstile(String(turnstileToken || ""), ip);
       if (!v.ok) {
         return res.status(400).json({
@@ -677,7 +701,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Daily limit by sender email (DB-backed)
       const normSenderEmail = senderEmail ? String(senderEmail).trim().toLowerCase() : "";
       if (DAILY_LIMIT_SENDER > 0 && normSenderEmail) {
         const c = await countDailyBySenderEmail(normSenderEmail);
@@ -691,7 +714,6 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // Locked scope: email-only
       const toEmail = String(recipientEmail || "").trim().toLowerCase();
       if (!toEmail) {
         return res.status(400).json({
@@ -702,7 +724,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Determine amount (cents)
       let finalAmountCents: number | null = null;
       if (amountCents != null) {
         finalAmountCents = Number(amountCents);
@@ -710,13 +731,11 @@ export function registerRoutes(app: Express): Server {
         finalAmountCents = moneyToCents(Number(amountDollars));
       }
 
-      // Message enforcement
       let finalMessageMode: "preset" | "custom" = (messageMode as any) || "preset";
       let finalPresetMessageId: number | null = presetMessageId == null ? null : Number(presetMessageId);
       let finalMessage: string = message ? String(message).trim() : "";
 
       if (!isRegistered) {
-        // Guests: preset-only, no amount, no custom message
         finalMessageMode = "preset";
         finalMessage = "";
         if (!Number.isInteger(finalPresetMessageId) || (finalPresetMessageId as number) < 1) {
@@ -737,7 +756,6 @@ export function registerRoutes(app: Express): Server {
         }
         finalAmountCents = null;
       } else {
-        // Registered: preset or custom; amount optional but if present must be allowed
         if (finalMessageMode === "custom") {
           const m = String(finalMessage || "").trim();
           if (!m) {
@@ -791,10 +809,8 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // bump memory IP counter only after passing validation
       if (DAILY_LIMIT_IP > 0) bumpMemIp(ip);
 
-      // Create gift
       const publicId = crypto.randomBytes(16).toString("hex");
       const claimUrl =
         (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") + "/" + publicId;
@@ -828,7 +844,6 @@ export function registerRoutes(app: Express): Server {
       const giftId = Number(inserted?.[0]?.id || 0);
       void giftId;
 
-      // Send gift email (best-effort)
       let emailSent = false;
       let deliveryError: string | null = null;
 
@@ -895,7 +910,6 @@ export function registerRoutes(app: Express): Server {
         return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
       }
 
-      // Do not leak recipientEmail
       return res.json({
         ok: true,
         gift: {
@@ -1156,6 +1170,5 @@ export function registerRoutes(app: Express): Server {
 
 /* -------------------- DRIZZLE HELPERS -------------------- */
 function gtTime(col: any, d: Date) {
-  // drizzle-orm helper wrapper to keep this file self-contained
   return sql`${col} > ${d}`;
 }
