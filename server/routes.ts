@@ -13,15 +13,20 @@ import path from "node:path";
 
 import { db } from "./db";
 import { gifts, users, authMagicLinks, authSessions } from "@shared/schema";
-import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
+import {
+  sendGiftEmail,
+  sendReminderEmail,
+  sendReturnToSenderEmail,
+  sendAuthMagicLinkEmail,
+} from "./email";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-19_001";
+const VERSION = "routes_v2026-02-19_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1_auth_magiclink_email_v1";
 
 /* -------------------- AMOUNTS -------------------- */
 const ALLOWED_AMOUNTS_DOLLARS = [25, 50, 100, 250, 500, 1000] as const;
@@ -34,7 +39,7 @@ const TURNSTILE_SECRET_KEY = (process.env.TURNSTILE_SECRET_KEY || "").trim();
 const TURNSTILE_BYPASS = String(process.env.TURNSTILE_BYPASS || "false").toLowerCase() === "true";
 
 /* -------------------- AUTH HARDENING -------------------- */
-const AUTH_MAGIC_LINK_TTL_MS = 10 * 60 * 1000; // 10 minutes (requested)
+const AUTH_MAGIC_LINK_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const AUTH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const AUTH_RETURN_TOKEN =
   String(process.env.AUTH_RETURN_TOKEN ?? "true").toLowerCase() === "true"; // dev-friendly; set false to never return token
@@ -206,6 +211,27 @@ function shouldRequireTurnstile() {
   return Boolean(TURNSTILE_SECRET_KEY) && !TURNSTILE_BYPASS;
 }
 
+function publicSiteBase() {
+  return (process.env.PUBLIC_SITE_URL || "https://thankumail.com").replace(/\/+$/, "");
+}
+
+function buildAuthConsumeUrl(token: string) {
+  // Confirmed frontend format:
+  // https://thankumail.com/auth/consume?token=...
+  return `${publicSiteBase()}/auth/consume?token=${encodeURIComponent(token)}`;
+}
+
+function logAuth(event: string, fields: Record<string, any> = {}) {
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event,
+      version: VERSION,
+      ...fields,
+    })
+  );
+}
+
 /* -------------------- DAILY COUNTS -------------------- */
 /**
  * Schema note:
@@ -368,6 +394,7 @@ export function registerRoutes(app: Express): Server {
         disposableFileLoaded: DISPOSABLE_EMAIL_DOMAINS_FILE.size > 0,
         disposableEnvLoaded: DISPOSABLE_EMAIL_DOMAINS_ENV.size > 0,
         disposableFilePath: DISPOSABLE_EMAIL_DOMAINS_FILE_PATH,
+        authConsumeUrlSample: `${publicSiteBase()}/auth/consume?token=...`,
       },
 
       limits: {
@@ -479,11 +506,35 @@ export function registerRoutes(app: Express): Server {
         createdAt: now(),
       });
 
+      const loginUrl = buildAuthConsumeUrl(rawToken);
+
+      // Attempt to send email (best-effort). Do not block auth token returns.
+      let emailSent = false;
+      let emailError: string | null = null;
+      try {
+        logAuth("auth_magiclink_email_send_start", { toDomain: domain });
+        const r = await sendAuthMagicLinkEmail({ to: email, loginUrl });
+        emailSent = Boolean(r.ok);
+        if (!r.ok) emailError = String(r.error || "unknown");
+        logAuth("auth_magiclink_email_send_result", {
+          toDomain: domain,
+          ok: emailSent,
+          error: emailError || undefined,
+        });
+      } catch (e: any) {
+        emailSent = false;
+        emailError = String(e?.message || e);
+        logAuth("auth_magiclink_email_send_crash", { toDomain: domain, error: emailError });
+      }
+
       if (AUTH_RETURN_TOKEN) {
         return res.json({
           ok: true,
           token: rawToken,
+          loginUrl,
           expiresAt: expiresAt.toISOString(),
+          emailSent,
+          emailError: emailError || undefined,
           version: VERSION,
         });
       }
@@ -491,7 +542,10 @@ export function registerRoutes(app: Express): Server {
       return res.json({
         ok: true,
         sent: true,
+        loginUrl,
         expiresAt: expiresAt.toISOString(),
+        emailSent,
+        emailError: emailError || undefined,
         version: VERSION,
       });
     } catch (err: any) {
@@ -648,8 +702,8 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // Back-compat: keep /api/me, but frontend expects /api/auth/me
-  app.get("/api/me", async (req, res) => {
+  // canonical
+  app.get("/api/auth/me", async (req, res) => {
     const a = await getAuth(req);
     if (!a.isAuthed) {
       return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
@@ -669,8 +723,8 @@ export function registerRoutes(app: Express): Server {
     return res.json({ ok: true, user: row?.[0] || null, version: VERSION });
   });
 
-  // NEW: /api/auth/me
-  app.get("/api/auth/me", async (req, res) => {
+  // backward compat
+  app.get("/api/me", async (req, res) => {
     const a = await getAuth(req);
     if (!a.isAuthed) {
       return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });

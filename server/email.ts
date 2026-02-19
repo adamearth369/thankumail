@@ -27,7 +27,12 @@ type SendReturnToSenderEmailArgs = {
   reason?: string;
 };
 
-const EMAIL_VERSION = "email_v2026-02-15_001";
+type SendAuthMagicLinkEmailArgs = {
+  to: string;
+  loginUrl: string; // absolute URL
+};
+
+const EMAIL_VERSION = "email_v2026-02-19_001";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -138,7 +143,6 @@ function wordmarkUrl() {
 function fontCss() {
   const base = publicSite();
 
-  // Best-effort: many clients support @font-face; Gmail may still fall back.
   return `
   @font-face {
     font-family: 'TM Quicksand';
@@ -418,6 +422,48 @@ async function sendBrevoEmail(params: {
 }
 
 /* -------------------- PUBLIC API -------------------- */
+export async function sendAuthMagicLinkEmail(
+  args: SendAuthMagicLinkEmailArgs,
+): Promise<{ ok: boolean; error?: string }> {
+  const loginUrl = toAbsoluteLink(args.loginUrl);
+  const subject = "Your sign-in link";
+
+  const textContent = `Sign in to thankümail:\n\n${loginUrl}\n\nIf you didn’t request this, you can ignore this email.`;
+
+  const bodyHtml = `
+    <div style="margin:0;font-size:15px;line-height:1.6;color:#111827;">
+      Tap the button to sign in.
+    </div>
+    <div style="margin:12px 0 0;font-size:13px;line-height:1.6;color:#6b7280;">
+      If the button doesn’t work, copy and paste this link:
+    </div>
+    <div style="margin:10px 0 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:14px;background:#ffffff;">
+      <div style="font-size:13px;line-height:1.5;color:#111827;word-break:break-all;">
+        ${escapeHtml(loginUrl)}
+      </div>
+    </div>
+  `;
+
+  const htmlContent = shell({
+    title: "Sign in to thankümail",
+    preheader: "Your sign-in link is ready.",
+    bodyHtml,
+    ctaHref: loginUrl,
+    ctaLabel: "Sign in",
+    note: "If you didn’t request this, you can ignore this email.",
+  });
+
+  const r = await sendBrevoEmail({
+    to: args.to,
+    subject,
+    textContent,
+    htmlContent,
+    headers: { "X-thankümail-Kind": "auth_magic_link" },
+  });
+
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
+}
+
 export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: boolean; error?: string }> {
   const claimUrl = toAbsoluteLink(args.claimUrl);
   const subject = `You received a thankümail`;
