@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -32,6 +29,9 @@ type CreateGiftResponse = CreateGiftOk | ApiError;
 
 declare global {
   interface Window {
+    __turnstileToken?: string;
+    turnstileToken?: string;
+    getTurnstileToken?: () => string;
     turnstile?: {
       render: (
         el: HTMLElement | string,
@@ -185,6 +185,16 @@ export default function CreateGiftForm() {
   const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
   const wordmark = "thankümail";
 
+  // Expose latest token for DevTools / auth flow testing
+  useEffect(() => {
+    window.getTurnstileToken = () => String(window.__turnstileToken || window.turnstileToken || "").trim();
+    return () => {
+      try {
+        delete window.getTurnstileToken;
+      } catch {}
+    };
+  }, []);
+
   // Keep UI aligned with locked scope:
   // Guests: preset-only, no amount
   // Registered: preset/custom, amount optional
@@ -330,6 +340,11 @@ export default function CreateGiftForm() {
 
     const el = widgetContainerRef.current;
     if (el) el.innerHTML = "";
+
+    try {
+      window.__turnstileToken = "";
+      window.turnstileToken = "";
+    } catch {}
   }
 
   function renderWidget() {
@@ -345,6 +360,11 @@ export default function CreateGiftForm() {
     }
 
     setToken("");
+    try {
+      window.__turnstileToken = "";
+      window.turnstileToken = "";
+    } catch {}
+
     el.innerHTML = "";
 
     const seq = ++renderSeqRef.current;
@@ -357,7 +377,13 @@ export default function CreateGiftForm() {
         "response-field": true,
         "response-field-name": "cf-turnstile-response",
         callback: (t: string) => {
-          setToken(String(t || ""));
+          const tt = String(t || "");
+          setToken(tt);
+          try {
+            window.__turnstileToken = tt;
+            window.turnstileToken = tt;
+          } catch {}
+
           if (errorLockRef.current !== "server") {
             errorLockRef.current = "none";
             setError("");
@@ -366,14 +392,26 @@ export default function CreateGiftForm() {
         },
         "expired-callback": () => {
           setToken("");
+          try {
+            window.__turnstileToken = "";
+            window.turnstileToken = "";
+          } catch {}
           if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
         },
         "timeout-callback": () => {
           setToken("");
+          try {
+            window.__turnstileToken = "";
+            window.turnstileToken = "";
+          } catch {}
           if (errorLockRef.current !== "server") errorLockRef.current = "turnstile";
         },
         "error-callback": () => {
           setToken("");
+          try {
+            window.__turnstileToken = "";
+            window.turnstileToken = "";
+          } catch {}
           if (errorLockRef.current === "server") return;
           setErrorWithLock("Verification failed. Please try again.", "turnstile");
         },
@@ -536,6 +574,10 @@ export default function CreateGiftForm() {
           // ignore
         }
         setToken("");
+        try {
+          window.__turnstileToken = "";
+          window.turnstileToken = "";
+        } catch {}
         return;
       }
 
@@ -561,6 +603,10 @@ export default function CreateGiftForm() {
         // ignore
       }
       setToken("");
+      try {
+        window.__turnstileToken = "";
+        window.turnstileToken = "";
+      } catch {}
     } catch (err: any) {
       setErrorWithLock(err?.message || "Network error", "server");
       setSubmitting(false);
@@ -573,6 +619,10 @@ export default function CreateGiftForm() {
         // ignore
       }
       setToken("");
+      try {
+        window.__turnstileToken = "";
+        window.turnstileToken = "";
+      } catch {}
     }
   }
 
@@ -594,8 +644,7 @@ export default function CreateGiftForm() {
   const currentPreset = PRESET_MESSAGES[presetIdx] || PRESET_MESSAGES[1] || PRESET_MESSAGES[0];
 
   const chipBase = "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer select-none";
-  const chipOn =
-    "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40";
+  const chipOn = "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40";
   const chipOff = "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white";
 
   return (
@@ -614,16 +663,10 @@ export default function CreateGiftForm() {
           {/* AUTH STRIP */}
           <div className="rounded-2xl border border-tm-charcoal/15 bg-tm-cream px-3 py-3">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-medium text-tm-charcoal">
-                {isRegistered ? "Registered mode" : "Guest mode"}
-              </div>
+              <div className="text-sm font-medium text-tm-charcoal">{isRegistered ? "Registered mode" : "Guest mode"}</div>
 
               {isRegistered ? (
-                <button
-                  type="button"
-                  onClick={signOut}
-                  className={classNames(chipBase, chipOff)}
-                >
+                <button type="button" onClick={signOut} className={classNames(chipBase, chipOff)}>
                   Sign out
                 </button>
               ) : (
@@ -651,9 +694,7 @@ export default function CreateGiftForm() {
               placeholder="Sender email"
               className={classNames(
                 inputBase,
-                fieldError === "senderEmail"
-                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                  : "",
+                fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
               )}
             />
           </div>
@@ -668,9 +709,7 @@ export default function CreateGiftForm() {
               placeholder="Recipient email"
               className={classNames(
                 inputBase,
-                fieldError === "recipientEmail"
-                  ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                  : "",
+                fieldError === "recipientEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
               )}
             />
           </div>
@@ -709,9 +748,7 @@ export default function CreateGiftForm() {
                     className={classNames(
                       inputBase,
                       "resize-none py-2",
-                      fieldError === "message"
-                        ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                        : "",
+                      fieldError === "message" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
                     )}
                   />
                   <div className="mt-1 flex items-center justify-between text-[11px] text-tm-charcoal/60">
@@ -726,7 +763,7 @@ export default function CreateGiftForm() {
           ) : null}
 
           {/* PRESET SELECTOR (guest always + registered when preset) */}
-          {(!isRegistered || messageMode === "preset") ? (
+          {!isRegistered || messageMode === "preset" ? (
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="text-sm font-medium text-tm-charcoal">Choose a message</div>
@@ -770,9 +807,7 @@ export default function CreateGiftForm() {
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="text-sm font-medium text-tm-charcoal">Gift amount (optional)</div>
-                <div className="text-xs text-tm-charcoal/60">
-                  {amountCents === null ? "none" : centsToLabel(amountCents)}
-                </div>
+                <div className="text-xs text-tm-charcoal/60">{amountCents === null ? "none" : centsToLabel(amountCents)}</div>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -800,9 +835,7 @@ export default function CreateGiftForm() {
               </div>
 
               {fieldError === "amount" ? (
-                <div className="mt-2 text-xs text-red-600">
-                  Choose one of: 25, 50, 100, 250, 500, 1000.
-                </div>
+                <div className="mt-2 text-xs text-red-600">Choose one of: 25, 50, 100, 250, 500, 1000.</div>
               ) : null}
             </div>
           ) : null}
@@ -841,9 +874,7 @@ export default function CreateGiftForm() {
           </div>
 
           {error ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </div>
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
           ) : null}
 
           {result?.ok ? (
@@ -851,8 +882,7 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent.</div>
 
               <div className="text-sm text-emerald-900/85">
-                Your thankümail has been sent to{" "}
-                <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
+                Your thankümail has been sent to <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
               </div>
 
               <div className="mt-2 text-xs text-emerald-900/75">
@@ -865,9 +895,7 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
-              ) : null}
+              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
 
               <div className="mt-3">
                 <button
@@ -882,10 +910,13 @@ export default function CreateGiftForm() {
                     setAmountCents(null);
                     setLastSentRecipientEmail("");
                     try {
-                      if (widgetIdRef.current && window.turnstile?.reset)
-                        window.turnstile.reset(widgetIdRef.current);
+                      if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
                     } catch {}
                     setToken("");
+                    try {
+                      window.__turnstileToken = "";
+                      window.turnstileToken = "";
+                    } catch {}
                   }}
                   className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-50 cursor-pointer"
                 >
