@@ -16,6 +16,15 @@ const FONT_TITLE =
 const FONT_WORDMARK =
   "'Quicksand', 'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
 
+const PRESET_MESSAGES: Record<number, string> = {
+  1: "I just wanted you to know how much you are appreciated. Thank you for being you.",
+  2: "Your support made a bigger difference than you realize. I’m truly grateful.",
+  3: "You showed up when it mattered most. That means everything. Thank you.",
+  4: "Your kindness hasn’t gone unnoticed — I’m sincerely thankful for you.",
+  5: "You mattered more in that moment than you probably realized. Thank you.",
+  6: "What you did made a positive difference for those around you. I’m grateful. Thank you.",
+};
+
 function getTurnstile(): any {
   return (window as any).turnstile;
 }
@@ -98,6 +107,11 @@ function fireConfettiBurst() {
   }
 }
 
+function unwrapGiftPayload(j: any) {
+  // API returns either gift object, or { ok:true, gift:{...}, version:"..." }
+  return j?.gift && typeof j.gift === "object" ? j.gift : j;
+}
+
 export default function Claim() {
   const publicId = getPublicIdFromPath();
 
@@ -136,12 +150,18 @@ export default function Claim() {
 
   const confettiFiredRef = useRef<boolean>(false);
 
-  // IMPORTANT: use a real DOM ref, never document.getElementById in timing-sensitive cases
   const turnstileHostRef = useRef<HTMLDivElement | null>(null);
 
   const needsClaimFlow = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
   const shouldShowCaptcha = turnstileConfigured && needsClaimFlow;
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+
+  const messageText = useMemo(() => {
+    const m = String(gift?.message || "").trim();
+    if (m) return m;
+    const presetId = Number(gift?.presetMessageId || 0) || 0;
+    return PRESET_MESSAGES[presetId] || "—";
+  }, [gift]);
 
   const amountCents = useMemo(() => {
     const v = gift?.amount;
@@ -205,9 +225,11 @@ export default function Claim() {
           throw new Error(msg);
         }
 
-        setGift(j);
+        const g = unwrapGiftPayload(j);
 
-        const claimed = Boolean(j?.isClaimed);
+        setGift(g);
+
+        const claimed = Boolean(g?.isClaimed);
         setAlreadyClaimed(claimed);
 
         setError("");
@@ -280,7 +302,6 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }
 
-  // Boot flags when captcha should/shouldn't appear
   useEffect(() => {
     if (!turnstileConfigured) {
       setTurnstileBooting(false);
@@ -304,7 +325,6 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }, [turnstileConfigured, shouldShowCaptcha]);
 
-  // Ensure script is present
   useEffect(() => {
     if (!turnstileConfigured) return;
     if (!shouldShowCaptcha) {
@@ -339,7 +359,6 @@ export default function Claim() {
     document.body.appendChild(script);
   }, [turnstileConfigured, shouldShowCaptcha]);
 
-  // Render widget into a stable ref-host
   useEffect(() => {
     if (!turnstileConfigured) return;
     if (!shouldShowCaptcha) return;
@@ -357,8 +376,6 @@ export default function Claim() {
 
       try {
         setTurnstileBooting(false);
-
-        // Always start clean
         host.innerHTML = "";
 
         const id = ts.render(host, {
@@ -390,7 +407,6 @@ export default function Claim() {
         renderedRef.current = true;
         setCaptchaRendered(true);
 
-        // One extra sync attempt (some browsers delay the hidden response field)
         window.setTimeout(() => {
           if (cancelled) return;
           try {
@@ -404,7 +420,6 @@ export default function Claim() {
           } catch {}
         }, 300);
 
-        // expose minimal debug (no secrets)
         try {
           (window as any).__tm_turnstile = {
             rendered: true,
@@ -417,7 +432,6 @@ export default function Claim() {
       }
     };
 
-    // render after mount tick
     tryRender();
     const interval = window.setInterval(tryRender, 150);
 
@@ -453,8 +467,9 @@ export default function Claim() {
       const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
       const jj: any = await safeJson(rr);
       if (rr.ok && !(jj?.__notJson || jj?.__badJson)) {
-        setGift(jj);
-        setAlreadyClaimed(Boolean(jj?.isClaimed));
+        const g = unwrapGiftPayload(jj);
+        setGift(g);
+        setAlreadyClaimed(Boolean(g?.isClaimed));
       }
     } catch {}
   }
@@ -484,6 +499,8 @@ export default function Claim() {
           throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
         }
 
+        const payload = unwrapGiftPayload(j);
+
         if (!r.ok) {
           const code = String(j?.code || "");
           const msg = String(j?.error || "Claim failed");
@@ -510,7 +527,7 @@ export default function Claim() {
           throw new Error(msg);
         }
 
-        if (claimedBefore || Boolean(j?.isClaimed && gift?.isClaimed)) {
+        if (claimedBefore || Boolean(payload?.isClaimed && gift?.isClaimed)) {
           setAlreadyClaimed(true);
           setOk(false);
           setError("");
@@ -558,6 +575,8 @@ export default function Claim() {
         throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
       }
 
+      const payload = unwrapGiftPayload(j);
+
       if (hasAmount && r.status === 429 && j?.retryAfterSec) {
         const sec = Math.max(0, Number(j.retryAfterSec) || 0);
         setRetryAfterSec(sec);
@@ -591,7 +610,7 @@ export default function Claim() {
         throw new Error(msg);
       }
 
-      if (claimedBefore) {
+      if (claimedBefore || Boolean(payload?.isClaimed && gift?.isClaimed)) {
         setAlreadyClaimed(true);
         setOk(false);
         setError("");
@@ -690,7 +709,7 @@ export default function Claim() {
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
                 <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Message</div>
                 <div className="text-[17px] md:text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">
-                  {gift?.message || "—"}
+                  {messageText}
                 </div>
               </div>
 
@@ -760,7 +779,7 @@ export default function Claim() {
             <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
               <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Message</div>
               <div className="text-[17px] md:text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">
-                {gift?.message || "—"}
+                {messageText}
               </div>
             </div>
 
