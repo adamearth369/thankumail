@@ -364,6 +364,34 @@ export default function Claim() {
     if (!shouldShowCaptcha) return;
 
     let cancelled = false;
+    let tokenPoll: number | null = null;
+
+    const syncTokenFromHiddenInput = () => {
+      if (cancelled) return;
+      try {
+        const host = turnstileHostRef.current;
+        if (!host) return;
+        const input = host.querySelector<HTMLInputElement>('input[name="cf-turnstile-response"]');
+        if (!input) return;
+        const token = String(input.value || "");
+        if (token && token.length > 50) {
+          tokenRef.current = token;
+          setCaptchaReady(true);
+          setCaptchaBlocked(false);
+          setError("");
+          try {
+            (window as any).__tm_turnstile = {
+              rendered: true,
+              widgetId: widgetIdRef.current,
+              tokenLen: token.length,
+              source: "hidden_input",
+            };
+          } catch {}
+        }
+      } catch {
+        // ignore
+      }
+    };
 
     const tryRender = () => {
       if (cancelled) return;
@@ -388,6 +416,14 @@ export default function Claim() {
             setCaptchaReady(!!token);
             setCaptchaBlocked(false);
             setError("");
+            try {
+              (window as any).__tm_turnstile = {
+                rendered: true,
+                widgetId: id,
+                tokenLen: (token || "").length,
+                source: "callback",
+              };
+            } catch {}
           },
           "expired-callback": () => {
             if (invalidRef.current) return;
@@ -407,6 +443,7 @@ export default function Claim() {
         renderedRef.current = true;
         setCaptchaRendered(true);
 
+        // Try Turnstile API response once
         window.setTimeout(() => {
           if (cancelled) return;
           try {
@@ -416,17 +453,34 @@ export default function Claim() {
               setCaptchaReady(true);
               setCaptchaBlocked(false);
               setError("");
+              try {
+                (window as any).__tm_turnstile = {
+                  rendered: true,
+                  widgetId: id,
+                  tokenLen: token.length,
+                  source: "getResponse",
+                };
+              } catch {}
             }
           } catch {}
         }, 300);
 
-        try {
-          (window as any).__tm_turnstile = {
-            rendered: true,
-            widgetId: id,
-            tokenLen: (tokenRef.current || "").length,
-          };
-        } catch {}
+        // ⭐ Critical: Poll hidden input (Cloudflare fallback)
+        if (tokenPoll) window.clearInterval(tokenPoll);
+        tokenPoll = window.setInterval(syncTokenFromHiddenInput, 250) as any;
+
+        // stop polling after 10s
+        window.setTimeout(() => {
+          if (tokenPoll) {
+            window.clearInterval(tokenPoll);
+            tokenPoll = null;
+          }
+        }, 10000);
+
+        // immediate sync attempts
+        window.setTimeout(syncTokenFromHiddenInput, 150);
+        window.setTimeout(syncTokenFromHiddenInput, 600);
+        window.setTimeout(syncTokenFromHiddenInput, 1200);
       } catch {
         // retry
       }
@@ -446,6 +500,10 @@ export default function Claim() {
 
     return () => {
       cancelled = true;
+      if (tokenPoll) {
+        window.clearInterval(tokenPoll);
+        tokenPoll = null;
+      }
       window.clearInterval(interval);
       window.clearTimeout(timeout);
     };
