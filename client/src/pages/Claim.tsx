@@ -136,6 +136,9 @@ export default function Claim() {
 
   const confettiFiredRef = useRef<boolean>(false);
 
+  // IMPORTANT: use a real DOM ref, never document.getElementById in timing-sensitive cases
+  const turnstileHostRef = useRef<HTMLDivElement | null>(null);
+
   const needsClaimFlow = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
   const shouldShowCaptcha = turnstileConfigured && needsClaimFlow;
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
@@ -277,6 +280,7 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }
 
+  // Boot flags when captcha should/shouldn't appear
   useEffect(() => {
     if (!turnstileConfigured) {
       setTurnstileBooting(false);
@@ -292,9 +296,6 @@ export default function Claim() {
       setTurnstileBooting(false);
       setCaptchaRendered(false);
       setCaptchaBlocked(false);
-
-      const el = document.getElementById("turnstile-container");
-      if (el) el.innerHTML = "";
       return;
     }
 
@@ -303,6 +304,7 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }, [turnstileConfigured, shouldShowCaptcha]);
 
+  // Ensure script is present
   useEffect(() => {
     if (!turnstileConfigured) return;
     if (!shouldShowCaptcha) {
@@ -337,52 +339,29 @@ export default function Claim() {
     document.body.appendChild(script);
   }, [turnstileConfigured, shouldShowCaptcha]);
 
+  // Render widget into a stable ref-host
   useEffect(() => {
     if (!turnstileConfigured) return;
     if (!shouldShowCaptcha) return;
-    if (renderedRef.current) return;
 
     let cancelled = false;
 
-    const clearContainer = () => {
-      const el = document.getElementById("turnstile-container");
-      if (el) el.innerHTML = "";
-    };
-
-    const syncTokenFromResponseInput = () => {
-      try {
-        const el = document.getElementById("turnstile-container");
-        const input = el?.querySelector<HTMLInputElement>('input[id$="_response"]');
-        const responseInputId = input?.id || "";
-        const widgetId = responseInputId ? responseInputId.replace(/_response$/, "") : null;
-
-        const ts = getTurnstile();
-        const token = widgetId && ts?.getResponse ? String(ts.getResponse(widgetId) || "") : "";
-        if (token && token.length > 50) {
-          tokenRef.current = token;
-          setCaptchaReady(true);
-          setCaptchaBlocked(false);
-          setError("");
-        }
-      } catch {
-        // ignore
-      }
-    };
-
     const tryRender = () => {
       if (cancelled) return;
+      if (renderedRef.current) return;
 
       const ts = getTurnstile();
-      const el = document.getElementById("turnstile-container");
-      if (!ts || !el) return;
-      if (renderedRef.current) return;
+      const host = turnstileHostRef.current;
+
+      if (!ts || !host) return;
 
       try {
         setTurnstileBooting(false);
 
-        clearContainer();
+        // Always start clean
+        host.innerHTML = "";
 
-        const id = ts.render(el, {
+        const id = ts.render(host, {
           sitekey: TURNSTILE_SITE_KEY,
           appearance: "always",
           size: "normal",
@@ -411,15 +390,37 @@ export default function Claim() {
         renderedRef.current = true;
         setCaptchaRendered(true);
 
-        window.setTimeout(syncTokenFromResponseInput, 200);
-        window.setTimeout(syncTokenFromResponseInput, 800);
+        // One extra sync attempt (some browsers delay the hidden response field)
+        window.setTimeout(() => {
+          if (cancelled) return;
+          try {
+            const token = ts?.getResponse ? String(ts.getResponse(id) || "") : "";
+            if (token && token.length > 50) {
+              tokenRef.current = token;
+              setCaptchaReady(true);
+              setCaptchaBlocked(false);
+              setError("");
+            }
+          } catch {}
+        }, 300);
+
+        // expose minimal debug (no secrets)
+        try {
+          (window as any).__tm_turnstile = {
+            rendered: true,
+            widgetId: id,
+            tokenLen: (tokenRef.current || "").length,
+          };
+        } catch {}
       } catch {
-        // keep retrying
+        // retry
       }
     };
 
+    // render after mount tick
     tryRender();
     const interval = window.setInterval(tryRender, 150);
+
     const timeout = window.setTimeout(() => {
       window.clearInterval(interval);
       if (!renderedRef.current) {
@@ -427,7 +428,7 @@ export default function Claim() {
         setCaptchaBlocked(true);
         setError("");
       }
-    }, 3000);
+    }, 3500);
 
     return () => {
       cancelled = true;
@@ -791,7 +792,11 @@ export default function Claim() {
               ) : shouldShowCaptcha ? (
                 <div className="mt-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div id="turnstile-container" className="min-h-[76px] flex items-center justify-center" />
+                    <div
+                      id="tm-claim-turnstile"
+                      ref={turnstileHostRef}
+                      className="min-h-[76px] flex items-center justify-center"
+                    />
 
                     {captchaBlocked ? (
                       <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
