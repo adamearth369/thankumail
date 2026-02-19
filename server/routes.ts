@@ -16,12 +16,12 @@ import { gifts, users, authMagicLinks, authSessions } from "@shared/schema";
 import { sendGiftEmail, sendReminderEmail, sendReturnToSenderEmail } from "./email";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-18_002";
+const VERSION = "routes_v2026-02-19_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v2";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1";
 
 /* -------------------- AMOUNTS -------------------- */
 const ALLOWED_AMOUNTS_DOLLARS = [25, 50, 100, 250, 500, 1000] as const;
@@ -648,7 +648,29 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Back-compat: keep /api/me, but frontend expects /api/auth/me
   app.get("/api/me", async (req, res) => {
+    const a = await getAuth(req);
+    if (!a.isAuthed) {
+      return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+    }
+
+    const row = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        createdAt: users.createdAt,
+        lastLoginAt: users.lastLoginAt,
+      })
+      .from(users)
+      .where(eq(users.id, a.userId))
+      .limit(1);
+
+    return res.json({ ok: true, user: row?.[0] || null, version: VERSION });
+  });
+
+  // NEW: /api/auth/me
+  app.get("/api/auth/me", async (req, res) => {
     const a = await getAuth(req);
     if (!a.isAuthed) {
       return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
