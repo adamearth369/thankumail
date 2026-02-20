@@ -22,12 +22,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-20_002";
+const VERSION = "routes_v2026-02-20_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_v1_magiclink_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v2_magiclink_disabled_by_default";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -54,6 +54,8 @@ const AUTH_RETURN_TOKEN =
   String(process.env.AUTH_RETURN_TOKEN ?? "true").toLowerCase() === "true"; // dev-friendly; set false to never return token
 const AUTH_MX_VALIDATE_ENABLED =
   String(process.env.AUTH_MX_VALIDATE_ENABLED ?? "false").toLowerCase() === "true";
+const AUTH_MAGIC_LINK_ENABLED =
+  String(process.env.AUTH_MAGIC_LINK_ENABLED ?? "false").toLowerCase() === "true";
 
 /* -------------------- GOOGLE OAUTH -------------------- */
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
@@ -241,6 +243,12 @@ function publicSiteBase() {
 
 function buildAuthConsumeUrl(token: string) {
   return `${publicSiteBase()}/auth/consume?token=${encodeURIComponent(token)}`;
+}
+
+function buildGoogleConsumeUrl(sessionToken: string, email: string) {
+  const token = encodeURIComponent(sessionToken);
+  const e = encodeURIComponent(email || "");
+  return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}`;
 }
 
 function logAuth(event: string, fields: Record<string, any> = {}) {
@@ -510,6 +518,7 @@ export function registerRoutes(app: Express): Server {
       },
 
       auth: {
+        magicLinkEnabled: AUTH_MAGIC_LINK_ENABLED,
         magicLinkTtlMs: AUTH_MAGIC_LINK_TTL_MS,
         sessionTtlMs: AUTH_SESSION_TTL_MS,
         returnToken: AUTH_RETURN_TOKEN,
@@ -547,6 +556,7 @@ export function registerRoutes(app: Express): Server {
           message: "preset-or-custom (max 280)",
           amount: `optional (allowed: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}; min $25 when present)`,
           sms: "optional",
+          auth: "google-only",
         },
       },
 
@@ -559,7 +569,9 @@ export function registerRoutes(app: Express): Server {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res.status(503).json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+      return res
+        .status(503)
+        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
     }
 
     const ip = getIp(req);
@@ -584,7 +596,9 @@ export function registerRoutes(app: Express): Server {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res.status(503).json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+      return res
+        .status(503)
+        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
     }
 
     const code = String(req.query.code || "");
@@ -592,7 +606,12 @@ export function registerRoutes(app: Express): Server {
     const err = String(req.query.error || "");
 
     if (err) {
-      return res.status(400).json({ error: "Google auth failed", code: "GOOGLE_OAUTH_ERROR", detail: err, version: VERSION });
+      return res.status(400).json({
+        error: "Google auth failed",
+        code: "GOOGLE_OAUTH_ERROR",
+        detail: err,
+        version: VERSION,
+      });
     }
     if (!code || !state) {
       return res.status(400).json({ error: "Invalid callback", code: "GOOGLE_CALLBACK_INVALID", version: VERSION });
@@ -614,7 +633,6 @@ export function registerRoutes(app: Express): Server {
       return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
     }
 
-    // Exchange code for token
     const body = new URLSearchParams();
     body.set("code", code);
     body.set("client_id", GOOGLE_CLIENT_ID);
@@ -635,7 +653,6 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // Fetch user info
     const infoResp = await fetch(GOOGLE_USERINFO_URL, {
       method: "GET",
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -662,18 +679,19 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    // Return JSON token (client stores and uses Bearer)
-    return res.json({
-      ok: true,
-      sessionToken: issued.sessionToken,
-      expiresAt: issued.expiresAt.toISOString(),
-      email,
-      version: VERSION,
-    });
+    return res.redirect(302, buildGoogleConsumeUrl(issued.sessionToken, email));
   });
 
-  /* -------------------- AUTH: MAGIC LINK (HARDENED) -------------------- */
+  /* -------------------- AUTH: MAGIC LINK (DISABLED BY DEFAULT) -------------------- */
   app.post("/api/auth/request", limiterAuthRequest, async (req, res) => {
+    if (!AUTH_MAGIC_LINK_ENABLED) {
+      return res.status(403).json({
+        error: "Magic link login is disabled",
+        code: "MAGIC_LINK_DISABLED",
+        version: VERSION,
+      });
+    }
+
     try {
       const ip = getIp(req);
       const parsed = zAuthRequest.safeParse(req.body || {});
@@ -808,6 +826,14 @@ export function registerRoutes(app: Express): Server {
   });
 
   app.post("/api/auth/consume", limiterAuthConsume, async (req, res) => {
+    if (!AUTH_MAGIC_LINK_ENABLED) {
+      return res.status(403).json({
+        error: "Magic link login is disabled",
+        code: "MAGIC_LINK_DISABLED",
+        version: VERSION,
+      });
+    }
+
     try {
       const parsed = zAuthConsume.safeParse(req.body || {});
       if (!parsed.success) {
@@ -1105,7 +1131,6 @@ export function registerRoutes(app: Express): Server {
       let finalMessage: string = message ? String(message).trim() : "";
 
       if (!isRegistered) {
-        // Guest scope: preset-only, no amount, no sms
         finalMessageMode = "preset";
         finalMessage = "";
 
@@ -1129,7 +1154,6 @@ export function registerRoutes(app: Express): Server {
 
         finalAmountCents = null;
       } else {
-        // Registered scope: preset OR custom (<=280), optional fixed amounts
         if (finalMessageMode === "custom") {
           const m = String(finalMessage || "").trim();
           if (!m) {
@@ -1226,7 +1250,6 @@ export function registerRoutes(app: Express): Server {
       let smsQueued = false;
       let deliveryError: string | null = null;
 
-      // Email (if requested/available)
       if (toEmail) {
         try {
           await sendGiftEmail({
@@ -1243,7 +1266,6 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // SMS (registered only, if phone provided)
       if (isRegistered && toPhone) {
         try {
           await sendGiftSms({
