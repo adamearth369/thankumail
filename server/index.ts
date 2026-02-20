@@ -1,21 +1,25 @@
-// WHERE TO PASTE: server/index.ts
-// ACTION: Full file replacement (paste exactly)
-
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import path from "path";
 import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-02-17_001";
+const INDEX_VERSION = "api_index_v2026-02-20_002";
+const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- APP -------------------- */
 const app: Express = express();
 
-// Trust proxy so x-forwarded-* works behind Render/Cloudflare
 app.set("trust proxy", 1);
 
-/* -------------------- CORS (THANKUMAIL.COM -> API) -------------------- */
+/* -------------------- COMMIT HEADER -------------------- */
+app.use((_req, res, next) => {
+  if (COMMIT) res.setHeader("X-Commit", COMMIT);
+  res.setHeader("X-Api-Version", INDEX_VERSION);
+  next();
+});
+
+/* -------------------- CORS -------------------- */
 const ALLOWED_ORIGINS = new Set<string>(["https://thankumail.com", "https://www.thankumail.com"]);
 
 function setCors(req: Request, res: Response) {
@@ -24,33 +28,15 @@ function setCors(req: Request, res: Response) {
   if (origin && ALLOWED_ORIGINS.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-
-    // Allow standard methods + preflight
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-
-    // IMPORTANT: include headers the browser may send
-    // - authorization (registered sessions)
-    // - x-user-id (your client currently sends this)
-    // - x-admin-token (admin endpoints)
-    // - content-type (json)
-    res.setHeader(
-      "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, x-user-id, x-admin-token",
-    );
-
-    // optional, but helps reduce repeated preflights
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-user-id, x-admin-token");
     res.setHeader("Access-Control-Max-Age", "600");
   }
 }
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   setCors(req, res);
-
-  // Always end preflight with correct headers
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
+  if (req.method === "OPTIONS") return res.status(204).end();
   next();
 });
 
@@ -59,7 +45,7 @@ app.use(express.urlencoded({ extended: true }));
 
 /* -------------------- HEALTH -------------------- */
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, indexVersion: INDEX_VERSION });
+  res.json({ ok: true, indexVersion: INDEX_VERSION, commit: COMMIT });
 });
 
 /* -------------------- API ROUTES FIRST -------------------- */
@@ -79,11 +65,9 @@ if (fs.existsSync(publicDir)) {
   );
 }
 
-// SPA fallback (NEVER for /api/*)
 app.get("*", (req: Request, res: Response, next: NextFunction) => {
   if (req.path.startsWith("/api/")) return next();
   if (req.path === "/health") return next();
-
   if (fs.existsSync(indexHtml)) return res.sendFile(indexHtml);
   return res.status(404).send("Not found");
 });
@@ -94,7 +78,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ ok: false, error: "Server error", indexVersion: INDEX_VERSION });
 });
 
-/* -------------------- LISTEN (RENDER) -------------------- */
+/* -------------------- LISTEN -------------------- */
 const PORT = Number(process.env.PORT || 10000);
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`listening on ${PORT} (${INDEX_VERSION})`);
