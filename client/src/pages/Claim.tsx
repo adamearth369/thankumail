@@ -141,19 +141,17 @@ export default function Claim() {
 
   const invalidRef = useRef<boolean>(false);
 
+  // Captcha state (ONLY relevant for amount claims)
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
   const [captchaReady, setCaptchaReady] = useState<boolean>(false);
-
   const tokenRef = useRef<string>("");
   const widgetIdRef = useRef<any>(null);
   const renderedRef = useRef<boolean>(false);
   const [captchaRendered, setCaptchaRendered] = useState<boolean>(false);
-
   const [captchaBlocked, setCaptchaBlocked] = useState<boolean>(false);
+  const turnstileHostRef = useRef<HTMLDivElement | null>(null);
 
   const confettiFiredRef = useRef<boolean>(false);
-
-  const turnstileHostRef = useRef<HTMLDivElement | null>(null);
 
   const messageText = useMemo(() => {
     const m = String(gift?.message || "").trim();
@@ -183,8 +181,8 @@ export default function Claim() {
 
   const needsClaimFlow = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
-  // ✅ FIX: Only require Turnstile for amount claims (registered gift flow)
-  const shouldShowCaptcha = turnstileConfigured && needsClaimFlow && hasAmount;
+  // ✅ Turnstile ONLY for amount claims
+  const shouldShowCaptcha = hasAmount && turnstileConfigured && needsClaimFlow;
 
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
@@ -308,8 +306,19 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }
 
+  // ✅ Ensure guest claims NEVER retain captcha state
   useEffect(() => {
-    // If captcha isn't needed, fully reset UI state.
+    if (hasAmount) return;
+    renderedRef.current = false;
+    widgetIdRef.current = null;
+    tokenRef.current = "";
+    setCaptchaReady(false);
+    setTurnstileBooting(false);
+    setCaptchaRendered(false);
+    setCaptchaBlocked(false);
+  }, [hasAmount]);
+
+  useEffect(() => {
     if (!shouldShowCaptcha) {
       renderedRef.current = false;
       widgetIdRef.current = null;
@@ -326,6 +335,7 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }, [shouldShowCaptcha]);
 
+  // ✅ Only load Turnstile script for amount claims
   useEffect(() => {
     if (!shouldShowCaptcha) return;
 
@@ -375,18 +385,8 @@ export default function Claim() {
           setCaptchaReady(true);
           setCaptchaBlocked(false);
           setError("");
-          try {
-            (window as any).__tm_turnstile = {
-              rendered: true,
-              widgetId: widgetIdRef.current,
-              tokenLen: token.length,
-              source: "hidden_input",
-            };
-          } catch {}
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     };
 
     const tryRender = () => {
@@ -412,14 +412,6 @@ export default function Claim() {
             setCaptchaReady(!!token);
             setCaptchaBlocked(false);
             setError("");
-            try {
-              (window as any).__tm_turnstile = {
-                rendered: true,
-                widgetId: id,
-                tokenLen: (token || "").length,
-                source: "callback",
-              };
-            } catch {}
           },
           "expired-callback": () => {
             if (invalidRef.current) return;
@@ -448,14 +440,6 @@ export default function Claim() {
               setCaptchaReady(true);
               setCaptchaBlocked(false);
               setError("");
-              try {
-                (window as any).__tm_turnstile = {
-                  rendered: true,
-                  widgetId: id,
-                  tokenLen: token.length,
-                  source: "getResponse",
-                };
-              } catch {}
             }
           } catch {}
         }, 300);
@@ -503,7 +487,6 @@ export default function Claim() {
 
   async function postClaim() {
     const body: any = {};
-    // Only send turnstile token when captcha is actually required
     if (shouldShowCaptcha) body.turnstileToken = tokenRef.current || "";
 
     const r = await fetch(`${API_BASE}/api/gifts/${publicId}/claim`, {
@@ -594,7 +577,7 @@ export default function Claim() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAmount, retryAfterSec, canAttemptClaim, needsClaimFlow, shouldShowCaptcha]);
+  }, [hasAmount, retryAfterSec, canAttemptClaim]);
 
   async function handleClaimClick() {
     if (!publicId) return;
