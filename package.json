@@ -1,3 +1,5 @@
+// WHERE TO PASTE: package.json
+// ACTION: Full file replacement (paste exactly)
 {
   "name": "rest-express",
   "version": "1.0.0",
@@ -5,8 +7,13 @@
   "license": "MIT",
   "scripts": {
     "dev": "NODE_ENV=development npx tsx server/index.ts",
+
     "build": "npx tsx script/build.ts",
     "start": "unset NODE_PG_FORCE_NATIVE; NODE_ENV=production node dist/index.cjs",
+
+    "client:build": "npx vite build --config client/vite.config.ts",
+    "client:dev": "npx vite --config client/vite.config.ts",
+
     "check": "npx tsc",
     "db:push": "npx drizzle-kit push"
   },
