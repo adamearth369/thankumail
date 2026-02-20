@@ -21,12 +21,12 @@ import {
 } from "./email";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-19_003";
+const VERSION = "routes_v2026-02-20_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v2_strict_preset_range_sender_required_disposable_block_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1_auth_magiclink_email_v1";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v2_strict_preset_range_sender_required_disposable_block_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1_auth_magiclink_email_v1_amount_accept_amount_field_v1";
 
 /* -------------------- SCOPE CONSTANTS -------------------- */
 const PRESET_MIN_ID = 1;
@@ -220,7 +220,6 @@ function publicSiteBase() {
 }
 
 function buildAuthConsumeUrl(token: string) {
-  // Confirmed frontend format:
   // https://thankumail.com/auth/consume?token=...
   return `${publicSiteBase()}/auth/consume?token=${encodeURIComponent(token)}`;
 }
@@ -241,12 +240,26 @@ function isValidPresetId(n: any) {
   return Number.isInteger(v) && v >= PRESET_MIN_ID && v <= PRESET_MAX_ID;
 }
 
+// Accept amount from client as either dollars (25/50/...) or cents (2500/5000/...)
+function normalizeFixedAmountToCents(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+
+  // dollars form
+  if ((ALLOWED_AMOUNTS_DOLLARS as readonly number[]).includes(n)) return n * 100;
+
+  // cents form
+  if (ALLOWED_AMOUNTS_CENTS.has(n)) return n;
+
+  // if someone sent dollars as string that coerces ok, already covered
+  return null;
+}
+
 /* -------------------- DAILY COUNTS -------------------- */
 /**
- * Schema note:
- * - gifts does NOT have senderIp column.
- * - To avoid crashes, we enforce per-IP via a runtime memory counter ONLY (best-effort)
- *   unless you later add sender_ip to schema.
+ * gifts does NOT have senderIp column.
+ * Enforce per-IP via runtime memory counter ONLY (best-effort)
  */
 const memIpCounts = new Map<string, { day: string; count: number }>();
 function dayKey(d: Date) {
@@ -325,8 +338,10 @@ const zCreateGift = z.object({
   presetMessageId: z.coerce.number().int().optional().nullable(),
   message: z.string().trim().max(280).optional().nullable(),
 
-  amountDollars: z.number().optional().nullable(),
-  amountCents: z.number().int().optional().nullable(),
+  // accepted inputs
+  amountDollars: z.coerce.number().optional().nullable(),
+  amountCents: z.coerce.number().int().optional().nullable(),
+  amount: z.coerce.number().optional().nullable(), // <-- NEW: accept amount as dollars or cents (normalized)
 
   turnstileToken: z.string().trim().optional().nullable(),
 });
@@ -519,7 +534,6 @@ export function registerRoutes(app: Express): Server {
 
       const loginUrl = buildAuthConsumeUrl(rawToken);
 
-      // Attempt to send email (best-effort). Do not block auth token returns.
       let emailSent = false;
       let emailError: string | null = null;
       try {
@@ -713,7 +727,6 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // canonical
   app.get("/api/auth/me", async (req, res) => {
     const a = await getAuth(req);
     if (!a.isAuthed) {
@@ -734,7 +747,6 @@ export function registerRoutes(app: Express): Server {
     return res.json({ ok: true, user: row?.[0] || null, version: VERSION });
   });
 
-  // backward compat
   app.get("/api/me", async (req, res) => {
     const a = await getAuth(req);
     if (!a.isAuthed) {
@@ -793,6 +805,7 @@ export function registerRoutes(app: Express): Server {
         message,
         amountDollars,
         amountCents,
+        amount, // <-- NEW
         turnstileToken,
       } = parsed.data;
 
@@ -856,10 +869,15 @@ export function registerRoutes(app: Express): Server {
       }
 
       let finalAmountCents: number | null = null;
-      if (amountCents != null) {
-        finalAmountCents = Number(amountCents);
-      } else if (amountDollars != null) {
-        finalAmountCents = moneyToCents(Number(amountDollars));
+
+      // Preferred inputs
+      if (amountCents != null) finalAmountCents = Number(amountCents);
+      else if (amountDollars != null) finalAmountCents = moneyToCents(Number(amountDollars));
+
+      // Back/forward compat: accept `amount` as either dollars or cents
+      if (finalAmountCents == null && amount != null) {
+        const normalized = normalizeFixedAmountToCents(amount);
+        finalAmountCents = normalized;
       }
 
       let finalMessageMode: "preset" | "custom" = (messageMode as any) || "preset";
