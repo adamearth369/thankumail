@@ -19,14 +19,19 @@ import {
   sendReturnToSenderEmail,
   sendAuthMagicLinkEmail,
 } from "./email";
+import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-20_001";
+const VERSION = "routes_v2026-02-20_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v2_strict_preset_range_sender_required_disposable_block_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1_auth_magiclink_email_v1_amount_accept_amount_field_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_v1_magiclink_v1";
+
+/* -------------------- URLS -------------------- */
+const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
+const API_URL = String(process.env.API_URL || "https://api.thankumail.com").replace(/\/+$/, "");
 
 /* -------------------- SCOPE CONSTANTS -------------------- */
 const PRESET_MIN_ID = 1;
@@ -50,27 +55,38 @@ const AUTH_RETURN_TOKEN =
 const AUTH_MX_VALIDATE_ENABLED =
   String(process.env.AUTH_MX_VALIDATE_ENABLED ?? "false").toLowerCase() === "true";
 
+/* -------------------- GOOGLE OAUTH -------------------- */
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
+const GOOGLE_CLIENT_SECRET = (process.env.GOOGLE_CLIENT_SECRET || "").trim();
+const GOOGLE_REDIRECT_URI = `${API_URL}/api/auth/google/callback`;
+
+const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+
+/* -------------------- GOOGLE OAUTH STATE STORE -------------------- */
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const oauthStateStore = new Map<string, { exp: number; ip: string; ua: string }>();
+function pruneOauthState() {
+  const nowMs = Date.now();
+  for (const [k, v] of oauthStateStore.entries()) {
+    if (!v || v.exp <= nowMs) oauthStateStore.delete(k);
+  }
+}
+
 /**
  * Disposable emails:
  * - Primary source: server/disposableDomains.txt (one domain per line)
  * - Optional overrides: DISPOSABLE_EMAIL_DOMAINS env (comma-separated exact domains)
- *
- * Note: In production (Render), runtime CWD + dist layout can vary.
- * We attempt a robust set of locations.
  */
 function loadDisposableDomainsFromFile(): { set: Set<string>; loadedFrom: string | null } {
   const cwd = process.cwd();
 
   const candidates = [
-    // repo-root style
     path.resolve(cwd, "server", "disposableDomains.txt"),
     path.resolve(cwd, "disposableDomains.txt"),
-
-    // dist shipped artifacts (common on Render)
     path.resolve(cwd, "dist", "server", "disposableDomains.txt"),
     path.resolve(cwd, "dist", "disposableDomains.txt"),
-
-    // relative to this compiled file location (best effort)
     path.resolve(__dirname, "server", "disposableDomains.txt"),
     path.resolve(__dirname, "disposableDomains.txt"),
     path.resolve(__dirname, "..", "server", "disposableDomains.txt"),
@@ -89,7 +105,7 @@ function loadDisposableDomainsFromFile(): { set: Set<string>; loadedFrom: string
         .filter((s) => !s.startsWith("//"));
       return { set: new Set(lines), loadedFrom: p };
     } catch {
-      // ignore and fall through
+      // ignore
     }
   }
   return { set: new Set(), loadedFrom: null };
@@ -114,10 +130,10 @@ const DISPOSABLE_EMAIL_DOMAINS = new Set<string>([
 /* -------------------- LIMITS -------------------- */
 const DAILY_LIMIT_IP = Math.max(0, Number(process.env.DAILY_LIMIT_IP ?? 10));
 const DAILY_LIMIT_SENDER = Math.max(0, Number(process.env.DAILY_LIMIT_SENDER ?? 0));
-const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE ?? 3)); // reserved (phone disabled in locked scope)
+const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE ?? 3));
 
 const MIN_CLAIM_DELAY_SEC = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC ?? 60));
-const SMS_DUPLICATE_WINDOW_SEC = Math.max(0, Number(process.env.SMS_DUPLICATE_WINDOW_SEC ?? 90)); // reserved
+const SMS_DUPLICATE_WINDOW_SEC = Math.max(0, Number(process.env.SMS_DUPLICATE_WINDOW_SEC ?? 90));
 
 const REMINDER_GAP_MS = Math.max(1_000, Number(process.env.REMINDER_GAP_MS ?? 172800000)); // 48h default
 const REMINDER_MAX = Math.max(0, Number(process.env.REMINDER_MAX ?? 3));
@@ -165,6 +181,10 @@ function isDisposableEmail(email: string) {
   if (!d) return false;
   if (!DISPOSABLE_EMAIL_DOMAINS.size) return false;
   return DISPOSABLE_EMAIL_DOMAINS.has(d);
+}
+
+function isE164(s: string) {
+  return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
 }
 
 async function mxLooksValid(domain: string) {
@@ -216,11 +236,10 @@ function shouldRequireTurnstile() {
 }
 
 function publicSiteBase() {
-  return (process.env.PUBLIC_SITE_URL || "https://thankumail.com").replace(/\/+$/, "");
+  return FRONTEND_URL;
 }
 
 function buildAuthConsumeUrl(token: string) {
-  // https://thankumail.com/auth/consume?token=...
   return `${publicSiteBase()}/auth/consume?token=${encodeURIComponent(token)}`;
 }
 
@@ -246,28 +265,23 @@ function normalizeFixedAmountToCents(v: any): number | null {
   const n = Number(v);
   if (!Number.isFinite(n)) return null;
 
-  // dollars form
   if ((ALLOWED_AMOUNTS_DOLLARS as readonly number[]).includes(n)) return n * 100;
-
-  // cents form
   if (ALLOWED_AMOUNTS_CENTS.has(n)) return n;
 
-  // if someone sent dollars as string that coerces ok, already covered
   return null;
 }
 
 /* -------------------- DAILY COUNTS -------------------- */
-/**
- * gifts does NOT have senderIp column.
- * Enforce per-IP via runtime memory counter ONLY (best-effort)
- */
 const memIpCounts = new Map<string, { day: string; count: number }>();
+const memPhoneCounts = new Map<string, { day: string; count: number }>();
+
 function dayKey(d: Date) {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
 }
+
 function bumpMemIp(ip: string) {
   const k = dayKey(new Date());
   const cur = memIpCounts.get(ip);
@@ -279,9 +293,29 @@ function bumpMemIp(ip: string) {
   memIpCounts.set(ip, cur);
   return cur.count;
 }
+
 function getMemIp(ip: string) {
   const k = dayKey(new Date());
   const cur = memIpCounts.get(ip);
+  if (!cur || cur.day !== k) return 0;
+  return cur.count;
+}
+
+function bumpMemPhone(p: string) {
+  const k = dayKey(new Date());
+  const cur = memPhoneCounts.get(p);
+  if (!cur || cur.day !== k) {
+    memPhoneCounts.set(p, { day: k, count: 1 });
+    return 1;
+  }
+  cur.count += 1;
+  memPhoneCounts.set(p, cur);
+  return cur.count;
+}
+
+function getMemPhone(p: string) {
+  const k = dayKey(new Date());
+  const cur = memPhoneCounts.get(p);
   if (!cur || cur.day !== k) return 0;
   return cur.count;
 }
@@ -327,21 +361,78 @@ async function getAuth(req: Request): Promise<Authed> {
   return { isAuthed: true, userId: String(s.userId), sessionToken };
 }
 
+async function issueSessionForEmail(email: string, req: Request) {
+  const norm = normalizeEmail(email);
+  const domain = extractDomain(norm);
+
+  if (!domain) {
+    return { ok: false as const, code: "INVALID_EMAIL" as const, error: "Invalid email" };
+  }
+  if (isDisposableEmail(norm)) {
+    return { ok: false as const, code: "DISPOSABLE_EMAIL_BLOCKED" as const, error: "Email provider not supported" };
+  }
+  const mx = await mxLooksValid(domain);
+  if (!mx.ok) {
+    return {
+      ok: false as const,
+      code: "MX_INVALID" as const,
+      error: "Email domain not deliverable",
+      reason: mx.reason,
+    };
+  }
+
+  const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, norm)).limit(1);
+
+  let userId = String(existing?.[0]?.id || "");
+  if (!userId) {
+    userId = crypto.randomBytes(16).toString("hex");
+    await db.insert(users).values({
+      id: userId,
+      email: norm,
+      createdAt: now(),
+      lastLoginAt: null,
+    });
+  }
+
+  const sessionToken = randomToken(32);
+  const sessionHash = sha256Hex(sessionToken);
+  const expiresAt = new Date(Date.now() + AUTH_SESSION_TTL_MS);
+  const ip = getIp(req);
+  const ua = String(req.headers["user-agent"] || "").slice(0, 500);
+
+  await db.transaction(async (tx) => {
+    await tx.insert(authSessions).values({
+      userId,
+      sessionHash,
+      expiresAt,
+      revokedAt: null,
+      ip,
+      userAgent: ua || null,
+      createdAt: now(),
+    });
+
+    await tx.update(users).set({ lastLoginAt: now() }).where(eq(users.id, userId));
+  });
+
+  return { ok: true as const, userId, sessionToken, expiresAt };
+}
+
 /* -------------------- VALIDATION -------------------- */
 const zEmail = z.string().trim().email();
 
 const zCreateGift = z.object({
   recipientEmail: zEmail.optional().nullable(),
+  recipientPhone: z.string().trim().optional().nullable(),
+
   senderEmail: zEmail.optional().nullable(),
 
   messageMode: z.enum(["preset", "custom"]).optional(),
   presetMessageId: z.coerce.number().int().optional().nullable(),
   message: z.string().trim().max(280).optional().nullable(),
 
-  // accepted inputs
   amountDollars: z.coerce.number().optional().nullable(),
   amountCents: z.coerce.number().int().optional().nullable(),
-  amount: z.coerce.number().optional().nullable(), // <-- NEW: accept amount as dollars or cents (normalized)
+  amount: z.coerce.number().optional().nullable(), // accept dollars or cents (normalized)
 
   turnstileToken: z.string().trim().optional().nullable(),
 });
@@ -384,6 +475,13 @@ const limiterAdmin = rateLimit({
   legacyHeaders: false,
 });
 
+const limiterGoogle = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
   /* -------------------- HEALTH/VERSION -------------------- */
@@ -403,6 +501,8 @@ export function registerRoutes(app: Express): Server {
       commit: COMMIT,
       routesMarker: ROUTES_MARKER,
 
+      urls: { frontend: FRONTEND_URL, api: API_URL },
+
       turnstile: {
         configured: Boolean(TURNSTILE_SECRET_KEY),
         bypass: TURNSTILE_BYPASS,
@@ -421,6 +521,11 @@ export function registerRoutes(app: Express): Server {
         authConsumeUrlSample: `${publicSiteBase()}/auth/consume?token=...`,
       },
 
+      google: {
+        configured: Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
+        redirectUri: GOOGLE_REDIRECT_URI,
+      },
+
       limits: {
         dailyLimitIp: DAILY_LIMIT_IP,
         dailyLimitSender: DAILY_LIMIT_SENDER,
@@ -436,15 +541,134 @@ export function registerRoutes(app: Express): Server {
       },
 
       lockedScope: {
-        guest: { delivery: "email-only", message: "preset-only", amount: "none" },
+        guest: { delivery: "email-only", message: "preset-only", amount: "none", sms: "no" },
         registered: {
-          delivery: "email-only",
-          message: "preset-or-custom",
+          delivery: "email-or-sms",
+          message: "preset-or-custom (max 280)",
           amount: `optional (allowed: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}; min $25 when present)`,
+          sms: "optional",
         },
       },
 
       presetIds: { min: PRESET_MIN_ID, max: PRESET_MAX_ID },
+    });
+  });
+
+  /* -------------------- AUTH: GOOGLE OAUTH -------------------- */
+  app.get("/api/auth/google/start", limiterGoogle, async (req, res) => {
+    pruneOauthState();
+
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return res.status(503).json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+    const state = randomToken(16);
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+
+    const url = new URL(GOOGLE_AUTH_URL);
+    url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+    url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "openid email profile");
+    url.searchParams.set("state", state);
+    url.searchParams.set("access_type", "online");
+    url.searchParams.set("prompt", "select_account");
+
+    return res.redirect(302, url.toString());
+  });
+
+  app.get("/api/auth/google/callback", limiterGoogle, async (req, res) => {
+    pruneOauthState();
+
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return res.status(503).json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const code = String(req.query.code || "");
+    const state = String(req.query.state || "");
+    const err = String(req.query.error || "");
+
+    if (err) {
+      return res.status(400).json({ error: "Google auth failed", code: "GOOGLE_OAUTH_ERROR", detail: err, version: VERSION });
+    }
+    if (!code || !state) {
+      return res.status(400).json({ error: "Invalid callback", code: "GOOGLE_CALLBACK_INVALID", version: VERSION });
+    }
+
+    const saved = oauthStateStore.get(state);
+    oauthStateStore.delete(state);
+
+    if (!saved || saved.exp <= Date.now()) {
+      return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+    if (saved.ip && saved.ip !== ip) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+    if (saved.ua && saved.ua !== ua) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+
+    // Exchange code for token
+    const body = new URLSearchParams();
+    body.set("code", code);
+    body.set("client_id", GOOGLE_CLIENT_ID);
+    body.set("client_secret", GOOGLE_CLIENT_SECRET);
+    body.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    body.set("grant_type", "authorization_code");
+
+    const tokenResp = await fetch(GOOGLE_TOKEN_URL, { method: "POST", body });
+    const tokenJson: any = await tokenResp.json().catch(() => ({}));
+
+    const accessToken = String(tokenJson?.access_token || "");
+    if (!accessToken) {
+      return res.status(400).json({
+        error: "Token exchange failed",
+        code: "GOOGLE_TOKEN_EXCHANGE_FAILED",
+        detail: tokenJson,
+        version: VERSION,
+      });
+    }
+
+    // Fetch user info
+    const infoResp = await fetch(GOOGLE_USERINFO_URL, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const infoJson: any = await infoResp.json().catch(() => ({}));
+
+    const email = normalizeEmail(String(infoJson?.email || ""));
+    const emailVerified = infoJson?.email_verified;
+
+    if (!email) {
+      return res.status(400).json({ error: "Google did not return email", code: "GOOGLE_NO_EMAIL", version: VERSION });
+    }
+    if (emailVerified === false) {
+      return res.status(400).json({ error: "Email not verified", code: "EMAIL_NOT_VERIFIED", version: VERSION });
+    }
+
+    const issued = await issueSessionForEmail(email, req);
+    if (!issued.ok) {
+      return res.status(400).json({
+        error: issued.error,
+        code: issued.code,
+        reason: (issued as any).reason,
+        version: VERSION,
+      });
+    }
+
+    // Return JSON token (client stores and uses Bearer)
+    return res.json({
+      ok: true,
+      sessionToken: issued.sessionToken,
+      expiresAt: issued.expiresAt.toISOString(),
+      email,
+      version: VERSION,
     });
   });
 
@@ -652,69 +876,20 @@ export function registerRoutes(app: Express): Server {
       }
 
       const email = normalizeEmail(consumed.email);
-      const domain = extractDomain(email);
-
-      if (!domain) {
+      const issued = await issueSessionForEmail(email, req);
+      if (!issued.ok) {
         return res.status(400).json({
-          error: "Invalid email",
-          code: "INVALID_EMAIL",
+          error: issued.error,
+          code: issued.code,
+          reason: (issued as any).reason,
           version: VERSION,
         });
       }
-      if (isDisposableEmail(email)) {
-        return res.status(400).json({
-          error: "Email provider not supported",
-          code: "DISPOSABLE_EMAIL_BLOCKED",
-          version: VERSION,
-        });
-      }
-      const mx = await mxLooksValid(domain);
-      if (!mx.ok) {
-        return res.status(400).json({
-          error: "Email domain not deliverable",
-          code: "MX_INVALID",
-          reason: mx.reason,
-          version: VERSION,
-        });
-      }
-
-      const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
-
-      let userId = String(existing?.[0]?.id || "");
-      if (!userId) {
-        userId = crypto.randomBytes(16).toString("hex");
-        await db.insert(users).values({
-          id: userId,
-          email,
-          createdAt: now(),
-          lastLoginAt: null,
-        });
-      }
-
-      const sessionToken = randomToken(32);
-      const sessionHash = sha256Hex(sessionToken);
-      const expiresAt = new Date(Date.now() + AUTH_SESSION_TTL_MS);
-      const ip = getIp(req);
-      const ua = String(req.headers["user-agent"] || "").slice(0, 500);
-
-      await db.transaction(async (tx) => {
-        await tx.insert(authSessions).values({
-          userId,
-          sessionHash,
-          expiresAt,
-          revokedAt: null,
-          ip,
-          userAgent: ua || null,
-          createdAt: now(),
-        });
-
-        await tx.update(users).set({ lastLoginAt: now() }).where(eq(users.id, userId));
-      });
 
       return res.json({
         ok: true,
-        sessionToken,
-        expiresAt: expiresAt.toISOString(),
+        sessionToken: issued.sessionToken,
+        expiresAt: issued.expiresAt.toISOString(),
         version: VERSION,
       });
     } catch (err: any) {
@@ -799,13 +974,14 @@ export function registerRoutes(app: Express): Server {
 
       const {
         recipientEmail,
+        recipientPhone,
         senderEmail,
         messageMode,
         presetMessageId,
         message,
         amountDollars,
         amountCents,
-        amount, // <-- NEW
+        amount,
         turnstileToken,
       } = parsed.data;
 
@@ -851,15 +1027,50 @@ export function registerRoutes(app: Express): Server {
       }
 
       const toEmail = String(recipientEmail || "").trim().toLowerCase();
-      if (!toEmail) {
-        return res.status(400).json({
-          error: "Recipient email is required",
-          field: "recipientEmail",
-          code: "RECIPIENT_EMAIL_REQUIRED",
-          version: VERSION,
-        });
+      const toPhone = String(recipientPhone || "").trim();
+
+      // DELIVERY RULES:
+      // - Guest: email-only (must have recipientEmail, must not have phone)
+      // - Registered: email and/or sms, but must have at least one target
+
+      if (!isRegistered) {
+        if (!toEmail) {
+          return res.status(400).json({
+            error: "Recipient email is required",
+            field: "recipientEmail",
+            code: "RECIPIENT_EMAIL_REQUIRED",
+            version: VERSION,
+          });
+        }
+        if (toPhone) {
+          return res.status(400).json({
+            error: "Guests cannot send SMS",
+            field: "recipientPhone",
+            code: "GUEST_SMS_NOT_ALLOWED",
+            version: VERSION,
+          });
+        }
+      } else {
+        const hasEmail = Boolean(toEmail);
+        const hasPhone = Boolean(toPhone);
+        if (!hasEmail && !hasPhone) {
+          return res.status(400).json({
+            error: "Recipient email or phone is required",
+            code: "RECIPIENT_REQUIRED",
+            version: VERSION,
+          });
+        }
+        if (hasPhone && !isE164(toPhone)) {
+          return res.status(400).json({
+            error: "Invalid phone number (use E.164, e.g. +16045551234)",
+            field: "recipientPhone",
+            code: "PHONE_INVALID",
+            version: VERSION,
+          });
+        }
       }
-      if (isDisposableEmail(toEmail)) {
+
+      if (toEmail && isDisposableEmail(toEmail)) {
         return res.status(400).json({
           error: "Recipient email provider not supported",
           field: "recipientEmail",
@@ -868,16 +1079,25 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
+      if (isRegistered && toPhone && DAILY_LIMIT_PHONE > 0) {
+        const current = getMemPhone(toPhone);
+        if (current >= DAILY_LIMIT_PHONE) {
+          return res.status(429).json({
+            error: "Daily limit reached",
+            code: "DAILY_LIMIT_PHONE",
+            retryAfterSec: 60 * 60,
+            version: VERSION,
+          });
+        }
+      }
+
       let finalAmountCents: number | null = null;
 
-      // Preferred inputs
       if (amountCents != null) finalAmountCents = Number(amountCents);
       else if (amountDollars != null) finalAmountCents = moneyToCents(Number(amountDollars));
 
-      // Back/forward compat: accept `amount` as either dollars or cents
       if (finalAmountCents == null && amount != null) {
-        const normalized = normalizeFixedAmountToCents(amount);
-        finalAmountCents = normalized;
+        finalAmountCents = normalizeFixedAmountToCents(amount);
       }
 
       let finalMessageMode: "preset" | "custom" = (messageMode as any) || "preset";
@@ -885,7 +1105,7 @@ export function registerRoutes(app: Express): Server {
       let finalMessage: string = message ? String(message).trim() : "";
 
       if (!isRegistered) {
-        // Guest scope: preset-only, no amount
+        // Guest scope: preset-only, no amount, no sms
         finalMessageMode = "preset";
         finalMessage = "";
 
@@ -901,7 +1121,7 @@ export function registerRoutes(app: Express): Server {
         if (finalAmountCents != null && finalAmountCents !== 0) {
           return res.status(400).json({
             error: "Guests cannot include an amount",
-            field: "amountDollars",
+            field: "amount",
             code: "GUEST_AMOUNT_NOT_ALLOWED",
             version: VERSION,
           });
@@ -909,7 +1129,7 @@ export function registerRoutes(app: Express): Server {
 
         finalAmountCents = null;
       } else {
-        // Registered scope: preset or custom, optional fixed amounts
+        // Registered scope: preset OR custom (<=280), optional fixed amounts
         if (finalMessageMode === "custom") {
           const m = String(finalMessage || "").trim();
           if (!m) {
@@ -948,7 +1168,7 @@ export function registerRoutes(app: Express): Server {
           if (finalAmountCents < MIN_AMOUNT_CENTS_REGISTERED) {
             return res.status(400).json({
               error: "Minimum amount is $25",
-              field: "amountDollars",
+              field: "amount",
               code: "MIN_AMOUNT",
               version: VERSION,
             });
@@ -956,7 +1176,7 @@ export function registerRoutes(app: Express): Server {
           if (!ALLOWED_AMOUNTS_CENTS.has(finalAmountCents)) {
             return res.status(400).json({
               error: `Amount must be one of: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}`,
-              field: "amountDollars",
+              field: "amount",
               code: "AMOUNT_NOT_ALLOWED",
               version: VERSION,
             });
@@ -965,10 +1185,13 @@ export function registerRoutes(app: Express): Server {
       }
 
       if (DAILY_LIMIT_IP > 0) bumpMemIp(ip);
+      if (isRegistered && toPhone && DAILY_LIMIT_PHONE > 0) bumpMemPhone(toPhone);
 
       const publicId = crypto.randomBytes(16).toString("hex");
       const claimUrl =
-        (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") + "/" + publicId;
+        (process.env.PUBLIC_CLAIM_BASE_URL || `${FRONTEND_URL}/claim`).replace(/\/+$/, "") + "/" + publicId;
+
+      const deliveryMethod = isRegistered ? (toPhone ? (toEmail ? "email+sms" : "sms") : "email") : "email";
 
       const inserted = await db
         .insert(gifts)
@@ -976,9 +1199,9 @@ export function registerRoutes(app: Express): Server {
           publicId,
           senderUserId: isRegistered ? a.userId : null,
           senderEmail: normSenderEmail || null,
-          recipientEmail: toEmail,
-          recipientPhone: null,
-          deliveryMethod: null,
+          recipientEmail: toEmail || null,
+          recipientPhone: isRegistered ? (toPhone || null) : null,
+          deliveryMethod,
 
           messageMode: finalMessageMode,
           presetMessageId: finalPresetMessageId,
@@ -1000,28 +1223,48 @@ export function registerRoutes(app: Express): Server {
       void giftId;
 
       let emailSent = false;
+      let smsQueued = false;
       let deliveryError: string | null = null;
 
-      try {
-        await sendGiftEmail({
-          to: toEmail,
-          publicId,
-          claimUrl,
-          amountCents: finalAmountCents,
-          senderEmail: normSenderEmail || undefined,
-          message: finalMessageMode === "custom" ? (finalMessage || undefined) : undefined,
-        } as any);
-        emailSent = true;
-      } catch (e: any) {
-        deliveryError = String(e?.message || e);
+      // Email (if requested/available)
+      if (toEmail) {
+        try {
+          await sendGiftEmail({
+            to: toEmail,
+            publicId,
+            claimUrl,
+            amountCents: finalAmountCents,
+            senderEmail: normSenderEmail || undefined,
+            message: finalMessageMode === "custom" ? (finalMessage || undefined) : undefined,
+          } as any);
+          emailSent = true;
+        } catch (e: any) {
+          deliveryError = String(e?.message || e);
+        }
+      }
+
+      // SMS (registered only, if phone provided)
+      if (isRegistered && toPhone) {
+        try {
+          await sendGiftSms({
+            toPhone,
+            publicId,
+            claimUrl,
+          } as any);
+          smsQueued = true;
+        } catch (e: any) {
+          const msg = String(e?.message || e);
+          deliveryError = deliveryError ? `${deliveryError}; ${msg}` : msg;
+        }
       }
 
       return res.json({
         ok: true,
         publicId,
         claimUrl,
-        deliveryOk: emailSent,
+        deliveryOk: Boolean((toEmail ? emailSent : true) && (toPhone ? smsQueued : true)),
         emailSent,
+        smsQueued,
         deliveryError: deliveryError || undefined,
         version: VERSION,
       });
@@ -1048,6 +1291,8 @@ export function registerRoutes(app: Express): Server {
           publicId: gifts.publicId,
           senderEmail: gifts.senderEmail,
           recipientEmail: gifts.recipientEmail,
+          recipientPhone: gifts.recipientPhone,
+          deliveryMethod: gifts.deliveryMethod,
           messageMode: gifts.messageMode,
           presetMessageId: gifts.presetMessageId,
           message: gifts.message,
@@ -1070,6 +1315,7 @@ export function registerRoutes(app: Express): Server {
         gift: {
           publicId: g.publicId,
           senderEmail: g.senderEmail || null,
+          deliveryMethod: (g.deliveryMethod as any) || null,
           messageMode: (g.messageMode as any) || "preset",
           presetMessageId: g.presetMessageId ?? null,
           message: (g.messageMode as any) === "custom" ? g.message || "" : "",
@@ -1208,7 +1454,7 @@ export function registerRoutes(app: Express): Server {
         }
 
         const claimUrl =
-          (process.env.PUBLIC_CLAIM_BASE_URL || "https://thankumail.com/claim").replace(/\/+$/, "") + "/" + pid;
+          (process.env.PUBLIC_CLAIM_BASE_URL || `${FRONTEND_URL}/claim`).replace(/\/+$/, "") + "/" + pid;
 
         try {
           await sendReminderEmail({
