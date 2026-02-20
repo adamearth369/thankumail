@@ -12,14 +12,11 @@
     <meta name="tm-static-build-commit" content="ae28322" />
     <meta name="tm-static-build-at" content="2026-02-15" />
 
-    <!-- Preload self-hosted logo font to reduce flash -->
-    <link
-      rel="preload"
-      href="/fonts/quicksand-600.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
+    <!-- NOTE:
+      Removed the Quicksand preload because Quicksand is currently being loaded via Google Fonts below,
+      so preloading /fonts/quicksand-600.woff2 is unused and triggers a browser warning.
+      If you later switch Quicksand to self-hosted, re-add the preload (with as/type/crossorigin).
+    -->
 
     <!-- Preconnect for Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />

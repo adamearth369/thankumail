@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -139,7 +142,7 @@ export default function Claim() {
   const invalidRef = useRef<boolean>(false);
 
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
-  const [captchaReady, setCaptchaReady] = useState<boolean>(!turnstileConfigured);
+  const [captchaReady, setCaptchaReady] = useState<boolean>(false);
 
   const tokenRef = useRef<string>("");
   const widgetIdRef = useRef<any>(null);
@@ -151,10 +154,6 @@ export default function Claim() {
   const confettiFiredRef = useRef<boolean>(false);
 
   const turnstileHostRef = useRef<HTMLDivElement | null>(null);
-
-  const needsClaimFlow = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
-  const shouldShowCaptcha = turnstileConfigured && needsClaimFlow;
-  const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
   const messageText = useMemo(() => {
     const m = String(gift?.message || "").trim();
@@ -181,6 +180,13 @@ export default function Claim() {
     if (!hasAmount) return false;
     return retryAfterSec !== null && retryAfterSec > 0;
   }, [hasAmount, retryAfterSec]);
+
+  const needsClaimFlow = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
+
+  // ✅ FIX: Only require Turnstile for amount claims (registered gift flow)
+  const shouldShowCaptcha = turnstileConfigured && needsClaimFlow && hasAmount;
+
+  const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
   function lockInvalidLink() {
     invalidRef.current = true;
@@ -257,10 +263,10 @@ export default function Claim() {
     setRetryAfterSec(null);
     setClaiming(false);
     tokenRef.current = "";
-    setCaptchaReady(!turnstileConfigured);
+    setCaptchaReady(false);
     setCaptchaRendered(false);
     setCaptchaBlocked(false);
-  }, [alreadyClaimed, turnstileConfigured]);
+  }, [alreadyClaimed]);
 
   useEffect(() => {
     if (!hasAmount) return;
@@ -303,12 +309,7 @@ export default function Claim() {
   }
 
   useEffect(() => {
-    if (!turnstileConfigured) {
-      setTurnstileBooting(false);
-      setCaptchaReady(false);
-      return;
-    }
-
+    // If captcha isn't needed, fully reset UI state.
     if (!shouldShowCaptcha) {
       renderedRef.current = false;
       widgetIdRef.current = null;
@@ -323,14 +324,10 @@ export default function Claim() {
     setTurnstileBooting(true);
     setCaptchaRendered(false);
     setCaptchaBlocked(false);
-  }, [turnstileConfigured, shouldShowCaptcha]);
+  }, [shouldShowCaptcha]);
 
   useEffect(() => {
-    if (!turnstileConfigured) return;
-    if (!shouldShowCaptcha) {
-      setTurnstileBooting(false);
-      return;
-    }
+    if (!shouldShowCaptcha) return;
 
     if (getTurnstile()) {
       setTurnstileBooting(false);
@@ -357,10 +354,9 @@ export default function Claim() {
     };
 
     document.body.appendChild(script);
-  }, [turnstileConfigured, shouldShowCaptcha]);
+  }, [shouldShowCaptcha]);
 
   useEffect(() => {
-    if (!turnstileConfigured) return;
     if (!shouldShowCaptcha) return;
 
     let cancelled = false;
@@ -443,7 +439,6 @@ export default function Claim() {
         renderedRef.current = true;
         setCaptchaRendered(true);
 
-        // Try Turnstile API response once
         window.setTimeout(() => {
           if (cancelled) return;
           try {
@@ -465,11 +460,9 @@ export default function Claim() {
           } catch {}
         }, 300);
 
-        // ⭐ Critical: Poll hidden input (Cloudflare fallback)
         if (tokenPoll) window.clearInterval(tokenPoll);
         tokenPoll = window.setInterval(syncTokenFromHiddenInput, 250) as any;
 
-        // stop polling after 10s
         window.setTimeout(() => {
           if (tokenPoll) {
             window.clearInterval(tokenPoll);
@@ -477,7 +470,6 @@ export default function Claim() {
           }
         }, 10000);
 
-        // immediate sync attempts
         window.setTimeout(syncTokenFromHiddenInput, 150);
         window.setTimeout(syncTokenFromHiddenInput, 600);
         window.setTimeout(syncTokenFromHiddenInput, 1200);
@@ -507,13 +499,17 @@ export default function Claim() {
       window.clearInterval(interval);
       window.clearTimeout(timeout);
     };
-  }, [turnstileConfigured, shouldShowCaptcha, TURNSTILE_SITE_KEY]);
+  }, [shouldShowCaptcha, TURNSTILE_SITE_KEY]);
 
   async function postClaim() {
+    const body: any = {};
+    // Only send turnstile token when captcha is actually required
+    if (shouldShowCaptcha) body.turnstileToken = tokenRef.current || "";
+
     const r = await fetch(`${API_BASE}/api/gifts/${publicId}/claim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ turnstileToken: tokenRef.current || "" }),
+      body: JSON.stringify(body),
     });
 
     const j: any = await safeJson(r);
@@ -539,13 +535,6 @@ export default function Claim() {
     if (!canAttemptClaim) return;
 
     (async () => {
-      if (needsClaimFlow && !turnstileConfigured) {
-        setError("Verification is not configured. Please try again later.");
-        setClaiming(false);
-        setRetryAfterSec(null);
-        return;
-      }
-
       setClaiming(true);
       setError("");
       try {
@@ -605,16 +594,11 @@ export default function Claim() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAmount, retryAfterSec, canAttemptClaim, needsClaimFlow, turnstileConfigured]);
+  }, [hasAmount, retryAfterSec, canAttemptClaim, needsClaimFlow, shouldShowCaptcha]);
 
   async function handleClaimClick() {
     if (!publicId) return;
     if (!canAttemptClaim) return;
-
-    if (needsClaimFlow && !turnstileConfigured) {
-      setError("Verification is not configured. Please try again later.");
-      return;
-    }
 
     if (shouldShowCaptcha && !captchaReady) {
       setError("Please complete the quick verification below.");
@@ -797,7 +781,6 @@ export default function Claim() {
   const buttonDisabled =
     !canAttemptClaim ||
     claiming ||
-    (needsClaimFlow && !turnstileConfigured) ||
     (shouldShowCaptcha ? !captchaReady : false) ||
     (waitingOnDelay ? true : false);
 
@@ -848,7 +831,7 @@ export default function Claim() {
                   <div className="mt-1 text-xs text-slate-600 leading-relaxed">
                     {hasAmount
                       ? "For safety, there’s a quick verification and a short pause before it finalizes."
-                      : "For safety, there’s a quick verification."}
+                      : "Tap below to accept."}
                   </div>
                 </div>
 
@@ -862,11 +845,7 @@ export default function Claim() {
                 ) : null}
               </div>
 
-              {needsClaimFlow && !turnstileConfigured ? (
-                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                  Verification is not configured on this build. Please refresh later.
-                </div>
-              ) : shouldShowCaptcha ? (
+              {shouldShowCaptcha ? (
                 <div className="mt-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
                     <div
@@ -904,7 +883,7 @@ export default function Claim() {
                   "mt-4 w-full rounded-2xl px-5 py-4 transition text-lg tracking-tight border-2",
                   buttonDisabled
                     ? "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
-                    : "bg-tm-amber text-tm-charcoal border-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
+                    : "bg-tm-amber text-tm-charcoal border-tm-charcoal cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
                 )}
                 style={{ fontFamily: FONT_TITLE, fontWeight: 800, letterSpacing: "-0.01em" }}
               >

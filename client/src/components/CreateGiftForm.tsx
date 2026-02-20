@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -26,6 +29,17 @@ type CreateGiftOk = {
 };
 
 type CreateGiftResponse = CreateGiftOk | ApiError;
+
+type AuthMeOk = {
+  ok?: boolean;
+  user?: {
+    id?: string | number;
+    email?: string;
+    createdAt?: string;
+    [k: string]: any;
+  };
+  [k: string]: any;
+};
 
 declare global {
   interface Window {
@@ -152,12 +166,25 @@ function getSessionToken() {
   }
 }
 
+function removeSessionToken() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export default function CreateGiftForm() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [senderEmail, setSenderEmail] = useState("");
 
   const [sessionToken, setSessionToken] = useState<string>(() => getSessionToken());
-  const isRegistered = Boolean(sessionToken);
+
+  const [authChecked, setAuthChecked] = useState<boolean>(false);
+  const [authOk, setAuthOk] = useState<boolean>(false);
+  const [authEmail, setAuthEmail] = useState<string>("");
+
+  const isRegistered = authOk;
 
   const [messageMode, setMessageMode] = useState<"preset" | "custom">("preset");
   const [customMessage, setCustomMessage] = useState<string>("");
@@ -181,6 +208,7 @@ export default function CreateGiftForm() {
   const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const renderSeqRef = useRef<number>(0);
   const errorLockRef = useRef<"none" | "server" | "turnstile">("none");
+  const authReqSeqRef = useRef<number>(0);
 
   const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
   const wordmark = "thankümail";
@@ -195,6 +223,80 @@ export default function CreateGiftForm() {
     };
   }, []);
 
+  // Cross-tab/session updates
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === SESSION_KEY) setSessionToken(getSessionToken());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Verify session token with /api/auth/me (do NOT assume token => registered)
+  useEffect(() => {
+    let cancelled = false;
+    const seq = ++authReqSeqRef.current;
+
+    async function checkMe() {
+      const st = String(sessionToken || "").trim();
+      setAuthChecked(false);
+      setAuthOk(false);
+      setAuthEmail("");
+
+      if (!st) {
+        setAuthChecked(true);
+        return;
+      }
+
+      try {
+        const resp = await fetch(`${API_BASE}/api/auth/me`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${st}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        let data: any = null;
+        try {
+          data = await resp.json();
+        } catch {
+          // ignore
+        }
+
+        if (cancelled || seq !== authReqSeqRef.current) return;
+
+        if (resp.ok) {
+          const me = (data || {}) as AuthMeOk;
+          const email = String(me?.user?.email || "").trim();
+          setAuthOk(true);
+          setAuthEmail(email);
+          setAuthChecked(true);
+          return;
+        }
+
+        // Invalid/expired token: treat as guest and clear local token
+        removeSessionToken();
+        setSessionToken("");
+        setAuthOk(false);
+        setAuthEmail("");
+        setAuthChecked(true);
+      } catch {
+        if (cancelled || seq !== authReqSeqRef.current) return;
+        // Network issues: do NOT delete token; just treat as guest until recovery
+        setAuthOk(false);
+        setAuthEmail("");
+        setAuthChecked(true);
+      }
+    }
+
+    checkMe();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionToken]);
+
   // Keep UI aligned with locked scope:
   // Guests: preset-only, no amount
   // Registered: preset/custom, amount optional
@@ -205,15 +307,6 @@ export default function CreateGiftForm() {
       setAmountCents(null);
     }
   }, [isRegistered]);
-
-  // Cross-tab/session updates
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === SESSION_KEY) setSessionToken(getSessionToken());
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
 
   const presetOk = useMemo(() => presetIdx >= 0 && presetIdx < PRESET_MESSAGES.length, [presetIdx]);
 
@@ -517,7 +610,7 @@ export default function CreateGiftForm() {
     const presetMessageId = PRESET_MESSAGES[presetIdx]?.id ?? 2;
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const st = getSessionToken();
+    const st = authOk ? getSessionToken() : "";
     if (st) headers["Authorization"] = `Bearer ${st}`;
 
     const payload: any = {
@@ -527,10 +620,11 @@ export default function CreateGiftForm() {
     };
 
     // Locked scope enforcement on client:
+    // Guests: preset-only, no amount
+    // Registered: preset/custom, fixed preset amounts (optional) 25..1000
     if (!st) {
       payload.messageMode = "preset";
       payload.presetMessageId = presetMessageId;
-      // no amount
     } else {
       payload.messageMode = messageMode;
 
@@ -561,6 +655,12 @@ export default function CreateGiftForm() {
         const err = parseApiError(data || { error: "Request failed" });
         const code = String(err.code || "");
         const lock: "server" | "turnstile" = isTurnstileErrorCode(code) ? "turnstile" : "server";
+
+        // If auth token got rejected mid-flight, clear it and fall back to guest
+        if (resp.status === 401 || resp.status === 403) {
+          removeSessionToken();
+          setSessionToken("");
+        }
 
         setErrorWithLock(err.error || "Request failed", lock);
         setFieldError(err.field || "");
@@ -627,10 +727,10 @@ export default function CreateGiftForm() {
   }
 
   function signOut() {
-    try {
-      localStorage.removeItem(SESSION_KEY);
-    } catch {}
+    removeSessionToken();
     setSessionToken("");
+    setAuthOk(false);
+    setAuthEmail("");
     setMessageMode("preset");
     setCustomMessage("");
     setAmountCents(null);
@@ -646,6 +746,8 @@ export default function CreateGiftForm() {
   const chipBase = "px-3 py-1.5 rounded-full text-xs border transition cursor-pointer select-none";
   const chipOn = "border-tm-charcoal bg-tm-charcoal text-tm-cream shadow-soft ring-2 ring-tm-honey/40";
   const chipOff = "border-tm-charcoal/20 bg-tm-cream text-tm-charcoal hover:bg-white";
+
+  const authLabel = !authChecked ? "Checking session…" : isRegistered ? "Registered mode" : "Guest mode";
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -663,7 +765,7 @@ export default function CreateGiftForm() {
           {/* AUTH STRIP */}
           <div className="rounded-2xl border border-tm-charcoal/15 bg-tm-cream px-3 py-3">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-medium text-tm-charcoal">{isRegistered ? "Registered mode" : "Guest mode"}</div>
+              <div className="text-sm font-medium text-tm-charcoal">{authLabel}</div>
 
               {isRegistered ? (
                 <button type="button" onClick={signOut} className={classNames(chipBase, chipOff)}>
@@ -677,9 +779,14 @@ export default function CreateGiftForm() {
             </div>
 
             <div className="mt-2 text-xs text-tm-charcoal/70">
-              {isRegistered
-                ? "Custom message + optional gift amounts are unlocked."
-                : "Guests can send preset messages only (no amount)."}
+              {isRegistered ? (
+                <>
+                  Custom message + optional gift amounts are unlocked
+                  {authEmail ? <span className="text-tm-charcoal/70"> • {authEmail}</span> : null}.
+                </>
+              ) : (
+                "Guests can send preset messages only (no amount)."
+              )}
             </div>
           </div>
 
@@ -807,7 +914,9 @@ export default function CreateGiftForm() {
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="text-sm font-medium text-tm-charcoal">Gift amount (optional)</div>
-                <div className="text-xs text-tm-charcoal/60">{amountCents === null ? "none" : centsToLabel(amountCents)}</div>
+                <div className="text-xs text-tm-charcoal/60">
+                  {amountCents === null ? "none" : centsToLabel(amountCents)}
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -882,7 +991,8 @@ export default function CreateGiftForm() {
               <div className="font-medium mb-1">Sent.</div>
 
               <div className="text-sm text-emerald-900/85">
-                Your thankümail has been sent to <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
+                Your thankümail has been sent to{" "}
+                <span className="font-medium">{lastSentRecipientEmail || "the recipient"}</span>.
               </div>
 
               <div className="mt-2 text-xs text-emerald-900/75">
@@ -895,7 +1005,9 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
+              {result.deliveryError ? (
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+              ) : null}
 
               <div className="mt-3">
                 <button

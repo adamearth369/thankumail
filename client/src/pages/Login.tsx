@@ -1,8 +1,9 @@
 // WHERE TO PASTE: client/src/pages/Login.tsx
-// ACTION: Full file replacement
+// ACTION: Full file replacement (paste exactly)
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
+import { apiJson } from "@/lib/api";
 
 type ApiError = {
   error: string;
@@ -17,12 +18,12 @@ type ApiError = {
 type AuthRequestOk = {
   ok: true;
   token?: string;
+  loginUrl?: string;
   expiresAt: string;
   sent?: boolean;
+  emailSent?: boolean;
   version?: string;
 };
-
-type AuthRequestResponse = AuthRequestOk | ApiError;
 
 declare global {
   interface Window {
@@ -48,12 +49,15 @@ declare global {
       remove: (widgetId?: string) => void;
       getResponse?: (widgetId?: string) => string;
     };
+    __tm_turnstile?: any;
   }
 }
 
-const API_BASE = "https://api.thankumail.com";
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
+
+// Keep token very fresh to avoid "timeout-or-duplicate"
+const MAX_TOKEN_AGE_MS = 45_000;
 
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
@@ -92,9 +96,15 @@ function parseApiError(e: any): ApiError {
   return { error: "Request failed" };
 }
 
+function isTurnstileFail(err: ApiError) {
+  return String(err?.code || "").toUpperCase() === "TURNSTILE_FAILED";
+}
+
 export default function Login() {
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
+  const [tokenIssuedAt, setTokenIssuedAt] = useState<number>(0);
+
   const [turnstileReady, setTurnstileReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -144,12 +154,25 @@ export default function Login() {
     };
   }, [TURNSTILE_SITE_KEY]);
 
+  function clearToken() {
+    setToken("");
+    setTokenIssuedAt(0);
+  }
+
   function destroyWidget() {
     try {
       if (widgetIdRef.current && window.turnstile?.remove) window.turnstile.remove(widgetIdRef.current);
     } catch {}
     widgetIdRef.current = null;
     if (widgetContainerRef.current) widgetContainerRef.current.innerHTML = "";
+    clearToken();
+  }
+
+  function resetWidget() {
+    try {
+      if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
+    } catch {}
+    clearToken();
   }
 
   function renderWidget() {
@@ -163,7 +186,7 @@ export default function Login() {
       return;
     }
 
-    setToken("");
+    clearToken();
     el.innerHTML = "";
 
     try {
@@ -171,19 +194,32 @@ export default function Login() {
         sitekey,
         theme: "auto",
         size: "normal",
-        // CRITICAL: do NOT use response-field on React forms; rely on callbacks + getResponse
-        "response-field": false,
+
+        // IMPORTANT: create a hidden input so we can always read the freshest token
+        "response-field": true,
+        "response-field-name": "tm_auth_turnstile_response",
+
         callback: (t: string) => {
           const tt = String(t || "").trim();
           setToken(tt);
+          setTokenIssuedAt(Date.now());
           setError("");
+          try {
+            window.__tm_turnstile = { page: "login", widgetId: id, tokenLen: tt.length, tokenIssuedAt: Date.now() };
+          } catch {}
         },
-        "expired-callback": () => setToken(""),
-        "timeout-callback": () => setToken(""),
+
+        "expired-callback": () => {
+          clearToken();
+        },
+        "timeout-callback": () => {
+          clearToken();
+        },
         "error-callback": () => {
-          setToken("");
+          clearToken();
           setError("Verification failed. Please try again.");
         },
+
         "refresh-expired": "auto",
         "refresh-timeout": "auto",
       });
@@ -206,17 +242,36 @@ export default function Login() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnstileReady, TURNSTILE_SITE_KEY]);
 
-  function readTurnstileToken() {
-    const fromState = String(token || "").trim();
-    if (fromState) return fromState;
+  function readHiddenInputToken() {
+    try {
+      const host = widgetContainerRef.current;
+      const input = host?.querySelector<HTMLInputElement>('input[name="tm_auth_turnstile_response"]');
+      const v = input?.value ? String(input.value).trim() : "";
+      return v;
+    } catch {
+      return "";
+    }
+  }
 
+  function readTurnstileTokenFresh() {
+    const now = Date.now();
+
+    // 1) hidden input (freshest)
+    const fromInput = readHiddenInputToken();
+    if (fromInput && fromInput.length > 20) return { token: fromInput, issuedAt: tokenIssuedAt || now };
+
+    // 2) state
+    const fromState = String(token || "").trim();
+    if (fromState && fromState.length > 20) return { token: fromState, issuedAt: tokenIssuedAt || now };
+
+    // 3) turnstile.getResponse
     try {
       const wid = widgetIdRef.current || undefined;
       const t = String(window.turnstile?.getResponse?.(wid) || "").trim();
-      if (t) return t;
+      if (t && t.length > 20) return { token: t, issuedAt: tokenIssuedAt || now };
     } catch {}
 
-    return "";
+    return { token: "", issuedAt: 0 };
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -232,50 +287,46 @@ export default function Login() {
       return;
     }
 
-    const t = readTurnstileToken();
+    const { token: t, issuedAt } = readTurnstileTokenFresh();
     if (!t) {
       setSubmitting(false);
       setError("Please complete the verification.");
       return;
     }
 
+    const age = issuedAt ? Date.now() - issuedAt : 999999;
+    if (age > MAX_TOKEN_AGE_MS) {
+      resetWidget();
+      setSubmitting(false);
+      setError("Verification expired — please verify again.");
+      return;
+    }
+
     try {
-      const resp = await fetch(`${API_BASE}/api/auth/request`, {
+      const data = await apiJson<AuthRequestOk>("/api/auth/request", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: em, turnstileToken: t }),
+        auth: false,
       });
 
-      let data: any = null;
-      try {
-        data = await resp.json();
-      } catch {}
-
-      if (!resp.ok || !data?.ok) {
+      if (!data?.ok) {
         const err = parseApiError(data || { error: "Request failed" });
         setError(err.error || "Request failed");
-
-        try {
-          if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
-        } catch {}
-        setToken("");
+        resetWidget();
         setSubmitting(false);
         return;
       }
 
-      setResult(data as AuthRequestOk);
+      setResult(data);
 
-      try {
-        if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
-      } catch {}
-      setToken("");
+      // Always reset so the next auth request cannot reuse token
+      resetWidget();
       setSubmitting(false);
-    } catch (err: any) {
-      setError(err?.message || "Network error");
-      try {
-        if (widgetIdRef.current && window.turnstile?.reset) window.turnstile.reset(widgetIdRef.current);
-      } catch {}
-      setToken("");
+    } catch (e: any) {
+      const err = parseApiError(e);
+      setError(err.error || "Request failed");
+      if (isTurnstileFail(err)) resetWidget();
+      else resetWidget();
       setSubmitting(false);
     }
   }
@@ -286,7 +337,9 @@ export default function Login() {
     "placeholder:text-tm-charcoal/60 placeholder:opacity-100 border-tm-charcoal/30 " +
     "focus:border-tm-charcoal focus:ring-2 focus:ring-tm-honey/30";
 
-  const canSubmit = !submitting && isEmail(email) && readTurnstileToken().length >= 20;
+  const { token: canTok, issuedAt: canIssuedAt } = readTurnstileTokenFresh();
+  const canSubmit =
+    !submitting && isEmail(email) && canTok.length >= 20 && Date.now() - (canIssuedAt || 0) <= MAX_TOKEN_AGE_MS;
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -309,7 +362,9 @@ export default function Login() {
           />
 
           <div className="text-sm font-medium text-tm-charcoal">Human check</div>
+
           <div
+            id="tm-auth-turnstile"
             ref={widgetContainerRef}
             className="min-h-[65px] rounded-xl border bg-tm-cream flex items-center justify-center overflow-hidden border-tm-charcoal/30"
           />
@@ -330,17 +385,21 @@ export default function Login() {
                   <div className="mt-2 text-xs text-emerald-900/70">Expires: {result.expiresAt}</div>
 
                   <div className="mt-3">
-                    <Link
-                      href={`/auth/consume?token=${encodeURIComponent(result.token)}`}
+                    <a
+                      href={result.loginUrl || `/auth/consume?token=${encodeURIComponent(result.token)}`}
                       className="inline-block rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-50"
                     >
                       Consume token now
-                    </Link>
+                    </a>
                   </div>
                 </>
               ) : (
                 <div className="mt-2 text-xs text-emerald-900/70">Expires: {result.expiresAt}</div>
               )}
+
+              {result.emailSent === true ? (
+                <div className="mt-2 text-[11px] text-emerald-900/60">Email queued.</div>
+              ) : null}
             </div>
           ) : null}
 

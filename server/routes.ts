@@ -21,12 +21,16 @@ import {
 } from "./email";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-19_002";
+const VERSION = "routes_v2026-02-19_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1_auth_magiclink_email_v1";
+  "locked_scope_guest_preset_email_only_registered_preset_or_custom_amounts_fixed_25_50_100_250_500_1000_schema_aligned_v2_strict_preset_range_sender_required_disposable_block_v1_auth_hardened_magiclink_v1_disposable_file_v2_auth_me_v1_auth_magiclink_email_v1";
+
+/* -------------------- SCOPE CONSTANTS -------------------- */
+const PRESET_MIN_ID = 1;
+const PRESET_MAX_ID = 7;
 
 /* -------------------- AMOUNTS -------------------- */
 const ALLOWED_AMOUNTS_DOLLARS = [25, 50, 100, 250, 500, 1000] as const;
@@ -232,6 +236,11 @@ function logAuth(event: string, fields: Record<string, any> = {}) {
   );
 }
 
+function isValidPresetId(n: any) {
+  const v = Number(n);
+  return Number.isInteger(v) && v >= PRESET_MIN_ID && v <= PRESET_MAX_ID;
+}
+
 /* -------------------- DAILY COUNTS -------------------- */
 /**
  * Schema note:
@@ -419,6 +428,8 @@ export function registerRoutes(app: Express): Server {
           amount: `optional (allowed: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}; min $25 when present)`,
         },
       },
+
+      presetIds: { min: PRESET_MIN_ID, max: PRESET_MAX_ID },
     });
   });
 
@@ -797,6 +808,23 @@ export function registerRoutes(app: Express): Server {
       }
 
       const normSenderEmail = senderEmail ? String(senderEmail).trim().toLowerCase() : "";
+      if (!normSenderEmail) {
+        return res.status(400).json({
+          error: "Sender email is required",
+          field: "senderEmail",
+          code: "SENDER_EMAIL_REQUIRED",
+          version: VERSION,
+        });
+      }
+      if (isDisposableEmail(normSenderEmail)) {
+        return res.status(400).json({
+          error: "Sender email provider not supported",
+          field: "senderEmail",
+          code: "DISPOSABLE_EMAIL_BLOCKED",
+          version: VERSION,
+        });
+      }
+
       if (DAILY_LIMIT_SENDER > 0 && normSenderEmail) {
         const c = await countDailyBySenderEmail(normSenderEmail);
         if (c >= DAILY_LIMIT_SENDER) {
@@ -818,6 +846,14 @@ export function registerRoutes(app: Express): Server {
           version: VERSION,
         });
       }
+      if (isDisposableEmail(toEmail)) {
+        return res.status(400).json({
+          error: "Recipient email provider not supported",
+          field: "recipientEmail",
+          code: "DISPOSABLE_EMAIL_BLOCKED",
+          version: VERSION,
+        });
+      }
 
       let finalAmountCents: number | null = null;
       if (amountCents != null) {
@@ -831,16 +867,19 @@ export function registerRoutes(app: Express): Server {
       let finalMessage: string = message ? String(message).trim() : "";
 
       if (!isRegistered) {
+        // Guest scope: preset-only, no amount
         finalMessageMode = "preset";
         finalMessage = "";
-        if (!Number.isInteger(finalPresetMessageId) || (finalPresetMessageId as number) < 1) {
+
+        if (!isValidPresetId(finalPresetMessageId)) {
           return res.status(400).json({
-            error: "Preset message is required for guests",
+            error: `Preset message is required (must be ${PRESET_MIN_ID}–${PRESET_MAX_ID})`,
             field: "presetMessageId",
             code: "GUEST_PRESET_REQUIRED",
             version: VERSION,
           });
         }
+
         if (finalAmountCents != null && finalAmountCents !== 0) {
           return res.status(400).json({
             error: "Guests cannot include an amount",
@@ -849,8 +888,10 @@ export function registerRoutes(app: Express): Server {
             version: VERSION,
           });
         }
+
         finalAmountCents = null;
       } else {
+        // Registered scope: preset or custom, optional fixed amounts
         if (finalMessageMode === "custom") {
           const m = String(finalMessage || "").trim();
           if (!m) {
@@ -874,9 +915,10 @@ export function registerRoutes(app: Express): Server {
         } else {
           finalMessageMode = "preset";
           finalMessage = "";
-          if (!Number.isInteger(finalPresetMessageId) || (finalPresetMessageId as number) < 1) {
+
+          if (!isValidPresetId(finalPresetMessageId)) {
             return res.status(400).json({
-              error: "Preset message is required for preset mode",
+              error: `Preset message is required (must be ${PRESET_MIN_ID}–${PRESET_MAX_ID})`,
               field: "presetMessageId",
               code: "PRESET_REQUIRED",
               version: VERSION,

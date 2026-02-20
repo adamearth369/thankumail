@@ -1,5 +1,9 @@
+// WHERE TO PASTE: client/src/pages/AuthConsume.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { apiJson } from "@/lib/api";
 
 type ApiError = {
   error: string;
@@ -18,9 +22,18 @@ type ConsumeOk = {
   version?: string;
 };
 
-type ConsumeResponse = ConsumeOk | ApiError;
+type MeOk = {
+  ok?: boolean;
+  user?: {
+    id?: string | number;
+    email?: string;
+    createdAt?: string;
+    [k: string]: any;
+  };
+  [k: string]: any;
+};
 
-const API_BASE = "https://api.thankumail.com";
+const SESSION_KEY = "tm_session_token";
 
 function parseApiError(e: any): ApiError {
   if (!e) return { error: "Unknown error" };
@@ -38,13 +51,31 @@ function getTokenFromUrl() {
   }
 }
 
+function setSessionToken(token: string) {
+  try {
+    localStorage.setItem(SESSION_KEY, String(token || "").trim());
+  } catch {
+    // ignore
+  }
+}
+
+function clearSessionToken() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export default function AuthConsume() {
   const [, setLocation] = useLocation();
 
   const token = useMemo(() => getTokenFromUrl(), []);
   const [loading, setLoading] = useState(true);
+  const [phase, setPhase] = useState<"consuming" | "verifying" | "done">("consuming");
   const [error, setError] = useState("");
   const [ok, setOk] = useState<ConsumeOk | null>(null);
+  const [meEmail, setMeEmail] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +84,8 @@ export default function AuthConsume() {
       setLoading(true);
       setError("");
       setOk(null);
+      setMeEmail("");
+      setPhase("consuming");
 
       const t = String(token || "").trim();
       if (!t) {
@@ -62,18 +95,13 @@ export default function AuthConsume() {
       }
 
       try {
-        const resp = await fetch(`${API_BASE}/api/auth/consume`, {
+        const data = await apiJson<ConsumeResponse>("/api/auth/consume", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token: t }),
+          auth: false,
         });
 
-        let data: any = null;
-        try {
-          data = await resp.json();
-        } catch {}
-
-        if (!resp.ok || !data?.ok) {
+        if (!data || !(data as any).ok) {
           const err = parseApiError(data || { error: "Request failed" });
           if (cancelled) return;
           setError(err.error || "Request failed");
@@ -82,35 +110,65 @@ export default function AuthConsume() {
         }
 
         const r = data as ConsumeOk;
-
-        try {
-          localStorage.setItem("tm_session_token", String(r.sessionToken || ""));
-        } catch {}
+        setSessionToken(r.sessionToken);
 
         if (cancelled) return;
         setOk(r);
-        setLoading(false);
 
-        // Redirect home after success (small pause so user sees confirmation)
-        setTimeout(() => {
-          try {
-            setLocation("/");
-          } catch {}
-        }, 800);
+        // Verify immediately with /api/auth/me (uses bearer token in api.ts)
+        setPhase("verifying");
+
+        const me = await apiJson<MeOk>("/api/auth/me", { method: "GET", auth: true });
+
+        if (cancelled) return;
+
+        if (me && (me as any).user) {
+          const email = String((me as any).user?.email || "").trim();
+          setMeEmail(email);
+          setPhase("done");
+          setLoading(false);
+
+          setTimeout(() => {
+            try {
+              setLocation("/");
+            } catch {}
+          }, 600);
+
+          return;
+        }
+
+        // If verification didn't return a user, treat as failure and clear token
+        clearSessionToken();
+        setOk(null);
+        setError("Sign-in verification failed. Please request a new magic link.");
+        setLoading(false);
       } catch (e: any) {
         if (cancelled) return;
-        setError(e?.message || "Network error");
+
+        // On any consume/verify failure, clear token to avoid stuck "registered" UI
+        clearSessionToken();
+
+        const err = parseApiError(e);
+        setError(err.error || e?.message || "Network error");
         setLoading(false);
       }
     }
 
     run();
+
     return () => {
       cancelled = true;
     };
   }, [token, setLocation]);
 
   const box = "rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal";
+
+  const status =
+    phase === "consuming"
+      ? "Signing you in…"
+      : phase === "verifying"
+        ? "Verifying session…"
+        : "Signed in.";
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -122,17 +180,28 @@ export default function AuthConsume() {
           </Link>
         </div>
 
-        <div className="mt-4">
-          {loading ? <div className="text-sm text-tm-charcoal/70">Working…</div> : null}
+        <div className="mt-4 space-y-3">
+          {loading ? <div className="text-sm text-tm-charcoal/70">{status}</div> : null}
 
           {error ? (
             <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
           ) : null}
 
-          {ok?.ok ? (
+          {ok?.ok && !error ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-              <div className="font-medium">Signed in.</div>
+              <div className="font-medium">{phase === "done" ? "Signed in." : "Almost done…"}</div>
+              {meEmail ? <div className="mt-2 text-xs text-emerald-900/75">{meEmail}</div> : null}
               <div className="mt-2 text-xs text-emerald-900/70">Redirecting…</div>
+            </div>
+          ) : null}
+
+          {!loading && error ? (
+            <div className="text-xs text-tm-charcoal/60">
+              Try again from{" "}
+              <Link href="/login" className="underline text-tm-charcoal/70 hover:text-tm-charcoal">
+                /login
+              </Link>
+              .
             </div>
           ) : null}
         </div>
@@ -140,3 +209,5 @@ export default function AuthConsume() {
     </div>
   );
 }
+
+type ConsumeResponse = ConsumeOk | ApiError;
