@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/lib/api.ts
+// ACTION: Full file replacement (paste exactly)
+
 type Json = any;
 
 export type ApiError = {
@@ -29,9 +32,17 @@ function getSessionToken() {
   }
 }
 
+/* -------------------- BACKEND IDENTITY (COMMIT + API VERSION) -------------------- */
+
 function rememberBackendCommit(commit: string) {
   try {
     if (commit) localStorage.setItem("tm_api_commit", commit);
+  } catch {}
+}
+
+function rememberBackendApiVersion(v: string) {
+  try {
+    if (v) localStorage.setItem("tm_api_version", v);
   } catch {}
 }
 
@@ -42,6 +53,43 @@ function getRememberedBackendCommit() {
     return "";
   }
 }
+
+function getRememberedBackendApiVersion() {
+  try {
+    return String(localStorage.getItem("tm_api_version") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function getHeader(res: Response, name: string) {
+  // Be resilient to casing differences across proxies/runtimes.
+  // Fetch spec is case-insensitive, but this guarantees we handle any oddities.
+  const direct = res.headers.get(name);
+  if (direct) return direct;
+
+  const lower = name.toLowerCase();
+  const upper = name.toUpperCase();
+
+  return (
+    res.headers.get(lower) ||
+    res.headers.get(upper) ||
+    res.headers.get(lower.replace(/_/g, "-")) ||
+    res.headers.get(upper.replace(/_/g, "-")) ||
+    ""
+  );
+}
+
+function captureBackendIdentityFromResponse(res: Response) {
+  const xCommit = getHeader(res, "x-commit") || getHeader(res, "X-Commit") || "";
+  const xApiVersion =
+    getHeader(res, "x-api-version") || getHeader(res, "X-Api-Version") || "";
+
+  if (xCommit) rememberBackendCommit(xCommit);
+  if (xApiVersion) rememberBackendApiVersion(xApiVersion);
+}
+
+/* -------------------- API JSON -------------------- */
 
 export async function apiJson<T = Json>(
   path: string,
@@ -67,8 +115,7 @@ export async function apiJson<T = Json>(
       signal: controller.signal,
     });
 
-    const xCommit = res.headers.get("x-commit") || "";
-    if (xCommit) rememberBackendCommit(xCommit);
+    captureBackendIdentityFromResponse(res);
 
     const text = await res.text();
     const data = text ? safeJsonParse(text) : null;
@@ -98,21 +145,39 @@ export async function apiJson<T = Json>(
   }
 }
 
+/* -------------------- READ BACKEND IDENTITY -------------------- */
+
 export async function getBackendCommit(): Promise<string> {
   const remembered = getRememberedBackendCommit();
   if (remembered) return remembered;
 
   try {
     const res = await fetch(apiUrl("/api/version"), { method: "GET" });
-    const xCommit = res.headers.get("x-commit") || "";
-    if (xCommit) {
-      rememberBackendCommit(xCommit);
-      return xCommit;
-    }
+    captureBackendIdentityFromResponse(res);
+
+    const xCommit = getRememberedBackendCommit();
+    if (xCommit) return xCommit;
   } catch {}
 
   return "";
 }
+
+export async function getBackendApiVersion(): Promise<string> {
+  const remembered = getRememberedBackendApiVersion();
+  if (remembered) return remembered;
+
+  try {
+    const res = await fetch(apiUrl("/api/version"), { method: "GET" });
+    captureBackendIdentityFromResponse(res);
+
+    const v = getRememberedBackendApiVersion();
+    if (v) return v;
+  } catch {}
+
+  return "";
+}
+
+/* -------------------- UTILS -------------------- */
 
 function safeJsonParse(s: string) {
   try {
