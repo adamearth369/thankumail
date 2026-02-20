@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/lib/api.ts
-// ACTION: Full file replacement (paste exactly)
-
 type Json = any;
 
 export type ApiError = {
@@ -32,6 +29,20 @@ function getSessionToken() {
   }
 }
 
+function rememberBackendCommit(commit: string) {
+  try {
+    if (commit) localStorage.setItem("tm_api_commit", commit);
+  } catch {}
+}
+
+function getRememberedBackendCommit() {
+  try {
+    return String(localStorage.getItem("tm_api_commit") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function apiJson<T = Json>(
   path: string,
   opts: RequestInit & { timeoutMs?: number; auth?: boolean } = {},
@@ -47,7 +58,6 @@ export async function apiJson<T = Json>(
       ...(rest.headers as any),
     };
 
-    // Only set JSON content-type when we have a body (keeps GET clean)
     if (rest.body != null && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
     if (token && !headers["Authorization"]) headers["Authorization"] = `Bearer ${token}`;
 
@@ -56,6 +66,9 @@ export async function apiJson<T = Json>(
       headers,
       signal: controller.signal,
     });
+
+    const xCommit = res.headers.get("x-commit") || "";
+    if (xCommit) rememberBackendCommit(xCommit);
 
     const text = await res.text();
     const data = text ? safeJsonParse(text) : null;
@@ -83,6 +96,22 @@ export async function apiJson<T = Json>(
   } finally {
     clearTimeout(t);
   }
+}
+
+export async function getBackendCommit(): Promise<string> {
+  const remembered = getRememberedBackendCommit();
+  if (remembered) return remembered;
+
+  try {
+    const res = await fetch(apiUrl("/api/version"), { method: "GET" });
+    const xCommit = res.headers.get("x-commit") || "";
+    if (xCommit) {
+      rememberBackendCommit(xCommit);
+      return xCommit;
+    }
+  } catch {}
+
+  return "";
 }
 
 function safeJsonParse(s: string) {
