@@ -1,14 +1,50 @@
+// WHERE TO PASTE: client/src/pages/AuthGoogle.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect } from "react";
 import { useLocation } from "wouter";
 
 const API_BASE = "https://api.thankumail.com";
+
+// Canonical token key
 const STORAGE_KEY = "tm_session_token";
+
+// Legacy keys we must clear (defensive)
+const LEGACY_KEYS = ["tmSessionToken", "sessionToken", "tm_token", "token"];
 
 function getTokenFromHash(): string {
   const raw = String(window.location.hash || "");
   const hash = raw.startsWith("#") ? raw.slice(1) : raw;
   const params = new URLSearchParams(hash);
   return String(params.get("token") || "").trim();
+}
+
+function clearAllSessionKeys() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    for (const k of LEGACY_KEYS) localStorage.removeItem(k);
+  } catch {
+    // ignore
+  }
+}
+
+function setCanonicalToken(token: string) {
+  try {
+    const t = String(token || "").trim();
+    if (!t) return;
+    localStorage.setItem(STORAGE_KEY, t);
+  } catch {
+    // ignore
+  }
+}
+
+function stripHashAndKeepPath() {
+  try {
+    // Keep this route but remove #token=... so refreshes don't re-run token parsing
+    window.history.replaceState({}, document.title, "/auth/google");
+  } catch {
+    // ignore
+  }
 }
 
 export default function AuthGoogle() {
@@ -30,8 +66,9 @@ export default function AuthGoogle() {
       if (!token) return;
 
       try {
-        // Persist session token for future requests
-        localStorage.setItem(STORAGE_KEY, token);
+        // Always clear legacy keys first, then store only the canonical token
+        clearAllSessionKeys();
+        setCanonicalToken(token);
 
         // Validate session
         const r = await fetch(`${API_BASE}/api/auth/me`, {
@@ -43,21 +80,20 @@ export default function AuthGoogle() {
         if (cancelled) return;
 
         if (!r.ok || !j?.ok) {
-          localStorage.removeItem(STORAGE_KEY);
-          // Clean hash then return home (Home will show guest mode)
-          window.history.replaceState({}, document.title, "/auth/google");
-          setLocation("/");
+          clearAllSessionKeys();
+          stripHashAndKeepPath();
+          window.location.replace("/");
           return;
         }
 
-        // Clean the URL and return home
-        window.history.replaceState({}, document.title, "/auth/google");
-        setLocation("/");
+        // Clean the URL and hard-navigate home so the app re-inits cleanly
+        stripHashAndKeepPath();
+        window.location.replace("/");
       } catch {
         if (cancelled) return;
-        localStorage.removeItem(STORAGE_KEY);
-        window.history.replaceState({}, document.title, "/auth/google");
-        setLocation("/");
+        clearAllSessionKeys();
+        stripHashAndKeepPath();
+        window.location.replace("/");
       }
     }
 
