@@ -100,6 +100,29 @@ function isTurnstileFail(err: ApiError) {
   return String(err?.code || "").toUpperCase() === "TURNSTILE_FAILED";
 }
 
+function resolveApiBase(): string {
+  // Prefer runtime override if you ever add it
+  const w = typeof window !== "undefined" ? (window as any) : null;
+  const rt = typeof w?.__TM_API_BASE__ === "string" ? w.__TM_API_BASE__.trim() : "";
+  if (rt) return rt.replace(/\/+$/, "");
+
+  // Vite env (if present)
+  try {
+    const v = (import.meta as any)?.env?.VITE_API_BASE;
+    const envBase = typeof v === "string" ? v.trim() : "";
+    if (envBase) return envBase.replace(/\/+$/, "");
+  } catch {}
+
+  // Locked production target
+  return "https://api.thankumail.com";
+}
+
+function buildGoogleAuthUrl(): string {
+  const base = resolveApiBase();
+  // Backend route is /api/auth/google (NOT /auth/google)
+  return `${base}/api/auth/google`;
+}
+
 export default function Login() {
   // Locked current scope: Google-only
   const GOOGLE_ONLY = true;
@@ -244,7 +267,7 @@ export default function Login() {
     if (!window.turnstile?.render) return;
 
     destroyWidget();
-    requestAnimationFrame(() => requestAnimationFrame(() => renderWidget()));
+    requestAnimationFrame(() => requestAnimationFrame(() => renderWidget())) ;
 
     return () => destroyWidget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -353,6 +376,8 @@ export default function Login() {
     !submitting && isEmail(email) && canTok.length >= 20 && Date.now() - (canIssuedAt || 0) <= MAX_TOKEN_AGE_MS;
 
   if (GOOGLE_ONLY) {
+    const googleAuthUrl = buildGoogleAuthUrl();
+
     return (
       <div className="w-full max-w-xl mx-auto">
         <div className={box}>
@@ -369,7 +394,7 @@ export default function Login() {
 
           <div className="mt-4">
             <a
-              href="/auth/google"
+              href={googleAuthUrl}
               className={classNames(
                 "w-full inline-flex items-center justify-center rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
                 "bg-tm-amber text-tm-charcoal border-tm-charcoal/30 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
