@@ -174,6 +174,14 @@ function removeSessionToken() {
   }
 }
 
+function hardNavigate(path: string) {
+  try {
+    window.location.assign(path);
+  } catch {
+    // ignore
+  }
+}
+
 /* -------------------- CAPTURE BACKEND IDENTITY HEADERS -------------------- */
 
 function rememberBackendIdentityFromHeaders(headers: Headers) {
@@ -424,10 +432,7 @@ export default function CreateGiftForm() {
 
       setTurnstileReady(ok);
       if (!ok) {
-        setErrorWithLock(
-          "Verification is taking too long to initialize. Please refresh and try again.",
-          "turnstile",
-        );
+        setErrorWithLock("Verification is taking too long to initialize. Please refresh and try again.", "turnstile");
       }
     }
 
@@ -754,6 +759,9 @@ export default function CreateGiftForm() {
     setMessageMode("preset");
     setCustomMessage("");
     setAmountCents(null);
+
+    // Force a clean UI route + re-check auth everywhere
+    hardNavigate("/");
   }
 
   const inputBase =
