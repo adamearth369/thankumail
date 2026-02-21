@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Login.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { apiJson } from "@/lib/api";
@@ -40,13 +43,14 @@ declare global {
           "refresh-timeout"?: "auto" | "manual";
           size?: "normal" | "compact";
           [k: string]: any;
-        },
+        };
       ) => string;
       reset: (widgetId?: string) => void;
       remove: (widgetId?: string) => void;
       getResponse?: (widgetId?: string) => string;
     };
     __tm_turnstile?: any;
+    __TM_API_BASE__?: string;
   }
 }
 
@@ -95,6 +99,28 @@ function parseApiError(e: any): ApiError {
 
 function isTurnstileFail(err: ApiError) {
   return String(err?.code || "").toUpperCase() === "TURNSTILE_FAILED";
+}
+
+function resolveApiBase(): string {
+  // Prefer runtime override if you ever add it
+  const w = typeof window !== "undefined" ? (window as any) : null;
+  const rt = typeof w?.__TM_API_BASE__ === "string" ? String(w.__TM_API_BASE__).trim() : "";
+  if (rt) return rt.replace(/\/+$/, "");
+
+  // Vite env (preferred)
+  try {
+    const v = (import.meta as any)?.env?.VITE_API_BASE_URL;
+    const envBase = typeof v === "string" ? v.trim() : "";
+    if (envBase) return envBase.replace(/\/+$/, "");
+  } catch {}
+
+  // Locked production target
+  return "https://api.thankumail.com";
+}
+
+function buildGoogleAuthUrl(): string {
+  const base = resolveApiBase();
+  return `${base}/api/auth/google`;
 }
 
 export default function Login() {
@@ -350,6 +376,8 @@ export default function Login() {
     !submitting && isEmail(email) && canTok.length >= 20 && Date.now() - (canIssuedAt || 0) <= MAX_TOKEN_AGE_MS;
 
   if (GOOGLE_ONLY) {
+    const googleAuthUrl = buildGoogleAuthUrl();
+
     return (
       <div className="w-full max-w-xl mx-auto">
         <div className={box}>
@@ -366,7 +394,7 @@ export default function Login() {
 
           <div className="mt-4">
             <a
-              href="/auth/google"
+              href={googleAuthUrl}
               className={classNames(
                 "w-full inline-flex items-center justify-center rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
                 "bg-tm-amber text-tm-charcoal border-tm-charcoal/30 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
@@ -376,9 +404,7 @@ export default function Login() {
             </a>
           </div>
 
-          <div className="mt-3 text-xs text-tm-charcoal/60">
-            This keeps the flow fast and helps protect the system from abuse.
-          </div>
+          <div className="mt-3 text-xs text-tm-charcoal/60">This keeps the flow fast and helps protect the system from abuse.</div>
         </div>
       </div>
     );
@@ -440,7 +466,9 @@ export default function Login() {
                 <div className="mt-2 text-xs text-emerald-900/70">Expires: {result.expiresAt}</div>
               )}
 
-              {result.emailSent === true ? <div className="mt-2 text-[11px] text-emerald-900/60">Email queued.</div> : null}
+              {result.emailSent === true ? (
+                <div className="mt-2 text-[11px] text-emerald-900/60">Email queued.</div>
+              ) : null}
             </div>
           ) : null}
 
