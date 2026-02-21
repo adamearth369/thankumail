@@ -1,10 +1,13 @@
+// WHERE TO PASTE: server/index.ts
+// ACTION: Full file replacement (paste exactly)
+
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import path from "path";
 import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-02-20_002";
+const INDEX_VERSION = "api_index_v2026-02-20_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- APP -------------------- */
@@ -31,6 +34,9 @@ function setCors(req: Request, res: Response) {
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-user-id, x-admin-token");
     res.setHeader("Access-Control-Max-Age", "600");
+
+    // IMPORTANT: allow browser JS to read these response headers cross-origin
+    res.setHeader("Access-Control-Expose-Headers", "x-commit, x-api-version, X-Commit, X-Api-Version");
   }
 }
 
