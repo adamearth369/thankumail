@@ -1,28 +1,12 @@
-// WHERE TO PASTE: client/src/pages/Home.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useState } from "react";
 import CreateGiftForm from "../components/CreateGiftForm";
 
-type VersionInfo = {
-  commit: string;
-  builtAt: string;
-};
-
 export default function Home() {
   const [mounted, setMounted] = useState(false);
-  const [version, setVersion] = useState<VersionInfo | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 30);
     return () => clearTimeout(t);
-  }, []);
-
-  useEffect(() => {
-    fetch("/version.json")
-      .then((r) => r.json())
-      .then(setVersion)
-      .catch(() => {});
   }, []);
 
   const wordmark = useMemo(() => "thankümail", []);
@@ -55,7 +39,6 @@ export default function Home() {
               Guest mode: preset note + email delivery
             </div>
 
-            {/* Standardized sign-in entrypoint */}
             <div className="mt-4">
               <a
                 href="/login"
@@ -72,9 +55,6 @@ export default function Home() {
 
           <footer className="mt-10 text-center text-sm text-white/80">
             Designed to feel calm, honest, and human.
-            {version && (
-              <div className="mt-2 text-[10px] opacity-60">build {version.commit.slice(0, 7)}</div>
-            )}
           </footer>
         </main>
       </div>
