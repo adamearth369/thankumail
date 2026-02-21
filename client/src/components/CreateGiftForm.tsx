@@ -174,6 +174,20 @@ function removeSessionToken() {
   }
 }
 
+/* -------------------- CAPTURE BACKEND IDENTITY HEADERS -------------------- */
+
+function rememberBackendIdentityFromHeaders(headers: Headers) {
+  try {
+    const xCommit = headers.get("x-commit") || headers.get("X-Commit") || "";
+    const xApiVersion = headers.get("x-api-version") || headers.get("X-Api-Version") || "";
+
+    if (xCommit) localStorage.setItem("tm_api_commit", xCommit);
+    if (xApiVersion) localStorage.setItem("tm_api_version", xApiVersion);
+  } catch {
+    // ignore
+  }
+}
+
 export default function CreateGiftForm() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [senderEmail, setSenderEmail] = useState("");
@@ -256,6 +270,9 @@ export default function CreateGiftForm() {
             "Content-Type": "application/json",
           },
         });
+
+        // capture headers here too (keeps footer accurate even before gift submit)
+        rememberBackendIdentityFromHeaders(resp.headers);
 
         let data: any = null;
         try {
@@ -643,6 +660,9 @@ export default function CreateGiftForm() {
         headers,
         body: JSON.stringify(payload),
       });
+
+      // capture commit + api version from headers on the primary request path
+      rememberBackendIdentityFromHeaders(resp.headers);
 
       let data: any = null;
       try {
