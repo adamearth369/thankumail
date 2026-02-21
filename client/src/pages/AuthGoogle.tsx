@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/pages/AuthGoogle.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect } from "react";
 import { useLocation } from "wouter";
 
@@ -18,11 +15,10 @@ export default function AuthGoogle() {
   const [, setLocation] = useLocation();
 
   useEffect(() => {
-    // Start Google OAuth on the backend (this route must exist server-side)
-    // We do this immediately on /auth/google, then backend redirects to Google.
+    // If we landed here WITHOUT a token, start OAuth.
+    // Backend will redirect to Google, then back to /auth/google#token=...
     if (!window.location.hash) {
       window.location.href = `${API_BASE}/api/auth/google`;
-      return;
     }
   }, []);
 
@@ -34,8 +30,10 @@ export default function AuthGoogle() {
       if (!token) return;
 
       try {
+        // Persist session token for future requests
         localStorage.setItem(STORAGE_KEY, token);
 
+        // Validate session
         const r = await fetch(`${API_BASE}/api/auth/me`, {
           method: "GET",
           headers: { Authorization: `Bearer ${token}` },
@@ -46,7 +44,9 @@ export default function AuthGoogle() {
 
         if (!r.ok || !j?.ok) {
           localStorage.removeItem(STORAGE_KEY);
-          setLocation("/login");
+          // Clean hash then return home (Home will show guest mode)
+          window.history.replaceState({}, document.title, "/auth/google");
+          setLocation("/");
           return;
         }
 
@@ -56,7 +56,8 @@ export default function AuthGoogle() {
       } catch {
         if (cancelled) return;
         localStorage.removeItem(STORAGE_KEY);
-        setLocation("/login");
+        window.history.replaceState({}, document.title, "/auth/google");
+        setLocation("/");
       }
     }
 
@@ -66,11 +67,15 @@ export default function AuthGoogle() {
     };
   }, [setLocation]);
 
+  const hasToken = Boolean(getTokenFromHash());
+
   return (
     <div className="min-h-screen bg-tm-cream flex items-center justify-center px-6">
       <div className="w-full max-w-sm text-center rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal">
         <div className="text-lg font-outfit font-semibold tracking-tight">Signing you in…</div>
-        <div className="mt-2 text-sm text-tm-charcoal/70">Redirecting to Google.</div>
+        <div className="mt-2 text-sm text-tm-charcoal/70">
+          {hasToken ? "Finishing login." : "Redirecting to Google."}
+        </div>
       </div>
     </div>
   );
