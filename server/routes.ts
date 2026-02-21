@@ -22,12 +22,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-20_003";
+const VERSION = "routes_v2026-02-20_004";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v2_magiclink_disabled_by_default";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -377,7 +377,11 @@ async function issueSessionForEmail(email: string, req: Request) {
     return { ok: false as const, code: "INVALID_EMAIL" as const, error: "Invalid email" };
   }
   if (isDisposableEmail(norm)) {
-    return { ok: false as const, code: "DISPOSABLE_EMAIL_BLOCKED" as const, error: "Email provider not supported" };
+    return {
+      ok: false as const,
+      code: "DISPOSABLE_EMAIL_BLOCKED" as const,
+      error: "Email provider not supported",
+    };
   }
   const mx = await mxLooksValid(domain);
   if (!mx.ok) {
@@ -565,6 +569,35 @@ export function registerRoutes(app: Express): Server {
   });
 
   /* -------------------- AUTH: GOOGLE OAUTH -------------------- */
+  // FE expects /api/auth/google (not /start). This alias fixes the 404.
+  app.get("/api/auth/google", limiterGoogle, async (req, res) => {
+    pruneOauthState();
+
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return res
+        .status(503)
+        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+    const state = randomToken(16);
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+
+    const url = new URL(GOOGLE_AUTH_URL);
+    url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+    url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "openid email profile");
+    url.searchParams.set("state", state);
+    url.searchParams.set("access_type", "online");
+    url.searchParams.set("prompt", "select_account");
+
+    return res.redirect(302, url.toString());
+  });
+
+  // Keep /start for backwards compatibility (optional)
   app.get("/api/auth/google/start", limiterGoogle, async (req, res) => {
     pruneOauthState();
 
