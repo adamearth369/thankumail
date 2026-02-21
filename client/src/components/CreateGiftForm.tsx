@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -46,28 +43,8 @@ declare global {
     __turnstileToken?: string;
     turnstileToken?: string;
     getTurnstileToken?: () => string;
-    turnstile?: {
-      render: (
-        el: HTMLElement | string,
-        opts: {
-          sitekey: string;
-          theme?: "light" | "dark" | "auto";
-          callback?: (token: string) => void;
-          "error-callback"?: () => void;
-          "expired-callback"?: () => void;
-          "timeout-callback"?: () => void;
-          "response-field"?: boolean;
-          "response-field-name"?: string;
-          "refresh-expired"?: "auto" | "manual";
-          "refresh-timeout"?: "auto" | "manual";
-          size?: "normal" | "compact";
-          [k: string]: any;
-        },
-      ) => string;
-      reset: (widgetId?: string) => void;
-      remove: (widgetId?: string) => void;
-      getResponse: (widgetId?: string) => string;
-    };
+    // keep it untyped to avoid any build/parser edge cases
+    turnstile?: any;
   }
 }
 
@@ -136,9 +113,7 @@ function fireConfettiBurst() {
     confetti({ ...defaults, particleCount: 90, spread: 70, startVelocity: 45 });
     confetti({ ...defaults, particleCount: 45, spread: 120, startVelocity: 35 });
     confetti({ ...defaults, particleCount: 25, spread: 160, startVelocity: 25 });
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 function getTurnstileSiteKey() {
@@ -169,17 +144,7 @@ function getSessionToken() {
 function removeSessionToken() {
   try {
     localStorage.removeItem(SESSION_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-function hardNavigate(path: string) {
-  try {
-    window.location.assign(path);
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 /* -------------------- CAPTURE BACKEND IDENTITY HEADERS -------------------- */
@@ -191,9 +156,7 @@ function rememberBackendIdentityFromHeaders(headers: Headers) {
 
     if (xCommit) localStorage.setItem("tm_api_commit", xCommit);
     if (xApiVersion) localStorage.setItem("tm_api_version", xApiVersion);
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 export default function CreateGiftForm() {
@@ -235,7 +198,7 @@ export default function CreateGiftForm() {
   const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
   const wordmark = "thankümail";
 
-  // Expose latest token for DevTools / auth flow testing
+  // Expose latest token for DevTools
   useEffect(() => {
     window.getTurnstileToken = () => String(window.__turnstileToken || window.turnstileToken || "").trim();
     return () => {
@@ -279,15 +242,12 @@ export default function CreateGiftForm() {
           },
         });
 
-        // capture headers here too (keeps footer accurate even before gift submit)
         rememberBackendIdentityFromHeaders(resp.headers);
 
         let data: any = null;
         try {
           data = await resp.json();
-        } catch {
-          // ignore
-        }
+        } catch {}
 
         if (cancelled || seq !== authReqSeqRef.current) return;
 
@@ -300,7 +260,7 @@ export default function CreateGiftForm() {
           return;
         }
 
-        // Invalid/expired token: treat as guest and clear local token
+        // Invalid/expired token
         removeSessionToken();
         setSessionToken("");
         setAuthOk(false);
@@ -308,7 +268,7 @@ export default function CreateGiftForm() {
         setAuthChecked(true);
       } catch {
         if (cancelled || seq !== authReqSeqRef.current) return;
-        // Network issues: do NOT delete token; just treat as guest until recovery
+        // Network issues: keep token, treat as guest until recovery
         setAuthOk(false);
         setAuthEmail("");
         setAuthChecked(true);
@@ -322,7 +282,6 @@ export default function CreateGiftForm() {
     };
   }, [sessionToken]);
 
-  // Keep UI aligned with locked scope:
   // Guests: preset-only, no amount
   // Registered: preset/custom, amount optional
   useEffect(() => {
@@ -342,7 +301,7 @@ export default function CreateGiftForm() {
 
   const amountOk = useMemo(() => {
     if (!isRegistered) return true;
-    if (amountCents === null) return true; // optional
+    if (amountCents === null) return true;
     return amountCents >= 2500 && amountCents <= 100000;
   }, [isRegistered, amountCents]);
 
@@ -374,9 +333,7 @@ export default function CreateGiftForm() {
   ]);
 
   const showRetry =
-    fieldError === "turnstile" ||
-    errorLockRef.current === "turnstile" ||
-    /verification|captcha|turnstile/i.test(error);
+    fieldError === "turnstile" || errorLockRef.current === "turnstile" || /verification|captcha|turnstile/i.test(error);
 
   function setErrorWithLock(msg: string, lock: "none" | "server" | "turnstile") {
     errorLockRef.current = lock;
@@ -448,9 +405,7 @@ export default function CreateGiftForm() {
       if (widgetIdRef.current && window.turnstile?.remove) {
         window.turnstile.remove(widgetIdRef.current);
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
     widgetIdRef.current = null;
 
     const el = widgetContainerRef.current;
@@ -641,9 +596,6 @@ export default function CreateGiftForm() {
       turnstileToken: token,
     };
 
-    // Locked scope enforcement on client:
-    // Guests: preset-only, no amount
-    // Registered: preset/custom, fixed preset amounts (optional) 25..1000
     if (!st) {
       payload.messageMode = "preset";
       payload.presetMessageId = presetMessageId;
@@ -666,22 +618,18 @@ export default function CreateGiftForm() {
         body: JSON.stringify(payload),
       });
 
-      // capture commit + api version from headers on the primary request path
       rememberBackendIdentityFromHeaders(resp.headers);
 
       let data: any = null;
       try {
         data = await resp.json();
-      } catch {
-        // ignore
-      }
+      } catch {}
 
       if (!resp.ok || !data?.ok) {
         const err = parseApiError(data || { error: "Request failed" });
         const code = String(err.code || "");
         const lock: "server" | "turnstile" = isTurnstileErrorCode(code) ? "turnstile" : "server";
 
-        // If auth token got rejected mid-flight, clear it and fall back to guest
         if (resp.status === 401 || resp.status === 403) {
           removeSessionToken();
           setSessionToken("");
@@ -695,9 +643,7 @@ export default function CreateGiftForm() {
           if (widgetIdRef.current && window.turnstile?.reset) {
             window.turnstile.reset(widgetIdRef.current);
           }
-        } catch {
-          // ignore
-        }
+        } catch {}
         setToken("");
         try {
           window.__turnstileToken = "";
@@ -724,9 +670,7 @@ export default function CreateGiftForm() {
         if (widgetIdRef.current && window.turnstile?.reset) {
           window.turnstile.reset(widgetIdRef.current);
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
       setToken("");
       try {
         window.__turnstileToken = "";
@@ -740,9 +684,7 @@ export default function CreateGiftForm() {
         if (widgetIdRef.current && window.turnstile?.reset) {
           window.turnstile.reset(widgetIdRef.current);
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
       setToken("");
       try {
         window.__turnstileToken = "";
@@ -759,9 +701,11 @@ export default function CreateGiftForm() {
     setMessageMode("preset");
     setCustomMessage("");
     setAmountCents(null);
+    window.location.replace("/");
+  }
 
-    // Force a clean UI route + re-check auth everywhere
-    hardNavigate("/");
+  function signIn() {
+    window.location.assign("/login");
   }
 
   const inputBase =
@@ -800,9 +744,9 @@ export default function CreateGiftForm() {
                   Sign out
                 </button>
               ) : (
-                <a href="/login" className={classNames(chipBase, chipOn)}>
+                <button type="button" onClick={signIn} className={classNames(chipBase, chipOff)}>
                   Sign in
-                </a>
+                </button>
               )}
             </div>
 
@@ -897,7 +841,7 @@ export default function CreateGiftForm() {
             </div>
           ) : null}
 
-          {/* PRESET SELECTOR (guest always + registered when preset) */}
+          {/* PRESET SELECTOR */}
           {!isRegistered || messageMode === "preset" ? (
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
@@ -1033,9 +977,7 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
-              ) : null}
+              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
 
               <div className="mt-3">
                 <button
