@@ -11,10 +11,36 @@ export type ApiError = {
   retryAfterSec?: number;
 };
 
+const SESSION_TOKEN_KEY = "tm_session_token";
+
+/* -------------------- API BASE -------------------- */
+
+function normalizeBase(b: string) {
+  return String(b || "").trim().replace(/\/+$/, "");
+}
+
 function getApiBase() {
-  const envBase = (import.meta as any).env?.VITE_API_BASE_URL || "";
-  if (envBase) return String(envBase).replace(/\/+$/, "");
-  return ""; // same-origin
+  // 1) Runtime override (optional): window.__TM_API_BASE__ = "https://api.thankumail.com"
+  try {
+    const w = typeof window !== "undefined" ? (window as any) : null;
+    const rt = typeof w?.__TM_API_BASE__ === "string" ? w.__TM_API_BASE__ : "";
+    if (rt) return normalizeBase(rt);
+  } catch {}
+
+  // 2) Vite env (preferred name moving forward)
+  try {
+    const v1 = (import.meta as any).env?.VITE_API_BASE;
+    if (typeof v1 === "string" && v1.trim()) return normalizeBase(v1);
+  } catch {}
+
+  // 3) Back-compat env (old name)
+  try {
+    const v2 = (import.meta as any).env?.VITE_API_BASE_URL;
+    if (typeof v2 === "string" && v2.trim()) return normalizeBase(v2);
+  } catch {}
+
+  // 4) Locked production fallback
+  return "https://api.thankumail.com";
 }
 
 const API_BASE = getApiBase();
@@ -24,12 +50,28 @@ export function apiUrl(path: string) {
   return `${API_BASE}${p}`;
 }
 
-function getSessionToken() {
+/* -------------------- SESSION TOKEN -------------------- */
+
+export function getSessionToken() {
   try {
-    return String(localStorage.getItem("tm_session_token") || "").trim();
+    return String(localStorage.getItem(SESSION_TOKEN_KEY) || "").trim();
   } catch {
     return "";
   }
+}
+
+export function setSessionToken(token: string) {
+  try {
+    const t = String(token || "").trim();
+    if (!t) return;
+    localStorage.setItem(SESSION_TOKEN_KEY, t);
+  } catch {}
+}
+
+export function clearSessionToken() {
+  try {
+    localStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch {}
 }
 
 /* -------------------- BACKEND IDENTITY (COMMIT + API VERSION) -------------------- */
@@ -63,8 +105,6 @@ function getRememberedBackendApiVersion() {
 }
 
 function getHeader(res: Response, name: string) {
-  // Be resilient to casing differences across proxies/runtimes.
-  // Fetch spec is case-insensitive, but this guarantees we handle any oddities.
   const direct = res.headers.get(name);
   if (direct) return direct;
 
@@ -82,8 +122,7 @@ function getHeader(res: Response, name: string) {
 
 function captureBackendIdentityFromResponse(res: Response) {
   const xCommit = getHeader(res, "x-commit") || getHeader(res, "X-Commit") || "";
-  const xApiVersion =
-    getHeader(res, "x-api-version") || getHeader(res, "X-Api-Version") || "";
+  const xApiVersion = getHeader(res, "x-api-version") || getHeader(res, "X-Api-Version") || "";
 
   if (xCommit) rememberBackendCommit(xCommit);
   if (xApiVersion) rememberBackendApiVersion(xApiVersion);
@@ -113,6 +152,7 @@ export async function apiJson<T = Json>(
       ...rest,
       headers,
       signal: controller.signal,
+      credentials: "include",
     });
 
     captureBackendIdentityFromResponse(res);
@@ -152,7 +192,7 @@ export async function getBackendCommit(): Promise<string> {
   if (remembered) return remembered;
 
   try {
-    const res = await fetch(apiUrl("/api/version"), { method: "GET" });
+    const res = await fetch(apiUrl("/api/version"), { method: "GET", credentials: "include" });
     captureBackendIdentityFromResponse(res);
 
     const xCommit = getRememberedBackendCommit();
@@ -167,7 +207,7 @@ export async function getBackendApiVersion(): Promise<string> {
   if (remembered) return remembered;
 
   try {
-    const res = await fetch(apiUrl("/api/version"), { method: "GET" });
+    const res = await fetch(apiUrl("/api/version"), { method: "GET", credentials: "include" });
     captureBackendIdentityFromResponse(res);
 
     const v = getRememberedBackendApiVersion();
