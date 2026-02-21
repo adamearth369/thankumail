@@ -101,6 +101,11 @@ function isTurnstileFail(err: ApiError) {
 }
 
 export default function Login() {
+  // Locked current scope: Google-only
+  const GOOGLE_ONLY = true;
+
+  // Keep the existing magic-link + Turnstile code in-file for later,
+  // but hide it behind the current locked scope.
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
   const [tokenIssuedAt, setTokenIssuedAt] = useState<number>(0);
@@ -117,6 +122,8 @@ export default function Login() {
   const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
 
   useEffect(() => {
+    if (GOOGLE_ONLY) return;
+
     let cancelled = false;
 
     async function ensureTurnstile() {
@@ -152,7 +159,7 @@ export default function Login() {
     return () => {
       cancelled = true;
     };
-  }, [TURNSTILE_SITE_KEY]);
+  }, [TURNSTILE_SITE_KEY, GOOGLE_ONLY]);
 
   function clearToken() {
     setToken("");
@@ -231,6 +238,7 @@ export default function Login() {
   }
 
   useEffect(() => {
+    if (GOOGLE_ONLY) return;
     if (!turnstileReady) return;
     if (!widgetContainerRef.current) return;
     if (!window.turnstile?.render) return;
@@ -240,7 +248,7 @@ export default function Login() {
 
     return () => destroyWidget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [turnstileReady, TURNSTILE_SITE_KEY]);
+  }, [turnstileReady, TURNSTILE_SITE_KEY, GOOGLE_ONLY]);
 
   function readHiddenInputToken() {
     try {
@@ -276,6 +284,9 @@ export default function Login() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    if (GOOGLE_ONLY) return;
+
     setSubmitting(true);
     setError("");
     setResult(null);
@@ -341,6 +352,41 @@ export default function Login() {
   const canSubmit =
     !submitting && isEmail(email) && canTok.length >= 20 && Date.now() - (canIssuedAt || 0) <= MAX_TOKEN_AGE_MS;
 
+  if (GOOGLE_ONLY) {
+    return (
+      <div className="w-full max-w-xl mx-auto">
+        <div className={box}>
+          <div className="flex items-center justify-between">
+            <div className="text-lg font-outfit font-semibold tracking-tight">Registered sign in</div>
+            <Link href="/" className="text-sm underline text-tm-charcoal/70 hover:text-tm-charcoal">
+              Back
+            </Link>
+          </div>
+
+          <div className="mt-3 text-sm text-tm-charcoal/75">
+            Registered accounts use <span className="font-medium text-tm-charcoal">Google sign-in</span>.
+          </div>
+
+          <div className="mt-4">
+            <a
+              href="/auth/google"
+              className={classNames(
+                "w-full inline-flex items-center justify-center rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
+                "bg-tm-amber text-tm-charcoal border-tm-charcoal/30 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
+              )}
+            >
+              Continue with Google
+            </a>
+          </div>
+
+          <div className="mt-3 text-xs text-tm-charcoal/60">
+            This keeps the flow fast and helps protect the system from abuse.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full max-w-xl mx-auto">
       <div className={box}>
@@ -397,9 +443,7 @@ export default function Login() {
                 <div className="mt-2 text-xs text-emerald-900/70">Expires: {result.expiresAt}</div>
               )}
 
-              {result.emailSent === true ? (
-                <div className="mt-2 text-[11px] text-emerald-900/60">Email queued.</div>
-              ) : null}
+              {result.emailSent === true ? <div className="mt-2 text-[11px] text-emerald-900/60">Email queued.</div> : null}
             </div>
           ) : null}
 
@@ -410,7 +454,7 @@ export default function Login() {
               "w-full rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
               canSubmit
                 ? "bg-tm-amber text-tm-charcoal border-tm-charcoal/30 cursor-pointer shadow-soft hover:shadow-xl hover:opacity-95 hover:-translate-y-[1px] active:translate-y-0 active:opacity-90"
-                : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed"
+                : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed",
             )}
           >
             {submitting ? "Requesting…" : "Request magic link"}
