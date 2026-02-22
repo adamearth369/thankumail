@@ -7,7 +7,7 @@ import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-02-20_003";
+const INDEX_VERSION = "api_index_v2026-02-21_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- APP -------------------- */
@@ -35,7 +35,7 @@ function setCors(req: Request, res: Response) {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-user-id, x-admin-token");
     res.setHeader("Access-Control-Max-Age", "600");
 
-    // IMPORTANT: allow browser JS to read these response headers cross-origin
+    // allow browser JS to read these response headers cross-origin
     res.setHeader("Access-Control-Expose-Headers", "x-commit, x-api-version, X-Commit, X-Api-Version");
   }
 }
@@ -46,8 +46,21 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
+/* -------------------- STRIPE WEBHOOK RAW BODY -------------------- */
+// Stripe signature verification requires the RAW body.
+// We must not run express.json() on this route.
+app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
+
+/* -------------------- BODY PARSERS (EXCEPT WEBHOOK) -------------------- */
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path === "/api/stripe/webhook") return next();
+  return express.json({ limit: "1mb" })(req, res, next);
+});
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path === "/api/stripe/webhook") return next();
+  return express.urlencoded({ extended: true })(req, res, next);
+});
 
 /* -------------------- HEALTH -------------------- */
 app.get("/health", (_req, res) => {
