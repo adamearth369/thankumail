@@ -22,16 +22,20 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-20_004";
+const VERSION = "routes_v2026-02-21_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_config_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
 const API_URL = String(process.env.API_URL || "https://api.thankumail.com").replace(/\/+$/, "");
+
+/* -------------------- STRIPE -------------------- */
+const STRIPE_SECRET_KEY = String(process.env.STRIPE_SECRET_KEY || "").trim();
+const STRIPE_PUBLISHABLE_KEY = String(process.env.STRIPE_PUBLISHABLE_KEY || "").trim();
 
 /* -------------------- SCOPE CONSTANTS -------------------- */
 const PRESET_MIN_ID = 1;
@@ -515,6 +519,12 @@ export function registerRoutes(app: Express): Server {
 
       urls: { frontend: FRONTEND_URL, api: API_URL },
 
+      stripe: {
+        configured: Boolean(STRIPE_SECRET_KEY && STRIPE_PUBLISHABLE_KEY),
+        hasSecretKey: Boolean(STRIPE_SECRET_KEY),
+        hasPublishableKey: Boolean(STRIPE_PUBLISHABLE_KEY),
+      },
+
       turnstile: {
         configured: Boolean(TURNSTILE_SECRET_KEY),
         bypass: TURNSTILE_BYPASS,
@@ -565,6 +575,25 @@ export function registerRoutes(app: Express): Server {
       },
 
       presetIds: { min: PRESET_MIN_ID, max: PRESET_MAX_ID },
+    });
+  });
+
+  /* -------------------- STRIPE: CONFIG -------------------- */
+  app.get("/api/stripe/config", (_req, res) => {
+    if (!STRIPE_PUBLISHABLE_KEY) {
+      return res.status(503).json({
+        error: "Stripe not configured",
+        code: "STRIPE_NOT_CONFIGURED",
+        version: VERSION,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      publishableKey: STRIPE_PUBLISHABLE_KEY,
+      configured: Boolean(STRIPE_SECRET_KEY && STRIPE_PUBLISHABLE_KEY),
+      version: VERSION,
+      commit: COMMIT,
     });
   });
 
