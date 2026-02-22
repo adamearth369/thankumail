@@ -1,13 +1,10 @@
-// WHERE TO PASTE: server/index.ts
-// ACTION: Full file replacement (paste exactly)
-
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import path from "path";
 import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-02-21_001";
+const INDEX_VERSION = "api_index_v2026-02-22_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- APP -------------------- */
@@ -46,21 +43,21 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-/* -------------------- STRIPE WEBHOOK RAW BODY -------------------- */
-// Stripe signature verification requires the RAW body.
-// We must not run express.json() on this route.
-app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
+/* -------------------- BODY PARSING -------------------- */
+/**
+ * Stripe webhook signature verification requires access to the raw request body bytes.
+ * We capture raw bytes for ALL application/json requests into req.rawBody.
+ */
+app.use(
+  express.json({
+    limit: "1mb",
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 
-/* -------------------- BODY PARSERS (EXCEPT WEBHOOK) -------------------- */
-app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.path === "/api/stripe/webhook") return next();
-  return express.json({ limit: "1mb" })(req, res, next);
-});
-
-app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.path === "/api/stripe/webhook") return next();
-  return express.urlencoded({ extended: true })(req, res, next);
-});
+app.use(express.urlencoded({ extended: true }));
 
 /* -------------------- HEALTH -------------------- */
 app.get("/health", (_req, res) => {
