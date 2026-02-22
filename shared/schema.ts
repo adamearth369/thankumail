@@ -78,7 +78,16 @@ export const gifts = pgTable("gifts", {
   message: text("message").notNull().default(""),
 
   // Gift certificate: nullable to allow message-only Thankümail (guest)
+  // Amount stored in CENTS when present
   amount: integer("amount"),
+
+  /* -------------------- STRIPE PAYMENT TRACKING -------------------- */
+  // null means "no payment required" (message-only)
+  // "requires_payment" | "pending" | "paid" | "failed" | "refunded" (server-controlled)
+  paymentStatus: text("payment_status"),
+  stripeCheckoutSessionId: text("stripe_checkout_session_id"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
 
   isClaimed: boolean("is_claimed").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -107,6 +116,12 @@ export const insertGiftSchema = createInsertSchema(gifts)
 
     // future-proof: not accepted from guests
     senderUserId: true,
+
+    // stripe: never accept from client
+    paymentStatus: true,
+    stripeCheckoutSessionId: true,
+    stripePaymentIntentId: true,
+    paidAt: true,
   })
   .extend({
     senderEmail: z.string().email("Enter a valid sender email").optional(),
