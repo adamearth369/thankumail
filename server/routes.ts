@@ -1,6 +1,7 @@
 // WHERE TO PASTE: server/routes.ts
 // ACTION: Full file replacement (paste exactly)
 
+import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -22,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-21_001";
+const VERSION = "routes_v2026-02-21_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_config_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -36,6 +37,9 @@ const API_URL = String(process.env.API_URL || "https://api.thankumail.com").repl
 /* -------------------- STRIPE -------------------- */
 const STRIPE_SECRET_KEY = String(process.env.STRIPE_SECRET_KEY || "").trim();
 const STRIPE_PUBLISHABLE_KEY = String(process.env.STRIPE_PUBLISHABLE_KEY || "").trim();
+const STRIPE_WEBHOOK_SECRET = String(process.env.STRIPE_WEBHOOK_SECRET || "").trim();
+// Default to USD unless you explicitly change it
+const STRIPE_CURRENCY = String(process.env.STRIPE_CURRENCY || "usd").trim().toLowerCase();
 
 /* -------------------- SCOPE CONSTANTS -------------------- */
 const PRESET_MIN_ID = 1;
@@ -283,6 +287,67 @@ function normalizeFixedAmountToCents(v: any): number | null {
   return null;
 }
 
+/* -------------------- STRIPE HELPERS -------------------- */
+async function stripePostForm(pathname: string, params: URLSearchParams) {
+  if (!STRIPE_SECRET_KEY) {
+    return {
+      ok: false as const,
+      status: 503,
+      error: { error: "Stripe not configured", code: "STRIPE_NOT_CONFIGURED" },
+    };
+  }
+
+  const resp = await fetch(`https://api.stripe.com/v1${pathname}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
+
+  const json: any = await resp.json().catch(() => ({}));
+
+  if (!resp.ok) {
+    return {
+      ok: false as const,
+      status: resp.status,
+      error: json || { error: "Stripe request failed" },
+    };
+  }
+
+  return { ok: true as const, status: resp.status, data: json };
+}
+
+function stripeWebhookVerify(rawBody: Buffer, sigHeader: string, secret: string) {
+  // Stripe signature header: "t=...,v1=...,v0=..."
+  // We validate v1: HMAC_SHA256(secret, `${t}.${rawBody}`)
+  const parts = String(sigHeader || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const tPart = parts.find((p) => p.startsWith("t="));
+  const v1Parts = parts.filter((p) => p.startsWith("v1="));
+  const t = tPart ? tPart.slice(2) : "";
+  const v1s = v1Parts.map((p) => p.slice(3)).filter(Boolean);
+
+  if (!t || !v1s.length) return { ok: false as const, reason: "missing-signature" as const };
+
+  const signedPayload = `${t}.${rawBody.toString("utf8")}`;
+  const expected = crypto.createHmac("sha256", secret).update(signedPayload).digest("hex");
+
+  const ok = v1s.some((v) => safeEqualHex(v, expected));
+  return ok ? { ok: true as const } : { ok: false as const, reason: "mismatch" as const };
+}
+
+function safeEqualHex(a: string, b: string) {
+  const aa = Buffer.from(String(a || ""), "utf8");
+  const bb = Buffer.from(String(b || ""), "utf8");
+  if (aa.length !== bb.length) return false;
+  return crypto.timingSafeEqual(aa, bb);
+}
+
 /* -------------------- DAILY COUNTS -------------------- */
 const memIpCounts = new Map<string, { day: string; count: number }>();
 const memPhoneCounts = new Map<string, { day: string; count: number }>();
@@ -462,6 +527,15 @@ const zAuthConsume = z.object({
   token: z.string().trim().min(10),
 });
 
+const zStripeCheckout = z.object({
+  amount: z.any(), // dollars or cents; we normalize below
+  // optional: helps you tie the session back to a gift later (safe to store as metadata)
+  publicId: z.string().trim().optional().nullable(),
+  // optional: override success/cancel destination
+  successUrl: z.string().trim().url().optional().nullable(),
+  cancelUrl: z.string().trim().url().optional().nullable(),
+});
+
 /* -------------------- RATE LIMITERS -------------------- */
 const limiterCreateGift = rateLimit({
   windowMs: 60_000,
@@ -498,6 +572,13 @@ const limiterGoogle = rateLimit({
   legacyHeaders: false,
 });
 
+const limiterStripe = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
   /* -------------------- HEALTH/VERSION -------------------- */
@@ -523,6 +604,8 @@ export function registerRoutes(app: Express): Server {
         configured: Boolean(STRIPE_SECRET_KEY && STRIPE_PUBLISHABLE_KEY),
         hasSecretKey: Boolean(STRIPE_SECRET_KEY),
         hasPublishableKey: Boolean(STRIPE_PUBLISHABLE_KEY),
+        hasWebhookSecret: Boolean(STRIPE_WEBHOOK_SECRET),
+        currency: STRIPE_CURRENCY,
       },
 
       turnstile: {
@@ -595,6 +678,175 @@ export function registerRoutes(app: Express): Server {
       version: VERSION,
       commit: COMMIT,
     });
+  });
+
+  /* -------------------- STRIPE: CREATE CHECKOUT SESSION -------------------- */
+  app.post("/api/stripe/create-checkout-session", limiterStripe, async (req, res) => {
+    try {
+      const a = await getAuth(req);
+      if (!a.isAuthed) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      if (!STRIPE_SECRET_KEY || !STRIPE_PUBLISHABLE_KEY) {
+        return res.status(503).json({
+          error: "Stripe not configured",
+          code: "STRIPE_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+
+      const parsed = zStripeCheckout.safeParse(req.body || {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
+          issues: parsed.error.issues,
+          version: VERSION,
+        });
+      }
+
+      const amountCents = normalizeFixedAmountToCents(parsed.data.amount);
+      if (!amountCents) {
+        return res.status(400).json({
+          error: `Amount must be one of: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}`,
+          field: "amount",
+          code: "AMOUNT_NOT_ALLOWED",
+          version: VERSION,
+        });
+      }
+      if (amountCents < MIN_AMOUNT_CENTS_REGISTERED) {
+        return res.status(400).json({
+          error: "Minimum amount is $25",
+          field: "amount",
+          code: "MIN_AMOUNT",
+          version: VERSION,
+        });
+      }
+
+      const publicId = String(parsed.data.publicId || "").trim();
+      const successUrl =
+        String(parsed.data.successUrl || "").trim() ||
+        `${FRONTEND_URL}/pay/success?session_id={CHECKOUT_SESSION_ID}`;
+      const cancelUrl = String(parsed.data.cancelUrl || "").trim() || `${FRONTEND_URL}/pay/cancel`;
+
+      const params = new URLSearchParams();
+      params.set("mode", "payment");
+      params.set("success_url", successUrl);
+      params.set("cancel_url", cancelUrl);
+
+      // Single line item
+      params.set("line_items[0][quantity]", "1");
+      params.set("line_items[0][price_data][currency]", STRIPE_CURRENCY);
+      params.set("line_items[0][price_data][unit_amount]", String(amountCents));
+      params.set("line_items[0][price_data][product_data][name]", "ThankuMail Gift");
+      params.set(
+        "line_items[0][price_data][product_data][description]",
+        "A ThankuMail gift certificate payment"
+      );
+
+      // Helpful metadata
+      params.set("metadata[userId]", a.userId);
+      if (publicId) params.set("metadata[publicId]", publicId);
+
+      // You can filter in Stripe dashboard
+      params.set("client_reference_id", a.userId);
+
+      const created = await stripePostForm("/checkout/sessions", params);
+      if (!created.ok) {
+        return res.status(created.status).json({
+          error: "Stripe session create failed",
+          code: "STRIPE_CREATE_SESSION_FAILED",
+          stripe: created.error,
+          version: VERSION,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        sessionId: String(created.data?.id || ""),
+        url: String(created.data?.url || ""),
+        amountCents,
+        currency: STRIPE_CURRENCY,
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Stripe create session failed",
+        code: "STRIPE_CREATE_SESSION_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
+  /* -------------------- STRIPE: WEBHOOK (SIGNATURE VERIFIED) -------------------- */
+  // IMPORTANT: This MUST receive the raw body. We use express.raw for this route only.
+  app.post("/api/stripe/webhook", limiterStripe, express.raw({ type: "application/json" }), async (req, res) => {
+    try {
+      if (!STRIPE_WEBHOOK_SECRET) {
+        return res.status(503).send("Stripe webhook not configured");
+      }
+
+      const sig = String(req.headers["stripe-signature"] || "");
+      const rawBody = Buffer.isBuffer((req as any).body) ? ((req as any).body as Buffer) : Buffer.from("");
+
+      if (!sig || !rawBody.length) {
+        return res.status(400).send("Missing signature/body");
+      }
+
+      const v = stripeWebhookVerify(rawBody, sig, STRIPE_WEBHOOK_SECRET);
+      if (!v.ok) {
+        return res.status(400).send("Invalid signature");
+      }
+
+      const event = JSON.parse(rawBody.toString("utf8") || "{}");
+      const type = String(event?.type || "");
+      const obj = event?.data?.object || null;
+
+      console.log(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: "stripe_webhook_received",
+          stripeType: type,
+          stripeId: String(event?.id || ""),
+          version: VERSION,
+        })
+      );
+
+      // Minimal safe handling (no DB mutation yet because schema has no payment state columns)
+      if (type === "checkout.session.completed") {
+        const sessionId = String(obj?.id || "");
+        const paymentStatus = String(obj?.payment_status || "");
+        const amountTotal = obj?.amount_total ?? null;
+        const currency = String(obj?.currency || "");
+        const metadata = obj?.metadata || {};
+        console.log(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            event: "stripe_checkout_completed",
+            sessionId,
+            paymentStatus,
+            amountTotal,
+            currency,
+            metadata,
+            version: VERSION,
+          })
+        );
+      }
+
+      return res.status(200).send("ok");
+    } catch (err: any) {
+      console.log(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: "stripe_webhook_error",
+          error: String(err?.message || err),
+          version: VERSION,
+        })
+      );
+      return res.status(500).send("error");
+    }
   });
 
   /* -------------------- AUTH: GOOGLE OAUTH -------------------- */
@@ -1120,7 +1372,6 @@ export function registerRoutes(app: Express): Server {
       // DELIVERY RULES:
       // - Guest: email-only (must have recipientEmail, must not have phone)
       // - Registered: email and/or sms, but must have at least one target
-
       if (!isRegistered) {
         if (!toEmail) {
           return res.status(400).json({
