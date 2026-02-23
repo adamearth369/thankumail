@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -23,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-23_001";
+const VERSION = "routes_v2026-02-23_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v2";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -38,7 +35,6 @@ const API_URL = String(process.env.API_URL || "https://api.thankumail.com").repl
 const STRIPE_SECRET_KEY = String(process.env.STRIPE_SECRET_KEY || "").trim();
 const STRIPE_PUBLISHABLE_KEY = String(process.env.STRIPE_PUBLISHABLE_KEY || "").trim();
 const STRIPE_WEBHOOK_SECRET = String(process.env.STRIPE_WEBHOOK_SECRET || "").trim();
-// Default to USD unless you explicitly change it
 const STRIPE_CURRENCY = String(process.env.STRIPE_CURRENCY || "usd").trim().toLowerCase();
 
 /* -------------------- SCOPE CONSTANTS -------------------- */
@@ -56,10 +52,10 @@ const TURNSTILE_SECRET_KEY = (process.env.TURNSTILE_SECRET_KEY || "").trim();
 const TURNSTILE_BYPASS = String(process.env.TURNSTILE_BYPASS || "false").toLowerCase() === "true";
 
 /* -------------------- AUTH HARDENING -------------------- */
-const AUTH_MAGIC_LINK_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const AUTH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const AUTH_MAGIC_LINK_TTL_MS = 10 * 60 * 1000;
+const AUTH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTH_RETURN_TOKEN =
-  String(process.env.AUTH_RETURN_TOKEN ?? "true").toLowerCase() === "true"; // dev-friendly; set false to never return token
+  String(process.env.AUTH_RETURN_TOKEN ?? "true").toLowerCase() === "true";
 const AUTH_MX_VALIDATE_ENABLED =
   String(process.env.AUTH_MX_VALIDATE_ENABLED ?? "false").toLowerCase() === "true";
 const AUTH_MAGIC_LINK_ENABLED =
@@ -145,7 +141,7 @@ const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE ?? 3)
 const MIN_CLAIM_DELAY_SEC = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC ?? 60));
 const SMS_DUPLICATE_WINDOW_SEC = Math.max(0, Number(process.env.SMS_DUPLICATE_WINDOW_SEC ?? 90));
 
-const REMINDER_GAP_MS = Math.max(1_000, Number(process.env.REMINDER_GAP_MS ?? 172800000)); // 48h default
+const REMINDER_GAP_MS = Math.max(1_000, Number(process.env.REMINDER_GAP_MS ?? 172800000));
 const REMINDER_MAX = Math.max(0, Number(process.env.REMINDER_MAX ?? 3));
 const REMINDER_SENDING_ENABLED =
   String(process.env.REMINDER_SENDING_ENABLED ?? "true").toLowerCase() === "true";
@@ -275,7 +271,6 @@ function isValidPresetId(n: any) {
   return Number.isInteger(v) && v >= PRESET_MIN_ID && v <= PRESET_MAX_ID;
 }
 
-// Accept amount from client as either dollars (25/50/...) or cents (2500/5000/...)
 function normalizeFixedAmountToCents(v: any): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
@@ -319,9 +314,14 @@ async function stripePostForm(pathname: string, params: URLSearchParams) {
   return { ok: true as const, status: resp.status, data: json };
 }
 
+function safeEqualHex(a: string, b: string) {
+  const aa = Buffer.from(String(a || ""), "utf8");
+  const bb = Buffer.from(String(b || ""), "utf8");
+  if (aa.length !== bb.length) return false;
+  return crypto.timingSafeEqual(aa, bb);
+}
+
 function stripeWebhookVerify(rawBody: Buffer, sigHeader: string, secret: string) {
-  // Stripe signature header: "t=...,v1=...,v0=..."
-  // We validate v1: HMAC_SHA256(secret, `${t}.${rawBody}`)
   const parts = String(sigHeader || "")
     .split(",")
     .map((s) => s.trim())
@@ -341,67 +341,15 @@ function stripeWebhookVerify(rawBody: Buffer, sigHeader: string, secret: string)
   return ok ? { ok: true as const } : { ok: false as const, reason: "mismatch" as const };
 }
 
-function safeEqualHex(a: string, b: string) {
-  const aa = Buffer.from(String(a || ""), "utf8");
-  const bb = Buffer.from(String(b || ""), "utf8");
-  if (aa.length !== bb.length) return false;
-  return crypto.timingSafeEqual(aa, bb);
+function normalizeStripePaymentStatus(s: any): string {
+  const v = String(s || "").trim().toLowerCase();
+  if (!v) return "unknown";
+  return v;
 }
 
-function stripeSafeString(x: any) {
-  const s = String(x ?? "").trim();
-  return s;
-}
-
-/* -------------------- STRIPE: PERSIST -------------------- */
-function isStripePaidLike(paymentStatus: string) {
-  const s = String(paymentStatus || "").toLowerCase();
-  return s === "paid" || s === "no_payment_required";
-}
-
-async function persistStripeCheckoutCompleted(args: {
-  publicId: string;
-  sessionId: string;
-  paymentIntentId: string;
-  paymentStatus: string;
-}) {
-  const publicId = String(args.publicId || "").trim();
-  const sessionId = String(args.sessionId || "").trim();
-  const paymentIntentId = String(args.paymentIntentId || "").trim();
-  const paymentStatus = String(args.paymentStatus || "").trim();
-
-  if (!publicId || !sessionId) return { ok: false as const, reason: "missing-publicid-or-session" as const };
-
-  const paid = isStripePaidLike(paymentStatus);
-  const setObj: Record<string, any> = {
-    paymentStatus: paymentStatus || null,
-    stripeCheckoutSessionId: sessionId || null,
-    stripePaymentIntentId: paymentIntentId || null,
-  };
-
-  if (paid) {
-    setObj.paidAt = now();
-  }
-
-  const whereGuard = and(
-    eq(gifts.publicId, publicId),
-    or(isNull(gifts.stripeCheckoutSessionId), eq(gifts.stripeCheckoutSessionId, sessionId))
-  );
-
-  const updated = await db.update(gifts).set(setObj).where(whereGuard).returning({
-    id: gifts.id,
-    publicId: gifts.publicId,
-    paymentStatus: gifts.paymentStatus,
-    stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
-    stripePaymentIntentId: gifts.stripePaymentIntentId,
-    paidAt: gifts.paidAt,
-  });
-
-  if (!updated?.length) {
-    return { ok: false as const, reason: "no-row-updated" as const };
-  }
-
-  return { ok: true as const, row: updated[0] };
+function stripeIsPaid(sessionPaymentStatus: any): boolean {
+  const v = normalizeStripePaymentStatus(sessionPaymentStatus);
+  return v === "paid";
 }
 
 /* -------------------- DAILY COUNTS -------------------- */
@@ -569,7 +517,7 @@ const zCreateGift = z.object({
 
   amountDollars: z.coerce.number().optional().nullable(),
   amountCents: z.coerce.number().int().optional().nullable(),
-  amount: z.coerce.number().optional().nullable(), // accept dollars or cents (normalized)
+  amount: z.coerce.number().optional().nullable(),
 
   turnstileToken: z.string().trim().optional().nullable(),
 });
@@ -584,10 +532,8 @@ const zAuthConsume = z.object({
 });
 
 const zStripeCheckout = z.object({
-  amount: z.any(), // dollars or cents; we normalize below
-  // optional: helps you tie the session back to a gift later (safe to store as metadata)
+  amount: z.any(),
   publicId: z.string().trim().optional().nullable(),
-  // optional: override success/cancel destination
   successUrl: z.string().trim().url().optional().nullable(),
   cancelUrl: z.string().trim().url().optional().nullable(),
 });
@@ -630,10 +576,262 @@ const limiterGoogle = rateLimit({
 
 const limiterStripe = rateLimit({
   windowMs: 60_000,
-  max: 60,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+/* -------------------- STRIPE CORE HANDLERS -------------------- */
+async function handleCreateCheckoutSession(req: Request, res: any) {
+  try {
+    const a = await getAuth(req);
+    if (!a.isAuthed) {
+      return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+    }
+
+    if (!STRIPE_SECRET_KEY || !STRIPE_PUBLISHABLE_KEY) {
+      return res.status(503).json({
+        error: "Stripe not configured",
+        code: "STRIPE_NOT_CONFIGURED",
+        version: VERSION,
+      });
+    }
+
+    const parsed = zStripeCheckout.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "INVALID_REQUEST",
+        issues: parsed.error.issues,
+        version: VERSION,
+      });
+    }
+
+    const amountCents = normalizeFixedAmountToCents(parsed.data.amount);
+    if (!amountCents) {
+      return res.status(400).json({
+        error: `Amount must be one of: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}`,
+        field: "amount",
+        code: "AMOUNT_NOT_ALLOWED",
+        version: VERSION,
+      });
+    }
+    if (amountCents < MIN_AMOUNT_CENTS_REGISTERED) {
+      return res.status(400).json({
+        error: "Minimum amount is $25",
+        field: "amount",
+        code: "MIN_AMOUNT",
+        version: VERSION,
+      });
+    }
+
+    const publicId = String(parsed.data.publicId || "").trim();
+
+    if (publicId) {
+      const g = await db
+        .select({
+          id: gifts.id,
+          senderUserId: gifts.senderUserId,
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
+          paidAt: gifts.paidAt,
+        })
+        .from(gifts)
+        .where(eq(gifts.publicId, publicId))
+        .limit(1);
+
+      const row = g?.[0];
+      if (!row) {
+        return res.status(404).json({ error: "Gift not found", code: "GIFT_NOT_FOUND", version: VERSION });
+      }
+      if (String(row.senderUserId || "") !== a.userId) {
+        return res.status(403).json({ error: "Forbidden", code: "FORBIDDEN", version: VERSION });
+      }
+      if (row.paidAt || String(row.paymentStatus || "").toLowerCase() === "paid") {
+        return res.status(409).json({ error: "Already paid", code: "ALREADY_PAID", version: VERSION });
+      }
+      if (row.amount != null && Number(row.amount) !== amountCents) {
+        return res.status(400).json({
+          error: "Amount mismatch for gift",
+          code: "AMOUNT_MISMATCH",
+          version: VERSION,
+        });
+      }
+    }
+
+    const successUrl =
+      String(parsed.data.successUrl || "").trim() ||
+      `${FRONTEND_URL}/pay/success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = String(parsed.data.cancelUrl || "").trim() || `${FRONTEND_URL}/pay/cancel`;
+
+    const params = new URLSearchParams();
+    params.set("mode", "payment");
+    params.set("success_url", successUrl);
+    params.set("cancel_url", cancelUrl);
+
+    params.set("line_items[0][quantity]", "1");
+    params.set("line_items[0][price_data][currency]", STRIPE_CURRENCY);
+    params.set("line_items[0][price_data][unit_amount]", String(amountCents));
+    params.set("line_items[0][price_data][product_data][name]", "ThankuMail Gift");
+    params.set(
+      "line_items[0][price_data][product_data][description]",
+      "A ThankuMail gift certificate payment"
+    );
+
+    params.set("metadata[userId]", a.userId);
+    if (publicId) params.set("metadata[publicId]", publicId);
+    params.set("client_reference_id", a.userId);
+
+    const created = await stripePostForm("/checkout/sessions", params);
+    if (!created.ok) {
+      return res.status(created.status).json({
+        error: "Stripe session create failed",
+        code: "STRIPE_CREATE_SESSION_FAILED",
+        stripe: created.error,
+        version: VERSION,
+      });
+    }
+
+    const sessionId = String(created.data?.id || "");
+    const sessionUrl = String(created.data?.url || "");
+
+    if (publicId && sessionId) {
+      await db
+        .update(gifts)
+        .set({
+          stripeCheckoutSessionId: sessionId,
+          paymentStatus: "created",
+        })
+        .where(and(eq(gifts.publicId, publicId), eq(gifts.senderUserId, a.userId)));
+    }
+
+    return res.json({
+      ok: true,
+      sessionId,
+      url: sessionUrl,
+      amountCents,
+      currency: STRIPE_CURRENCY,
+      version: VERSION,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      error: "Stripe create session failed",
+      code: "STRIPE_CREATE_SESSION_FAILED",
+      detail: String(err?.message || err),
+      version: VERSION,
+    });
+  }
+}
+
+async function handleStripeWebhook(req: Request, res: any) {
+  try {
+    if (!STRIPE_WEBHOOK_SECRET) return res.status(503).send("Stripe webhook not configured");
+
+    const sig = String(req.headers["stripe-signature"] || "");
+    const rawBody = Buffer.isBuffer((req as any).body) ? ((req as any).body as Buffer) : Buffer.from("");
+
+    if (!sig || !rawBody.length) return res.status(400).send("Missing signature/body");
+
+    const v = stripeWebhookVerify(rawBody, sig, STRIPE_WEBHOOK_SECRET);
+    if (!v.ok) return res.status(400).send("Invalid signature");
+
+    const event = JSON.parse(rawBody.toString("utf8") || "{}");
+    const type = String(event?.type || "");
+    const obj = event?.data?.object || null;
+
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: "stripe_webhook_received",
+        stripeType: type,
+        stripeId: String(event?.id || ""),
+        version: VERSION,
+      })
+    );
+
+    if (type === "checkout.session.completed") {
+      const sessionId = String(obj?.id || "");
+      const paymentIntentId = String(obj?.payment_intent || "");
+      const paymentStatus = normalizeStripePaymentStatus(obj?.payment_status);
+      const amountTotal = obj?.amount_total ?? null;
+      const metadata = obj?.metadata || {};
+
+      const publicId = String(metadata?.publicId || "").trim();
+
+      console.log(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: "stripe_checkout_completed",
+          sessionId,
+          paymentIntentId,
+          paymentStatus,
+          amountTotal,
+          publicId: publicId || null,
+          version: VERSION,
+        })
+      );
+
+      if (publicId) {
+        const amountCents = amountTotal != null ? Number(amountTotal) : null;
+
+        await db.transaction(async (tx) => {
+          const row = await tx
+            .select({
+              id: gifts.id,
+              amount: gifts.amount,
+              paymentStatus: gifts.paymentStatus,
+              paidAt: gifts.paidAt,
+            })
+            .from(gifts)
+            .where(eq(gifts.publicId, publicId))
+            .limit(1);
+
+          const g = row?.[0];
+          if (!g) return;
+
+          const alreadyPaid = Boolean(g.paidAt) || String(g.paymentStatus || "").toLowerCase() === "paid";
+          if (alreadyPaid) {
+            await tx
+              .update(gifts)
+              .set({
+                stripeCheckoutSessionId: sessionId || null,
+                stripePaymentIntentId: paymentIntentId || null,
+                paymentStatus: "paid",
+              })
+              .where(eq(gifts.id, g.id));
+            return;
+          }
+
+          const setAmount =
+            g.amount == null && amountCents != null && Number.isFinite(amountCents) ? amountCents : undefined;
+
+          await tx
+            .update(gifts)
+            .set({
+              paymentStatus: stripeIsPaid(paymentStatus) ? "paid" : paymentStatus,
+              stripeCheckoutSessionId: sessionId || null,
+              stripePaymentIntentId: paymentIntentId || null,
+              paidAt: stripeIsPaid(paymentStatus) ? now() : null,
+              amount: setAmount as any,
+            })
+            .where(eq(gifts.id, g.id));
+        });
+      }
+    }
+
+    return res.status(200).send("ok");
+  } catch (err: any) {
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: "stripe_webhook_error",
+        error: String(err?.message || err),
+        version: VERSION,
+      })
+    );
+    return res.status(500).send("error");
+  }
+}
 
 /* -------------------- ROUTES -------------------- */
 export function registerRoutes(app: Express): Server {
@@ -736,243 +934,22 @@ export function registerRoutes(app: Express): Server {
     });
   });
 
-  /* -------------------- STRIPE: CREATE CHECKOUT SESSION -------------------- */
-  app.post("/api/stripe/create-checkout-session", limiterStripe, async (req, res) => {
-    try {
-      const a = await getAuth(req);
-      if (!a.isAuthed) {
-        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
-      }
+  /* -------------------- STRIPE: CHECKOUT SESSION (CANONICAL + ALIAS) -------------------- */
+  app.post("/api/stripe/checkout/session", limiterStripe, express.json(), handleCreateCheckoutSession);
+  app.post("/api/stripe/create-checkout-session", limiterStripe, express.json(), handleCreateCheckoutSession);
 
-      if (!STRIPE_SECRET_KEY || !STRIPE_PUBLISHABLE_KEY) {
-        return res.status(503).json({
-          error: "Stripe not configured",
-          code: "STRIPE_NOT_CONFIGURED",
-          version: VERSION,
-        });
-      }
-
-      const parsed = zStripeCheckout.safeParse(req.body || {});
-      if (!parsed.success) {
-        return res.status(400).json({
-          error: "Invalid request",
-          code: "INVALID_REQUEST",
-          issues: parsed.error.issues,
-          version: VERSION,
-        });
-      }
-
-      const amountCents = normalizeFixedAmountToCents(parsed.data.amount);
-      if (!amountCents) {
-        return res.status(400).json({
-          error: `Amount must be one of: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}`,
-          field: "amount",
-          code: "AMOUNT_NOT_ALLOWED",
-          version: VERSION,
-        });
-      }
-      if (amountCents < MIN_AMOUNT_CENTS_REGISTERED) {
-        return res.status(400).json({
-          error: "Minimum amount is $25",
-          field: "amount",
-          code: "MIN_AMOUNT",
-          version: VERSION,
-        });
-      }
-
-      const publicId = String(parsed.data.publicId || "").trim();
-      const successUrl =
-        String(parsed.data.successUrl || "").trim() ||
-        `${FRONTEND_URL}/pay/success?session_id={CHECKOUT_SESSION_ID}`;
-      const cancelUrl = String(parsed.data.cancelUrl || "").trim() || `${FRONTEND_URL}/pay/cancel`;
-
-      const params = new URLSearchParams();
-      params.set("mode", "payment");
-      params.set("success_url", successUrl);
-      params.set("cancel_url", cancelUrl);
-
-      // Single line item
-      params.set("line_items[0][quantity]", "1");
-      params.set("line_items[0][price_data][currency]", STRIPE_CURRENCY);
-      params.set("line_items[0][price_data][unit_amount]", String(amountCents));
-      params.set("line_items[0][price_data][product_data][name]", "ThankuMail Gift");
-      params.set(
-        "line_items[0][price_data][product_data][description]",
-        "A ThankuMail gift certificate payment"
-      );
-
-      // Helpful metadata (used by webhook persistence)
-      params.set("metadata[userId]", a.userId);
-      if (publicId) params.set("metadata[publicId]", publicId);
-
-      // You can filter in Stripe dashboard
-      params.set("client_reference_id", a.userId);
-
-      const created = await stripePostForm("/checkout/sessions", params);
-      if (!created.ok) {
-        return res.status(created.status).json({
-          error: "Stripe session create failed",
-          code: "STRIPE_CREATE_SESSION_FAILED",
-          stripe: created.error,
-          version: VERSION,
-        });
-      }
-
-      return res.json({
-        ok: true,
-        sessionId: String(created.data?.id || ""),
-        url: String(created.data?.url || ""),
-        amountCents,
-        currency: STRIPE_CURRENCY,
-        version: VERSION,
-      });
-    } catch (err: any) {
-      return res.status(500).json({
-        error: "Stripe create session failed",
-        code: "STRIPE_CREATE_SESSION_FAILED",
-        detail: String(err?.message || err),
-        version: VERSION,
-      });
-    }
-  });
-
-  /* -------------------- STRIPE: WEBHOOK (SIGNATURE VERIFIED) -------------------- */
-  // IMPORTANT: This MUST receive the raw body. We use express.raw for this route only.
-  app.post(
-    "/api/stripe/webhook",
-    limiterStripe,
-    express.raw({ type: "application/json" }),
-    async (req, res) => {
-      const start = Date.now();
-
-      try {
-        if (!STRIPE_WEBHOOK_SECRET) return res.status(503).send("Stripe webhook not configured");
-
-        const sig = String(req.headers["stripe-signature"] || "");
-        const rawBody = Buffer.isBuffer((req as any).body)
-          ? ((req as any).body as Buffer)
-          : Buffer.from("");
-
-        if (!sig || !rawBody.length) return res.status(400).send("Missing signature/body");
-
-        const v = stripeWebhookVerify(rawBody, sig, STRIPE_WEBHOOK_SECRET);
-        if (!v.ok) return res.status(400).send("Invalid signature");
-
-        let event: any = {};
-        try {
-          event = JSON.parse(rawBody.toString("utf8") || "{}");
-        } catch {
-          return res.status(400).send("Invalid JSON");
-        }
-
-        const type = stripeSafeString(event?.type);
-        const stripeEventId = stripeSafeString(event?.id);
-        const obj = event?.data?.object || null;
-
-        const logBase = {
-          ts: new Date().toISOString(),
-          event: "stripe_webhook_received",
-          stripeType: type,
-          stripeEventId,
-          version: VERSION,
-        };
-
-        // Ack fast for unknown event types
-        if (!type || !obj) {
-          console.log(JSON.stringify({ ...logBase, note: "missing_type_or_object" }));
-          return res.status(200).send("ok");
-        }
-
-        if (
-          type === "checkout.session.completed" ||
-          type === "checkout.session.async_payment_succeeded"
-        ) {
-          const sessionId = stripeSafeString(obj?.id);
-          const paymentStatus = stripeSafeString(obj?.payment_status);
-          const paymentIntentId = stripeSafeString(obj?.payment_intent);
-          const metadata = obj?.metadata || {};
-          const publicId = stripeSafeString(metadata?.publicId);
-
-          console.log(
-            JSON.stringify({
-              ...logBase,
-              event: "stripe_checkout_session",
-              sessionId,
-              paymentStatus,
-              paymentIntentId,
-              publicId: publicId || undefined,
-            })
-          );
-
-          if (publicId) {
-            const persisted = await persistStripeCheckoutCompleted({
-              publicId,
-              sessionId,
-              paymentIntentId,
-              paymentStatus,
-            });
-
-            console.log(
-              JSON.stringify({
-                ts: new Date().toISOString(),
-                event: "stripe_persist_result",
-                stripeType: type,
-                stripeEventId,
-                sessionId,
-                publicId,
-                ok: persisted.ok,
-                reason: (persisted as any).reason,
-                paidLike: isStripePaidLike(paymentStatus),
-                ms: Date.now() - start,
-                version: VERSION,
-              })
-            );
-          } else {
-            console.log(
-              JSON.stringify({
-                ts: new Date().toISOString(),
-                event: "stripe_persist_skipped",
-                stripeType: type,
-                stripeEventId,
-                sessionId,
-                reason: "missing_publicId_metadata",
-                ms: Date.now() - start,
-                version: VERSION,
-              })
-            );
-          }
-
-          return res.status(200).send("ok");
-        }
-
-        // Optional: log but ignore other types
-        console.log(JSON.stringify({ ...logBase, note: "ignored_type" }));
-        return res.status(200).send("ok");
-      } catch (err: any) {
-        console.log(
-          JSON.stringify({
-            ts: new Date().toISOString(),
-            event: "stripe_webhook_error",
-            error: String(err?.message || err),
-            version: VERSION,
-          })
-        );
-        return res.status(500).send("error");
-      }
-    }
-  );
+  /* -------------------- STRIPE: WEBHOOK (CANONICAL + ALIAS) -------------------- */
+  app.post("/api/webhooks/stripe", limiterStripe, express.raw({ type: "application/json" }), handleStripeWebhook);
+  app.post("/api/stripe/webhook", limiterStripe, express.raw({ type: "application/json" }), handleStripeWebhook);
 
   /* -------------------- AUTH: GOOGLE OAUTH -------------------- */
-  // FE expects /api/auth/google (not /start). This alias fixes the 404.
   app.get("/api/auth/google", limiterGoogle, async (req, res) => {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res.status(503).json({
-        error: "Google auth not configured",
-        code: "GOOGLE_NOT_CONFIGURED",
-        version: VERSION,
-      });
+      return res
+        .status(503)
+        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
     }
 
     const ip = getIp(req);
@@ -993,16 +970,13 @@ export function registerRoutes(app: Express): Server {
     return res.redirect(302, url.toString());
   });
 
-  // Keep /start for backwards compatibility (optional)
   app.get("/api/auth/google/start", limiterGoogle, async (req, res) => {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res.status(503).json({
-        error: "Google auth not configured",
-        code: "GOOGLE_NOT_CONFIGURED",
-        version: VERSION,
-      });
+      return res
+        .status(503)
+        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
     }
 
     const ip = getIp(req);
@@ -1027,11 +1001,9 @@ export function registerRoutes(app: Express): Server {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res.status(503).json({
-        error: "Google auth not configured",
-        code: "GOOGLE_NOT_CONFIGURED",
-        version: VERSION,
-      });
+      return res
+        .status(503)
+        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
     }
 
     const code = String(req.query.code || "");
@@ -1047,11 +1019,7 @@ export function registerRoutes(app: Express): Server {
       });
     }
     if (!code || !state) {
-      return res.status(400).json({
-        error: "Invalid callback",
-        code: "GOOGLE_CALLBACK_INVALID",
-        version: VERSION,
-      });
+      return res.status(400).json({ error: "Invalid callback", code: "GOOGLE_CALLBACK_INVALID", version: VERSION });
     }
 
     const saved = oauthStateStore.get(state);
@@ -1492,9 +1460,6 @@ export function registerRoutes(app: Express): Server {
       const toEmail = String(recipientEmail || "").trim().toLowerCase();
       const toPhone = String(recipientPhone || "").trim();
 
-      // DELIVERY RULES:
-      // - Guest: email-only (must have recipientEmail, must not have phone)
-      // - Registered: email and/or sms, but must have at least one target
       if (!isRegistered) {
         if (!toEmail) {
           return res.status(400).json({
@@ -1653,39 +1618,33 @@ export function registerRoutes(app: Express): Server {
 
       const deliveryMethod = isRegistered ? (toPhone ? (toEmail ? "email+sms" : "sms") : "email") : "email";
 
-      const inserted = await db
-        .insert(gifts)
-        .values({
-          publicId,
-          senderUserId: isRegistered ? a.userId : null,
-          senderEmail: normSenderEmail || null,
-          recipientEmail: toEmail || null,
-          recipientPhone: isRegistered ? (toPhone || null) : null,
-          deliveryMethod,
+      await db.insert(gifts).values({
+        publicId,
+        senderUserId: isRegistered ? a.userId : null,
+        senderEmail: normSenderEmail || null,
+        recipientEmail: toEmail || null,
+        recipientPhone: isRegistered ? (toPhone || null) : null,
+        deliveryMethod,
 
-          messageMode: finalMessageMode,
-          presetMessageId: finalPresetMessageId,
-          message: finalMessage,
+        messageMode: finalMessageMode,
+        presetMessageId: finalPresetMessageId,
+        message: finalMessage,
 
-          amount: finalAmountCents,
+        amount: finalAmountCents,
 
-          paymentStatus: null,
-          stripeCheckoutSessionId: null,
-          stripePaymentIntentId: null,
-          paidAt: null,
+        paymentStatus: finalAmountCents != null ? "requires_payment" : null,
+        stripeCheckoutSessionId: null,
+        stripePaymentIntentId: null,
+        paidAt: null,
 
-          isClaimed: false,
-          createdAt: now(),
-          claimedAt: null,
+        isClaimed: false,
+        createdAt: now(),
+        claimedAt: null,
 
-          reminderCount: 0,
-          lastReminderSentAt: null,
-          returnedToSenderAt: null,
-        })
-        .returning({ id: gifts.id });
-
-      const giftId = Number(inserted?.[0]?.id || 0);
-      void giftId;
+        reminderCount: 0,
+        lastReminderSentAt: null,
+        returnedToSenderAt: null,
+      });
 
       let emailSent = false;
       let smsQueued = false;
@@ -1760,14 +1719,13 @@ export function registerRoutes(app: Express): Server {
           presetMessageId: gifts.presetMessageId,
           message: gifts.message,
           amount: gifts.amount,
-          createdAt: gifts.createdAt,
-          claimedAt: gifts.claimedAt,
-          isClaimed: gifts.isClaimed,
-
           paymentStatus: gifts.paymentStatus,
           stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
           stripePaymentIntentId: gifts.stripePaymentIntentId,
           paidAt: gifts.paidAt,
+          createdAt: gifts.createdAt,
+          claimedAt: gifts.claimedAt,
+          isClaimed: gifts.isClaimed,
         })
         .from(gifts)
         .where(eq(gifts.publicId, publicId))
@@ -1788,15 +1746,12 @@ export function registerRoutes(app: Express): Server {
           presetMessageId: g.presetMessageId ?? null,
           message: (g.messageMode as any) === "custom" ? g.message || "" : "",
           amount: g.amount ?? null,
+          paymentStatus: g.paymentStatus ?? null,
+          stripeCheckoutSessionId: g.stripeCheckoutSessionId ?? null,
+          stripePaymentIntentId: g.stripePaymentIntentId ?? null,
+          paidAt: g.paidAt ?? null,
           createdAt: g.createdAt,
           claimed: Boolean(g.isClaimed || g.claimedAt),
-
-          payment: {
-            status: g.paymentStatus || null,
-            stripeCheckoutSessionId: g.stripeCheckoutSessionId || null,
-            stripePaymentIntentId: g.stripePaymentIntentId || null,
-            paidAt: g.paidAt || null,
-          },
         },
         version: VERSION,
       });
