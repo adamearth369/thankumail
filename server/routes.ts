@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-21_002";
+const VERSION = "routes_v2026-02-23_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v2";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -348,6 +348,62 @@ function safeEqualHex(a: string, b: string) {
   return crypto.timingSafeEqual(aa, bb);
 }
 
+function stripeSafeString(x: any) {
+  const s = String(x ?? "").trim();
+  return s;
+}
+
+/* -------------------- STRIPE: PERSIST -------------------- */
+function isStripePaidLike(paymentStatus: string) {
+  const s = String(paymentStatus || "").toLowerCase();
+  return s === "paid" || s === "no_payment_required";
+}
+
+async function persistStripeCheckoutCompleted(args: {
+  publicId: string;
+  sessionId: string;
+  paymentIntentId: string;
+  paymentStatus: string;
+}) {
+  const publicId = String(args.publicId || "").trim();
+  const sessionId = String(args.sessionId || "").trim();
+  const paymentIntentId = String(args.paymentIntentId || "").trim();
+  const paymentStatus = String(args.paymentStatus || "").trim();
+
+  if (!publicId || !sessionId) return { ok: false as const, reason: "missing-publicid-or-session" as const };
+
+  const paid = isStripePaidLike(paymentStatus);
+  const setObj: Record<string, any> = {
+    paymentStatus: paymentStatus || null,
+    stripeCheckoutSessionId: sessionId || null,
+    stripePaymentIntentId: paymentIntentId || null,
+  };
+
+  if (paid) {
+    setObj.paidAt = now();
+  }
+
+  const whereGuard = and(
+    eq(gifts.publicId, publicId),
+    or(isNull(gifts.stripeCheckoutSessionId), eq(gifts.stripeCheckoutSessionId, sessionId))
+  );
+
+  const updated = await db.update(gifts).set(setObj).where(whereGuard).returning({
+    id: gifts.id,
+    publicId: gifts.publicId,
+    paymentStatus: gifts.paymentStatus,
+    stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
+    stripePaymentIntentId: gifts.stripePaymentIntentId,
+    paidAt: gifts.paidAt,
+  });
+
+  if (!updated?.length) {
+    return { ok: false as const, reason: "no-row-updated" as const };
+  }
+
+  return { ok: true as const, row: updated[0] };
+}
+
 /* -------------------- DAILY COUNTS -------------------- */
 const memIpCounts = new Map<string, { day: string; count: number }>();
 const memPhoneCounts = new Map<string, { day: string; count: number }>();
@@ -574,7 +630,7 @@ const limiterGoogle = rateLimit({
 
 const limiterStripe = rateLimit({
   windowMs: 60_000,
-  max: 30,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -745,7 +801,7 @@ export function registerRoutes(app: Express): Server {
         "A ThankuMail gift certificate payment"
       );
 
-      // Helpful metadata
+      // Helpful metadata (used by webhook persistence)
       params.set("metadata[userId]", a.userId);
       if (publicId) params.set("metadata[publicId]", publicId);
 
@@ -782,72 +838,129 @@ export function registerRoutes(app: Express): Server {
 
   /* -------------------- STRIPE: WEBHOOK (SIGNATURE VERIFIED) -------------------- */
   // IMPORTANT: This MUST receive the raw body. We use express.raw for this route only.
-  app.post("/api/stripe/webhook", limiterStripe, express.raw({ type: "application/json" }), async (req, res) => {
-    try {
-      if (!STRIPE_WEBHOOK_SECRET) {
-        return res.status(503).send("Stripe webhook not configured");
-      }
+  app.post(
+    "/api/stripe/webhook",
+    limiterStripe,
+    express.raw({ type: "application/json" }),
+    async (req, res) => {
+      const start = Date.now();
 
-      const sig = String(req.headers["stripe-signature"] || "");
-      const rawBody = Buffer.isBuffer((req as any).body) ? ((req as any).body as Buffer) : Buffer.from("");
+      try {
+        if (!STRIPE_WEBHOOK_SECRET) return res.status(503).send("Stripe webhook not configured");
 
-      if (!sig || !rawBody.length) {
-        return res.status(400).send("Missing signature/body");
-      }
+        const sig = String(req.headers["stripe-signature"] || "");
+        const rawBody = Buffer.isBuffer((req as any).body)
+          ? ((req as any).body as Buffer)
+          : Buffer.from("");
 
-      const v = stripeWebhookVerify(rawBody, sig, STRIPE_WEBHOOK_SECRET);
-      if (!v.ok) {
-        return res.status(400).send("Invalid signature");
-      }
+        if (!sig || !rawBody.length) return res.status(400).send("Missing signature/body");
 
-      const event = JSON.parse(rawBody.toString("utf8") || "{}");
-      const type = String(event?.type || "");
-      const obj = event?.data?.object || null;
+        const v = stripeWebhookVerify(rawBody, sig, STRIPE_WEBHOOK_SECRET);
+        if (!v.ok) return res.status(400).send("Invalid signature");
 
-      console.log(
-        JSON.stringify({
+        let event: any = {};
+        try {
+          event = JSON.parse(rawBody.toString("utf8") || "{}");
+        } catch {
+          return res.status(400).send("Invalid JSON");
+        }
+
+        const type = stripeSafeString(event?.type);
+        const stripeEventId = stripeSafeString(event?.id);
+        const obj = event?.data?.object || null;
+
+        const logBase = {
           ts: new Date().toISOString(),
           event: "stripe_webhook_received",
           stripeType: type,
-          stripeId: String(event?.id || ""),
+          stripeEventId,
           version: VERSION,
-        })
-      );
+        };
 
-      // Minimal safe handling (no DB mutation yet because schema has no payment state columns)
-      if (type === "checkout.session.completed") {
-        const sessionId = String(obj?.id || "");
-        const paymentStatus = String(obj?.payment_status || "");
-        const amountTotal = obj?.amount_total ?? null;
-        const currency = String(obj?.currency || "");
-        const metadata = obj?.metadata || {};
+        // Ack fast for unknown event types
+        if (!type || !obj) {
+          console.log(JSON.stringify({ ...logBase, note: "missing_type_or_object" }));
+          return res.status(200).send("ok");
+        }
+
+        if (
+          type === "checkout.session.completed" ||
+          type === "checkout.session.async_payment_succeeded"
+        ) {
+          const sessionId = stripeSafeString(obj?.id);
+          const paymentStatus = stripeSafeString(obj?.payment_status);
+          const paymentIntentId = stripeSafeString(obj?.payment_intent);
+          const metadata = obj?.metadata || {};
+          const publicId = stripeSafeString(metadata?.publicId);
+
+          console.log(
+            JSON.stringify({
+              ...logBase,
+              event: "stripe_checkout_session",
+              sessionId,
+              paymentStatus,
+              paymentIntentId,
+              publicId: publicId || undefined,
+            })
+          );
+
+          if (publicId) {
+            const persisted = await persistStripeCheckoutCompleted({
+              publicId,
+              sessionId,
+              paymentIntentId,
+              paymentStatus,
+            });
+
+            console.log(
+              JSON.stringify({
+                ts: new Date().toISOString(),
+                event: "stripe_persist_result",
+                stripeType: type,
+                stripeEventId,
+                sessionId,
+                publicId,
+                ok: persisted.ok,
+                reason: (persisted as any).reason,
+                paidLike: isStripePaidLike(paymentStatus),
+                ms: Date.now() - start,
+                version: VERSION,
+              })
+            );
+          } else {
+            console.log(
+              JSON.stringify({
+                ts: new Date().toISOString(),
+                event: "stripe_persist_skipped",
+                stripeType: type,
+                stripeEventId,
+                sessionId,
+                reason: "missing_publicId_metadata",
+                ms: Date.now() - start,
+                version: VERSION,
+              })
+            );
+          }
+
+          return res.status(200).send("ok");
+        }
+
+        // Optional: log but ignore other types
+        console.log(JSON.stringify({ ...logBase, note: "ignored_type" }));
+        return res.status(200).send("ok");
+      } catch (err: any) {
         console.log(
           JSON.stringify({
             ts: new Date().toISOString(),
-            event: "stripe_checkout_completed",
-            sessionId,
-            paymentStatus,
-            amountTotal,
-            currency,
-            metadata,
+            event: "stripe_webhook_error",
+            error: String(err?.message || err),
             version: VERSION,
           })
         );
+        return res.status(500).send("error");
       }
-
-      return res.status(200).send("ok");
-    } catch (err: any) {
-      console.log(
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          event: "stripe_webhook_error",
-          error: String(err?.message || err),
-          version: VERSION,
-        })
-      );
-      return res.status(500).send("error");
     }
-  });
+  );
 
   /* -------------------- AUTH: GOOGLE OAUTH -------------------- */
   // FE expects /api/auth/google (not /start). This alias fixes the 404.
@@ -855,9 +968,11 @@ export function registerRoutes(app: Express): Server {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res
-        .status(503)
-        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+      return res.status(503).json({
+        error: "Google auth not configured",
+        code: "GOOGLE_NOT_CONFIGURED",
+        version: VERSION,
+      });
     }
 
     const ip = getIp(req);
@@ -883,9 +998,11 @@ export function registerRoutes(app: Express): Server {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res
-        .status(503)
-        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+      return res.status(503).json({
+        error: "Google auth not configured",
+        code: "GOOGLE_NOT_CONFIGURED",
+        version: VERSION,
+      });
     }
 
     const ip = getIp(req);
@@ -910,9 +1027,11 @@ export function registerRoutes(app: Express): Server {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res
-        .status(503)
-        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+      return res.status(503).json({
+        error: "Google auth not configured",
+        code: "GOOGLE_NOT_CONFIGURED",
+        version: VERSION,
+      });
     }
 
     const code = String(req.query.code || "");
@@ -928,7 +1047,11 @@ export function registerRoutes(app: Express): Server {
       });
     }
     if (!code || !state) {
-      return res.status(400).json({ error: "Invalid callback", code: "GOOGLE_CALLBACK_INVALID", version: VERSION });
+      return res.status(400).json({
+        error: "Invalid callback",
+        code: "GOOGLE_CALLBACK_INVALID",
+        version: VERSION,
+      });
     }
 
     const saved = oauthStateStore.get(state);
@@ -1546,6 +1669,11 @@ export function registerRoutes(app: Express): Server {
 
           amount: finalAmountCents,
 
+          paymentStatus: null,
+          stripeCheckoutSessionId: null,
+          stripePaymentIntentId: null,
+          paidAt: null,
+
           isClaimed: false,
           createdAt: now(),
           claimedAt: null,
@@ -1635,6 +1763,11 @@ export function registerRoutes(app: Express): Server {
           createdAt: gifts.createdAt,
           claimedAt: gifts.claimedAt,
           isClaimed: gifts.isClaimed,
+
+          paymentStatus: gifts.paymentStatus,
+          stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
+          stripePaymentIntentId: gifts.stripePaymentIntentId,
+          paidAt: gifts.paidAt,
         })
         .from(gifts)
         .where(eq(gifts.publicId, publicId))
@@ -1657,6 +1790,13 @@ export function registerRoutes(app: Express): Server {
           amount: g.amount ?? null,
           createdAt: g.createdAt,
           claimed: Boolean(g.isClaimed || g.claimedAt),
+
+          payment: {
+            status: g.paymentStatus || null,
+            stripeCheckoutSessionId: g.stripeCheckoutSessionId || null,
+            stripePaymentIntentId: g.stripePaymentIntentId || null,
+            paidAt: g.paidAt || null,
+          },
         },
         version: VERSION,
       });
