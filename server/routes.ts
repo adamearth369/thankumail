@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: Full file replacement (paste exactly)
+
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -20,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-23_002";
+const VERSION = "routes_v2026-02-23_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -1650,33 +1653,42 @@ export function registerRoutes(app: Express): Server {
       let smsQueued = false;
       let deliveryError: string | null = null;
 
-      if (toEmail) {
-        try {
-          await sendGiftEmail({
-            to: toEmail,
-            publicId,
-            claimUrl,
-            amountCents: finalAmountCents,
-            senderEmail: normSenderEmail || undefined,
-            message: finalMessageMode === "custom" ? (finalMessage || undefined) : undefined,
-          } as any);
-          emailSent = true;
-        } catch (e: any) {
-          deliveryError = String(e?.message || e);
-        }
-      }
+      /**
+       * IMPORTANT:
+       * If gift has an amount, DO NOT deliver yet.
+       * Delivery will happen after Stripe webhook confirms payment.
+       */
+      const requiresPayment = finalAmountCents != null;
 
-      if (isRegistered && toPhone) {
-        try {
-          await sendGiftSms({
-            toPhone,
-            publicId,
-            claimUrl,
-          } as any);
-          smsQueued = true;
-        } catch (e: any) {
-          const msg = String(e?.message || e);
-          deliveryError = deliveryError ? `${deliveryError}; ${msg}` : msg;
+      if (!requiresPayment) {
+        if (toEmail) {
+          try {
+            await sendGiftEmail({
+              to: toEmail,
+              publicId,
+              claimUrl,
+              amountCents: finalAmountCents,
+              senderEmail: normSenderEmail || undefined,
+              message: finalMessageMode === "custom" ? (finalMessage || undefined) : undefined,
+            } as any);
+            emailSent = true;
+          } catch (e: any) {
+            deliveryError = String(e?.message || e);
+          }
+        }
+
+        if (isRegistered && toPhone) {
+          try {
+            await sendGiftSms({
+              toPhone,
+              publicId,
+              claimUrl,
+            } as any);
+            smsQueued = true;
+          } catch (e: any) {
+            const msg = String(e?.message || e);
+            deliveryError = deliveryError ? `${deliveryError}; ${msg}` : msg;
+          }
         }
       }
 
@@ -1689,6 +1701,8 @@ export function registerRoutes(app: Express): Server {
         smsQueued,
         deliveryError: deliveryError || undefined,
         version: VERSION,
+        paymentRequired: requiresPayment,
+        paymentStatus: requiresPayment ? "requires_payment" : null,
       });
     } catch (err: any) {
       return res.status(500).json({
