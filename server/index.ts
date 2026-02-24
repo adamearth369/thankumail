@@ -7,7 +7,7 @@ import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-02-22_002";
+const INDEX_VERSION = "api_index_v2026-02-24_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- APP -------------------- */
@@ -46,29 +46,42 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-/* -------------------- BODY PARSING (STRIPE SAFE) -------------------- */
+/* -------------------- BODY PARSING (STRIPE RAW SAFE) -------------------- */
 /**
- * IMPORTANT:
- * Stripe webhook route MUST receive the raw bytes body for signature verification.
- * If express.json runs first, it consumes the stream and express.raw later gets an empty body.
- *
- * So:
- * - For /api/stripe/webhook => express.raw({ type: "application/json" })
- * - For all other routes => express.json with verify capturing req.rawBody
+ * Stripe webhook MUST receive raw bytes body for signature verification.
+ * We:
+ * - Detect webhook route by originalUrl (robust vs routers / trailing slash)
+ * - Apply express.raw for that route
+ * - ALSO store req.rawBody for handlers that expect it
+ * - For all other routes, use express.json with verify storing req.rawBody
  */
+
+function isStripeWebhook(req: Request) {
+  const url = String(req.originalUrl || req.url || "");
+  const pathOnly = url.split("?")[0] || "";
+  return pathOnly === "/api/stripe/webhook" || pathOnly === "/api/stripe/webhook/";
+}
+
 app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.path === "/api/stripe/webhook") {
-    return express.raw({ type: "application/json", limit: "2mb" })(req, res, next);
+  if (isStripeWebhook(req)) {
+    return express.raw({
+      type: "application/json",
+      limit: "2mb",
+      verify: (r: any, _res, buf) => {
+        r.rawBody = buf; // Buffer
+      },
+    })(req, res, next);
   }
 
   return express.json({
     limit: "1mb",
     verify: (r: any, _res, buf) => {
-      r.rawBody = buf;
+      r.rawBody = buf; // Buffer
     },
   })(req, res, next);
 });
 
+// urlencoded is fine for non-webhook requests; Stripe uses application/json
 app.use(express.urlencoded({ extended: true }));
 
 /* -------------------- HEALTH -------------------- */
