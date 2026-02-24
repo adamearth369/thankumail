@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-23_003";
+const VERSION = "routes_v2026-02-24_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -57,8 +57,7 @@ const TURNSTILE_BYPASS = String(process.env.TURNSTILE_BYPASS || "false").toLower
 /* -------------------- AUTH HARDENING -------------------- */
 const AUTH_MAGIC_LINK_TTL_MS = 10 * 60 * 1000;
 const AUTH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const AUTH_RETURN_TOKEN =
-  String(process.env.AUTH_RETURN_TOKEN ?? "true").toLowerCase() === "true";
+const AUTH_RETURN_TOKEN = String(process.env.AUTH_RETURN_TOKEN ?? "true").toLowerCase() === "true";
 const AUTH_MX_VALIDATE_ENABLED =
   String(process.env.AUTH_MX_VALIDATE_ENABLED ?? "false").toLowerCase() === "true";
 const AUTH_MAGIC_LINK_ENABLED =
@@ -128,7 +127,7 @@ const DISPOSABLE_EMAIL_DOMAINS_ENV = new Set(
   String(process.env.DISPOSABLE_EMAIL_DOMAINS || "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
+    .filter(Boolean),
 );
 
 const DISPOSABLE_EMAIL_DOMAINS = new Set<string>([
@@ -265,7 +264,7 @@ function logAuth(event: string, fields: Record<string, any> = {}) {
       event,
       version: VERSION,
       ...fields,
-    })
+    }),
   );
 }
 
@@ -353,6 +352,14 @@ function normalizeStripePaymentStatus(s: any): string {
 function stripeIsPaid(sessionPaymentStatus: any): boolean {
   const v = normalizeStripePaymentStatus(sessionPaymentStatus);
   return v === "paid";
+}
+
+function getStripeRawBody(req: Request): Buffer {
+  const rb = (req as any).rawBody;
+  if (Buffer.isBuffer(rb) && rb.length) return rb as Buffer;
+  const b = (req as any).body;
+  if (Buffer.isBuffer(b) && b.length) return b as Buffer;
+  return Buffer.from("");
 }
 
 /* -------------------- DAILY COUNTS -------------------- */
@@ -676,10 +683,7 @@ async function handleCreateCheckoutSession(req: Request, res: any) {
     params.set("line_items[0][price_data][currency]", STRIPE_CURRENCY);
     params.set("line_items[0][price_data][unit_amount]", String(amountCents));
     params.set("line_items[0][price_data][product_data][name]", "ThankuMail Gift");
-    params.set(
-      "line_items[0][price_data][product_data][description]",
-      "A ThankuMail gift certificate payment"
-    );
+    params.set("line_items[0][price_data][product_data][description]", "A ThankuMail gift certificate payment");
 
     params.set("metadata[userId]", a.userId);
     if (publicId) params.set("metadata[publicId]", publicId);
@@ -731,7 +735,7 @@ async function handleStripeWebhook(req: Request, res: any) {
     if (!STRIPE_WEBHOOK_SECRET) return res.status(503).send("Stripe webhook not configured");
 
     const sig = String(req.headers["stripe-signature"] || "");
-    const rawBody = Buffer.isBuffer((req as any).body) ? ((req as any).body as Buffer) : Buffer.from("");
+    const rawBody = getStripeRawBody(req);
 
     if (!sig || !rawBody.length) return res.status(400).send("Missing signature/body");
 
@@ -749,7 +753,7 @@ async function handleStripeWebhook(req: Request, res: any) {
         stripeType: type,
         stripeId: String(event?.id || ""),
         version: VERSION,
-      })
+      }),
     );
 
     if (type === "checkout.session.completed") {
@@ -771,7 +775,7 @@ async function handleStripeWebhook(req: Request, res: any) {
           amountTotal,
           publicId: publicId || null,
           version: VERSION,
-        })
+        }),
       );
 
       if (publicId) {
@@ -830,7 +834,7 @@ async function handleStripeWebhook(req: Request, res: any) {
         event: "stripe_webhook_error",
         error: String(err?.message || err),
         version: VERSION,
-      })
+      }),
     );
     return res.status(500).send("error");
   }
@@ -938,12 +942,14 @@ export function registerRoutes(app: Express): Server {
   });
 
   /* -------------------- STRIPE: CHECKOUT SESSION (CANONICAL + ALIAS) -------------------- */
-  app.post("/api/stripe/checkout/session", limiterStripe, express.json(), handleCreateCheckoutSession);
-  app.post("/api/stripe/create-checkout-session", limiterStripe, express.json(), handleCreateCheckoutSession);
+  // NOTE: DO NOT add express.json() here (index.ts already parsed JSON for non-webhook routes)
+  app.post("/api/stripe/checkout/session", limiterStripe, handleCreateCheckoutSession);
+  app.post("/api/stripe/create-checkout-session", limiterStripe, handleCreateCheckoutSession);
 
   /* -------------------- STRIPE: WEBHOOK (CANONICAL + ALIAS) -------------------- */
-  app.post("/api/webhooks/stripe", limiterStripe, express.raw({ type: "application/json" }), handleStripeWebhook);
-  app.post("/api/stripe/webhook", limiterStripe, express.raw({ type: "application/json" }), handleStripeWebhook);
+  // NOTE: DO NOT add express.raw() here (index.ts handles raw parsing; req.rawBody is populated)
+  app.post("/api/webhooks/stripe", limiterStripe, handleStripeWebhook);
+  app.post("/api/stripe/webhook", limiterStripe, handleStripeWebhook);
 
   /* -------------------- AUTH: GOOGLE OAUTH -------------------- */
   app.get("/api/auth/google", limiterGoogle, async (req, res) => {
@@ -1263,8 +1269,8 @@ export function registerRoutes(app: Express): Server {
             and(
               eq(authMagicLinks.tokenHash, tokenHash),
               isNull(authMagicLinks.consumedAt),
-              gtTime(authMagicLinks.expiresAt, new Date())
-            )
+              gtTime(authMagicLinks.expiresAt, new Date()),
+            ),
           )
           .returning({
             id: authMagicLinks.id,
@@ -1880,8 +1886,8 @@ export function registerRoutes(app: Express): Server {
             isNull(gifts.returnedToSenderAt),
             lt(gifts.reminderCount, REMINDER_MAX),
             or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
-            sql`${gifts.recipientEmail} is not null`
-          )
+            sql`${gifts.recipientEmail} is not null`,
+          ),
         )
         .orderBy(asc(gifts.lastReminderSentAt), asc(gifts.id))
         .limit(limit);
