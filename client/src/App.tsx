@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
 import Home from "./pages/Home";
@@ -46,6 +46,83 @@ function canonicalizeSessionToken() {
       return;
     }
   }
+}
+
+function getQueryParam(name: string) {
+  try {
+    const u = new URL(window.location.href);
+    return String(u.searchParams.get(name) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function PaySuccess() {
+  const [, setLocation] = useLocation();
+  const sessionId = getQueryParam("session_id");
+
+  return (
+    <div className="min-h-[70vh] flex items-center justify-center px-4">
+      <div className="w-full max-w-lg rounded-2xl border border-tm-charcoal/20 bg-white p-6 shadow-soft text-tm-charcoal">
+        <div className="text-xl font-outfit font-semibold">Payment successful.</div>
+        <div className="mt-2 text-sm text-tm-charcoal/80">
+          {sessionId ? (
+            <>
+              Stripe session: <span className="font-mono text-[12px]">{sessionId}</span>
+            </>
+          ) : (
+            "Stripe session id missing (session_id)."
+          )}
+        </div>
+
+        <div className="mt-4 text-sm text-tm-charcoal/80">
+          You can return to the home page now. Your gift will be updated as paid once Stripe finishes processing.
+        </div>
+
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setLocation("/")}
+            className="rounded-xl border border-tm-charcoal/20 bg-tm-cream px-3 py-2 text-sm font-medium hover:opacity-90"
+          >
+            Go home
+          </button>
+
+          <Link
+            href="/"
+            className="rounded-xl border border-tm-charcoal/20 bg-white px-3 py-2 text-sm font-medium hover:bg-tm-cream"
+          >
+            Home link
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PayCancel() {
+  const [, setLocation] = useLocation();
+
+  return (
+    <div className="min-h-[70vh] flex items-center justify-center px-4">
+      <div className="w-full max-w-lg rounded-2xl border border-tm-charcoal/20 bg-white p-6 shadow-soft text-tm-charcoal">
+        <div className="text-xl font-outfit font-semibold">Payment cancelled.</div>
+        <div className="mt-2 text-sm text-tm-charcoal/80">
+          No charge was completed. You can go back and try again.
+        </div>
+
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setLocation("/")}
+            className="rounded-xl border border-tm-charcoal/20 bg-tm-cream px-3 py-2 text-sm font-medium hover:opacity-90"
+          >
+            Go home
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -110,6 +187,11 @@ export default function App() {
         <Route path="/claim/:publicId" component={Claim} />
         <Route path="/login" component={Login} />
         <Route path="/auth/google" component={AuthGoogle} />
+
+        {/* Stripe return URLs */}
+        <Route path="/pay/success" component={PaySuccess} />
+        <Route path="/pay/cancel" component={PayCancel} />
+
         <Route path="/tools/turnstile" component={TurnstileTool} />
         <Route component={NotFound} />
       </Switch>
