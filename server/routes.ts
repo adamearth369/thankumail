@@ -1,13 +1,10 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { and, asc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import dns from "node:dns/promises";
 import fs from "node:fs";
 import path from "node:path";
@@ -23,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-24_002";
+const VERSION = "routes_v2026-02-24_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -950,6 +947,67 @@ export function registerRoutes(app: Express): Server {
   // NOTE: DO NOT add express.raw() here (index.ts handles raw parsing; req.rawBody is populated)
   app.post("/api/webhooks/stripe", limiterStripe, handleStripeWebhook);
   app.post("/api/stripe/webhook", limiterStripe, handleStripeWebhook);
+
+  /* -------------------- ADMIN: GIFTS LIST -------------------- */
+  app.get("/api/admin/gifts", limiterAdmin, async (req, res) => {
+    try {
+      if (!ADMIN_TOKEN) {
+        return res.status(503).json({
+          error: "ADMIN_TOKEN not configured",
+          code: "ADMIN_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+      if (!isAdmin(req)) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 20)));
+
+      const rows = await db
+        .select({
+          id: gifts.id,
+          publicId: gifts.publicId,
+
+          senderUserId: gifts.senderUserId,
+          senderEmail: gifts.senderEmail,
+
+          recipientEmail: gifts.recipientEmail,
+          recipientPhone: gifts.recipientPhone,
+          deliveryMethod: gifts.deliveryMethod,
+
+          messageMode: gifts.messageMode,
+          presetMessageId: gifts.presetMessageId,
+          message: gifts.message,
+
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
+          stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
+          stripePaymentIntentId: gifts.stripePaymentIntentId,
+          paidAt: gifts.paidAt,
+
+          isClaimed: gifts.isClaimed,
+          claimedAt: gifts.claimedAt,
+          createdAt: gifts.createdAt,
+
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+          returnedToSenderAt: gifts.returnedToSenderAt,
+        })
+        .from(gifts)
+        .orderBy(desc(gifts.createdAt), desc(gifts.id))
+        .limit(limit);
+
+      return res.json({ ok: true, gifts: rows, limit, version: VERSION });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Admin gifts list failed",
+        code: "ADMIN_GIFTS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
 
   /* -------------------- AUTH: GOOGLE OAUTH -------------------- */
   app.get("/api/auth/google", limiterGoogle, async (req, res) => {
