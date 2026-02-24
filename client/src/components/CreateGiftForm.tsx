@@ -23,6 +23,10 @@ type CreateGiftOk = {
   messageMode?: "preset" | "custom";
   presetMessageId?: number | null;
   amount?: number | null;
+
+  // paywall
+  paymentRequired?: boolean;
+  paymentStatus?: string | null;
 };
 
 type CreateGiftResponse = CreateGiftOk | ApiError;
@@ -38,12 +42,20 @@ type AuthMeOk = {
   [k: string]: any;
 };
 
+type StripeCheckoutOk = {
+  ok: true;
+  sessionId: string;
+  url: string;
+  amountCents: number;
+  currency: string;
+  version?: string;
+};
+
 declare global {
   interface Window {
     __turnstileToken?: string;
     turnstileToken?: string;
     getTurnstileToken?: () => string;
-    // keep it untyped to avoid any build/parser edge cases
     turnstile?: any;
   }
 }
@@ -148,12 +160,10 @@ function removeSessionToken() {
 }
 
 /* -------------------- CAPTURE BACKEND IDENTITY HEADERS -------------------- */
-
 function rememberBackendIdentityFromHeaders(headers: Headers) {
   try {
     const xCommit = headers.get("x-commit") || headers.get("X-Commit") || "";
     const xApiVersion = headers.get("x-api-version") || headers.get("X-Api-Version") || "";
-
     if (xCommit) localStorage.setItem("tm_api_commit", xCommit);
     if (xApiVersion) localStorage.setItem("tm_api_version", xApiVersion);
   } catch {}
@@ -182,6 +192,7 @@ export default function CreateGiftForm() {
   const [token, setToken] = useState<string>("");
   const [turnstileReady, setTurnstileReady] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [redirectingToPayment, setRedirectingToPayment] = useState<boolean>(false);
 
   const [error, setError] = useState<string>("");
   const [fieldError, setFieldError] = useState<string>("");
@@ -312,6 +323,7 @@ export default function CreateGiftForm() {
 
     return (
       !submitting &&
+      !redirectingToPayment &&
       isEmail(re) &&
       isEmail(se) &&
       msgOk &&
@@ -321,6 +333,7 @@ export default function CreateGiftForm() {
     );
   }, [
     submitting,
+    redirectingToPayment,
     recipientEmail,
     senderEmail,
     isRegistered,
@@ -519,9 +532,33 @@ export default function CreateGiftForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnstileReady, TURNSTILE_SITE_KEY]);
 
+  async function createCheckoutSession(publicId: string, cents: number, authToken: string) {
+    const r = await fetch(`${API_BASE}/api/stripe/checkout/session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        amount: cents, // backend accepts cents (normalizeFixedAmountToCents)
+        publicId,
+      }),
+    });
+
+    rememberBackendIdentityFromHeaders(r.headers);
+
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j?.ok) {
+      const err = parseApiError(j || { error: "Stripe checkout failed" });
+      throw new Error(err.error || "Stripe checkout failed");
+    }
+    return j as StripeCheckoutOk;
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
+    setRedirectingToPayment(false);
     errorLockRef.current = "none";
     setError("");
     setFieldError("");
@@ -652,8 +689,40 @@ export default function CreateGiftForm() {
         return;
       }
 
+      const ok = data as CreateGiftOk;
+
+      // If payment is required, redirect to Stripe Checkout immediately (so user sees payment BEFORE “sent”)
+      if (isRegistered && amountCents !== null && ok.paymentRequired) {
+        const authToken = getSessionToken();
+        if (!authToken) {
+          setSubmitting(false);
+          setErrorWithLock("Session expired. Please sign in again.", "server");
+          return;
+        }
+
+        setRedirectingToPayment(true);
+
+        try {
+          const checkout = await createCheckoutSession(ok.publicId, amountCents, authToken);
+          if (checkout?.url) {
+            window.location.assign(checkout.url);
+            return;
+          }
+          setRedirectingToPayment(false);
+          setSubmitting(false);
+          setErrorWithLock("Could not start payment. Please try again.", "server");
+          return;
+        } catch (e: any) {
+          setRedirectingToPayment(false);
+          setSubmitting(false);
+          setErrorWithLock(String(e?.message || "Could not start payment."), "server");
+          return;
+        }
+      }
+
+      // Normal “sent” path (no payment)
       setLastSentRecipientEmail(re);
-      setResult(data as CreateGiftOk);
+      setResult(ok);
       setSubmitting(false);
       errorLockRef.current = "none";
 
@@ -679,6 +748,7 @@ export default function CreateGiftForm() {
     } catch (err: any) {
       setErrorWithLock(err?.message || "Network error", "server");
       setSubmitting(false);
+      setRedirectingToPayment(false);
 
       try {
         if (widgetIdRef.current && window.turnstile?.reset) {
@@ -721,12 +791,18 @@ export default function CreateGiftForm() {
 
   const authLabel = !authChecked ? "Checking session…" : isRegistered ? "Registered mode" : "Guest mode";
 
+  const submitLabel =
+    redirectingToPayment
+      ? "Redirecting to payment…"
+      : submitting
+        ? "Sending…"
+        : isRegistered && amountCents !== null
+          ? `Continue to payment (${centsToLabel(amountCents)})`
+          : `Send ${wordmark}`;
+
   return (
     <div className="w-full max-w-xl mx-auto">
-      <form
-        onSubmit={onSubmit}
-        className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal"
-      >
+      <form onSubmit={onSubmit} className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal">
         <div className="space-y-4">
           <div className="space-y-1">
             <div className="text-lg font-outfit font-semibold tracking-tight text-tm-charcoal">
@@ -883,12 +959,10 @@ export default function CreateGiftForm() {
 
           {/* AMOUNT PRESETS (registered only; optional) */}
           {isRegistered ? (
-            <div>
+            <div className="rounded-2xl border border-tm-charcoal/15 bg-white p-3">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="text-sm font-medium text-tm-charcoal">Gift amount (optional)</div>
-                <div className="text-xs text-tm-charcoal/60">
-                  {amountCents === null ? "none" : centsToLabel(amountCents)}
-                </div>
+                <div className="text-xs text-tm-charcoal/60">{amountCents === null ? "none" : centsToLabel(amountCents)}</div>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -914,6 +988,14 @@ export default function CreateGiftForm() {
                   );
                 })}
               </div>
+
+              {amountCents !== null ? (
+                <div className="mt-2 text-xs text-tm-charcoal/70">
+                  You’ll be taken to secure payment next. The email sends after payment is confirmed.
+                </div>
+              ) : (
+                <div className="mt-2 text-xs text-tm-charcoal/70">No payment needed.</div>
+              )}
 
               {fieldError === "amount" ? (
                 <div className="mt-2 text-xs text-red-600">Choose one of: 25, 50, 100, 250, 500, 1000.</div>
@@ -977,7 +1059,9 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
+              {result.deliveryError ? (
+                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
+              ) : null}
 
               <div className="mt-3">
                 <button
@@ -1018,13 +1102,7 @@ export default function CreateGiftForm() {
                 : "bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed",
             )}
           >
-            {submitting ? (
-              "Sending…"
-            ) : (
-              <>
-                Send <span className="font-quicksand font-semibold">{wordmark}</span>
-              </>
-            )}
+            {submitLabel}
           </button>
         </div>
       </form>
