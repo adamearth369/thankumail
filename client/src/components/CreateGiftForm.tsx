@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -64,7 +61,8 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
-const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const TURNSTILE_SCRIPT_SRC =
+  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 // Cloudflare Turnstile "Always Pass" test sitekey (safe for client-side fallback)
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
@@ -296,17 +294,6 @@ export default function CreateGiftForm() {
     };
   }, [sessionToken]);
 
-  // Keep sender email in sync for registered users (derived from auth)
-  useEffect(() => {
-    if (isRegistered) {
-      const ae = String(authEmail || "").trim();
-      if (ae && ae !== senderEmail) setSenderEmail(ae);
-    } else {
-      // guest: allow manual entry (do not overwrite)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRegistered, authEmail]);
-
   // Guests: preset-only, no amount
   // Registered: preset/custom, amount optional
   useEffect(() => {
@@ -314,6 +301,9 @@ export default function CreateGiftForm() {
       setMessageMode("preset");
       setCustomMessage("");
       setAmountCents(null);
+    } else {
+      // registered: backend owns senderEmail (derived from auth)
+      setSenderEmail("");
     }
   }, [isRegistered]);
 
@@ -332,10 +322,10 @@ export default function CreateGiftForm() {
 
   const canSubmit = useMemo(() => {
     const re = recipientEmail.trim();
+    const se = senderEmail.trim();
     const msgOk = isRegistered ? (messageMode === "preset" ? presetOk : customOk) : presetOk;
 
-    // sender: guests must enter; registered is derived (authEmail)
-    const senderOk = isRegistered ? isEmail(authEmail) : isEmail(senderEmail.trim());
+    const senderOk = isRegistered ? true : isEmail(se);
 
     return (
       !submitting &&
@@ -353,7 +343,6 @@ export default function CreateGiftForm() {
     recipientEmail,
     senderEmail,
     isRegistered,
-    authEmail,
     messageMode,
     presetOk,
     customOk,
@@ -582,8 +571,7 @@ export default function CreateGiftForm() {
     setResult(null);
 
     const re = recipientEmail.trim();
-
-    const se = isRegistered ? String(authEmail || "").trim() : senderEmail.trim();
+    const se = senderEmail.trim();
 
     if (!isEmail(re)) {
       setSubmitting(false);
@@ -592,7 +580,7 @@ export default function CreateGiftForm() {
       return;
     }
 
-    if (!isEmail(se)) {
+    if (!isRegistered && !isEmail(se)) {
       setSubmitting(false);
       setFieldError("senderEmail");
       setErrorWithLock("Please enter a valid sender email.", "none");
@@ -650,13 +638,13 @@ export default function CreateGiftForm() {
       turnstileToken: token,
     };
 
+    // Guest: must send senderEmail
     if (!st) {
-      // GUEST: senderEmail required client-side + server-side
       payload.senderEmail = se;
       payload.messageMode = "preset";
       payload.presetMessageId = presetMessageId;
     } else {
-      // REGISTERED: senderEmail derived from auth on backend (do not send from client)
+      // Registered: backend derives senderEmail from auth; do NOT send senderEmail
       payload.messageMode = messageMode;
 
       if (messageMode === "preset") {
@@ -749,7 +737,7 @@ export default function CreateGiftForm() {
       fireConfettiBurst();
 
       setRecipientEmail("");
-      if (!isRegistered) setSenderEmail("");
+      setSenderEmail("");
       setPresetIdx(1);
       setCustomMessage("");
       setAmountCents(null);
@@ -849,8 +837,8 @@ export default function CreateGiftForm() {
             <div className="mt-2 text-xs text-tm-charcoal/70">
               {isRegistered ? (
                 <>
-                  Custom message + optional gift amounts are unlocked
-                  {authEmail ? <span className="text-tm-charcoal/70"> • {authEmail}</span> : null}.
+                  Sender is your signed-in email
+                  {authEmail ? <span className="text-tm-charcoal/70"> • {authEmail}</span> : null}. Custom message + optional gift amounts are unlocked.
                 </>
               ) : (
                 "Guests can send preset messages only (no amount)."
@@ -858,7 +846,7 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
-          {/* EMAILS */}
+          {/* SENDER (guest only) */}
           {!isRegistered ? (
             <div>
               <input
@@ -876,6 +864,7 @@ export default function CreateGiftForm() {
             </div>
           ) : null}
 
+          {/* RECIPIENT */}
           <div>
             <input
               value={recipientEmail}
@@ -1092,7 +1081,7 @@ export default function CreateGiftForm() {
                     setResult(null);
                     clearErrorsAndUnlock();
                     setRecipientEmail("");
-                    if (!isRegistered) setSenderEmail("");
+                    setSenderEmail("");
                     setPresetIdx(1);
                     setCustomMessage("");
                     setAmountCents(null);
