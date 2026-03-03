@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/components/CreateGiftForm.tsx
+// ACTION: Full file replacement (paste exactly)
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -293,6 +296,17 @@ export default function CreateGiftForm() {
     };
   }, [sessionToken]);
 
+  // Keep sender email in sync for registered users (derived from auth)
+  useEffect(() => {
+    if (isRegistered) {
+      const ae = String(authEmail || "").trim();
+      if (ae && ae !== senderEmail) setSenderEmail(ae);
+    } else {
+      // guest: allow manual entry (do not overwrite)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRegistered, authEmail]);
+
   // Guests: preset-only, no amount
   // Registered: preset/custom, amount optional
   useEffect(() => {
@@ -318,14 +332,16 @@ export default function CreateGiftForm() {
 
   const canSubmit = useMemo(() => {
     const re = recipientEmail.trim();
-    const se = senderEmail.trim();
     const msgOk = isRegistered ? (messageMode === "preset" ? presetOk : customOk) : presetOk;
+
+    // sender: guests must enter; registered is derived (authEmail)
+    const senderOk = isRegistered ? isEmail(authEmail) : isEmail(senderEmail.trim());
 
     return (
       !submitting &&
       !redirectingToPayment &&
       isEmail(re) &&
-      isEmail(se) &&
+      senderOk &&
       msgOk &&
       amountOk &&
       token.length >= 20 &&
@@ -337,6 +353,7 @@ export default function CreateGiftForm() {
     recipientEmail,
     senderEmail,
     isRegistered,
+    authEmail,
     messageMode,
     presetOk,
     customOk,
@@ -565,7 +582,8 @@ export default function CreateGiftForm() {
     setResult(null);
 
     const re = recipientEmail.trim();
-    const se = senderEmail.trim();
+
+    const se = isRegistered ? String(authEmail || "").trim() : senderEmail.trim();
 
     if (!isEmail(re)) {
       setSubmitting(false);
@@ -628,15 +646,17 @@ export default function CreateGiftForm() {
     if (st) headers["Authorization"] = `Bearer ${st}`;
 
     const payload: any = {
-      senderEmail: se,
       recipientEmail: re,
       turnstileToken: token,
     };
 
     if (!st) {
+      // GUEST: senderEmail required client-side + server-side
+      payload.senderEmail = se;
       payload.messageMode = "preset";
       payload.presetMessageId = presetMessageId;
     } else {
+      // REGISTERED: senderEmail derived from auth on backend (do not send from client)
       payload.messageMode = messageMode;
 
       if (messageMode === "preset") {
@@ -729,7 +749,7 @@ export default function CreateGiftForm() {
       fireConfettiBurst();
 
       setRecipientEmail("");
-      setSenderEmail("");
+      if (!isRegistered) setSenderEmail("");
       setPresetIdx(1);
       setCustomMessage("");
       setAmountCents(null);
@@ -839,20 +859,22 @@ export default function CreateGiftForm() {
           </div>
 
           {/* EMAILS */}
-          <div>
-            <input
-              value={senderEmail}
-              onChange={(e) => setSenderEmail(e.target.value)}
-              type="email"
-              autoComplete="email"
-              aria-label="Your email"
-              placeholder="Sender email"
-              className={classNames(
-                inputBase,
-                fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
-              )}
-            />
-          </div>
+          {!isRegistered ? (
+            <div>
+              <input
+                value={senderEmail}
+                onChange={(e) => setSenderEmail(e.target.value)}
+                type="email"
+                autoComplete="email"
+                aria-label="Your email"
+                placeholder="Sender email"
+                className={classNames(
+                  inputBase,
+                  fieldError === "senderEmail" ? "border-red-400 focus:border-red-500 focus:ring-red-500/10" : "",
+                )}
+              />
+            </div>
+          ) : null}
 
           <div>
             <input
@@ -1070,7 +1092,7 @@ export default function CreateGiftForm() {
                     setResult(null);
                     clearErrorsAndUnlock();
                     setRecipientEmail("");
-                    setSenderEmail("");
+                    if (!isRegistered) setSenderEmail("");
                     setPresetIdx(1);
                     setCustomMessage("");
                     setAmountCents(null);
