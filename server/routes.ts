@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: Full file replacement (paste exactly)
+
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -20,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-02-24_003";
+const VERSION = "routes_v2026-03-03_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -281,6 +284,11 @@ function normalizeFixedAmountToCents(v: any): number | null {
   return null;
 }
 
+function buildClaimUrl(publicId: string) {
+  const base = (process.env.PUBLIC_CLAIM_BASE_URL || `${FRONTEND_URL}/claim`).replace(/\/+$/, "");
+  return `${base}/${publicId}`;
+}
+
 /* -------------------- STRIPE HELPERS -------------------- */
 async function stripePostForm(pathname: string, params: URLSearchParams) {
   if (!STRIPE_SECRET_KEY) {
@@ -509,6 +517,162 @@ async function issueSessionForEmail(email: string, req: Request) {
   return { ok: true as const, userId, sessionToken, expiresAt };
 }
 
+/* -------------------- DELIVERY (EXACT-ONCE BEST-EFFORT) -------------------- */
+async function deliverGiftIfEligible(publicId: string, reason: string) {
+  // Step A: claim an attempt slot (prevents concurrent double-send)
+  const claimed = await db.transaction(async (tx) => {
+    const row = await tx
+      .select({
+        id: gifts.id,
+        publicId: gifts.publicId,
+        recipientEmail: gifts.recipientEmail,
+        recipientPhone: gifts.recipientPhone,
+        senderEmail: gifts.senderEmail,
+        messageMode: gifts.messageMode,
+        presetMessageId: gifts.presetMessageId,
+        message: gifts.message,
+        amount: gifts.amount,
+        paymentStatus: gifts.paymentStatus,
+        paidAt: gifts.paidAt,
+        deliveredAt: (gifts as any).deliveredAt,
+        deliveredEmailAt: (gifts as any).deliveredEmailAt,
+        deliveredSmsAt: (gifts as any).deliveredSmsAt,
+      })
+      .from(gifts)
+      .where(eq(gifts.publicId, publicId))
+      .limit(1);
+
+    const g = row?.[0];
+    if (!g) return { ok: false as const, code: "NOT_FOUND" as const };
+
+    const alreadyDelivered = Boolean((g as any).deliveredAt);
+    if (alreadyDelivered) return { ok: false as const, code: "ALREADY_DELIVERED" as const };
+
+    const requiresPayment = g.amount != null;
+    if (requiresPayment) {
+      const paid = Boolean(g.paidAt) || String(g.paymentStatus || "").toLowerCase() === "paid";
+      if (!paid) return { ok: false as const, code: "NOT_PAID" as const };
+    }
+
+    const toEmail = String(g.recipientEmail || "").trim().toLowerCase();
+    const toPhone = String(g.recipientPhone || "").trim();
+
+    if (!toEmail && !toPhone) return { ok: false as const, code: "NO_RECIPIENT" as const };
+
+    // claim attempt (idempotency gate)
+    const updated = await tx
+      .update(gifts)
+      .set({
+        deliveryAttemptedAt: now() as any,
+        deliveryError: null as any,
+      })
+      .where(and(eq(gifts.id, g.id), isNull((gifts as any).deliveredAt)))
+      .returning({ id: gifts.id });
+
+    if (!updated?.length) return { ok: false as const, code: "RACE_LOST" as const };
+
+    return {
+      ok: true as const,
+      gift: {
+        id: g.id,
+        publicId: g.publicId,
+        toEmail,
+        toPhone,
+        senderEmail: String(g.senderEmail || "").trim() || "",
+        messageMode: String(g.messageMode || "preset"),
+        presetMessageId: g.presetMessageId ?? null,
+        message: String(g.message || ""),
+        amountCents: g.amount == null ? null : Number(g.amount),
+        deliveredEmailAt: (g as any).deliveredEmailAt,
+        deliveredSmsAt: (g as any).deliveredSmsAt,
+      },
+    };
+  });
+
+  if (!claimed.ok) {
+    return claimed;
+  }
+
+  const g = claimed.gift;
+  const claimUrl = buildClaimUrl(g.publicId);
+
+  let emailOk = false;
+  let smsOk = false;
+  const errs: string[] = [];
+
+  // Email: if present, send unless already marked deliveredEmailAt
+  if (g.toEmail) {
+    if (g.deliveredEmailAt) {
+      emailOk = true;
+    } else {
+      try {
+        await sendGiftEmail({
+          to: g.toEmail,
+          publicId: g.publicId,
+          claimUrl,
+          amountCents: g.amountCents,
+          senderEmail: g.senderEmail || undefined,
+          message: g.messageMode === "custom" ? (String(g.message || "").trim() || undefined) : undefined,
+          presetMessageId: g.messageMode === "preset" ? (g.presetMessageId ?? undefined) : undefined,
+        } as any);
+        emailOk = true;
+      } catch (e: any) {
+        errs.push(`email: ${String(e?.message || e)}`);
+      }
+    }
+  } else {
+    emailOk = true;
+  }
+
+  // SMS: if present, send unless already marked deliveredSmsAt
+  if (g.toPhone) {
+    if (g.deliveredSmsAt) {
+      smsOk = true;
+    } else {
+      try {
+        await sendGiftSms({
+          toPhone: g.toPhone,
+          publicId: g.publicId,
+          claimUrl,
+        } as any);
+        smsOk = true;
+      } catch (e: any) {
+        errs.push(`sms: ${String(e?.message || e)}`);
+      }
+    }
+  } else {
+    smsOk = true;
+  }
+
+  const deliveryOk = Boolean(emailOk && smsOk);
+  const deliveryError = errs.length ? errs.join("; ") : null;
+
+  await db.update(gifts).set(
+    {
+      deliveredAt: deliveryOk ? (now() as any) : (null as any),
+      deliveredEmailAt: g.toEmail && emailOk ? (now() as any) : (undefined as any),
+      deliveredSmsAt: g.toPhone && smsOk ? (now() as any) : (undefined as any),
+      deliveryError: deliveryError as any,
+    } as any,
+  ).where(eq(gifts.id, g.id));
+
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event: "delivery_attempt_finished",
+      reason,
+      publicId: g.publicId,
+      email: g.toEmail ? emailOk : null,
+      sms: g.toPhone ? smsOk : null,
+      ok: deliveryOk,
+      error: deliveryError || undefined,
+      version: VERSION,
+    }),
+  );
+
+  return { ok: true as const, delivered: deliveryOk, deliveryError };
+}
+
 /* -------------------- VALIDATION -------------------- */
 const zEmail = z.string().trim().email();
 
@@ -543,6 +707,11 @@ const zStripeCheckout = z.object({
   publicId: z.string().trim().optional().nullable(),
   successUrl: z.string().trim().url().optional().nullable(),
   cancelUrl: z.string().trim().url().optional().nullable(),
+});
+
+const zAdminReconcile = z.object({
+  publicId: z.string().trim().optional().nullable(),
+  limit: z.coerce.number().int().optional().nullable(),
 });
 
 /* -------------------- RATE LIMITERS -------------------- */
@@ -785,6 +954,7 @@ async function handleStripeWebhook(req: Request, res: any) {
               amount: gifts.amount,
               paymentStatus: gifts.paymentStatus,
               paidAt: gifts.paidAt,
+              deliveredAt: (gifts as any).deliveredAt,
             })
             .from(gifts)
             .where(eq(gifts.publicId, publicId))
@@ -820,6 +990,23 @@ async function handleStripeWebhook(req: Request, res: any) {
             })
             .where(eq(gifts.id, g.id));
         });
+
+        // Deliver after paid (exact-once best-effort)
+        if (stripeIsPaid(paymentStatus)) {
+          try {
+            await deliverGiftIfEligible(publicId, "stripe_webhook_paid");
+          } catch (e: any) {
+            console.log(
+              JSON.stringify({
+                ts: new Date().toISOString(),
+                event: "delivery_after_paid_error",
+                publicId,
+                error: String(e?.message || e),
+                version: VERSION,
+              }),
+            );
+          }
+        }
       }
     }
 
@@ -948,6 +1135,80 @@ export function registerRoutes(app: Express): Server {
   app.post("/api/webhooks/stripe", limiterStripe, handleStripeWebhook);
   app.post("/api/stripe/webhook", limiterStripe, handleStripeWebhook);
 
+  /* -------------------- ADMIN: STRIPE RECONCILE (PAID BUT NOT DELIVERED) -------------------- */
+  app.post("/api/admin/stripe/reconcile", limiterAdmin, async (req, res) => {
+    try {
+      if (!ADMIN_TOKEN) {
+        return res.status(503).json({
+          error: "ADMIN_TOKEN not configured",
+          code: "ADMIN_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+      if (!isAdmin(req)) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const parsed = zAdminReconcile.safeParse(req.body || {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
+          issues: parsed.error.issues,
+          version: VERSION,
+        });
+      }
+
+      const publicId = String(parsed.data.publicId || "").trim();
+      const limit = Math.max(1, Math.min(50, Number(parsed.data.limit ?? 25)));
+
+      let targets: Array<{ publicId: string }> = [];
+
+      if (publicId) {
+        targets = [{ publicId }];
+      } else {
+        const rows = await db
+          .select({ publicId: gifts.publicId })
+          .from(gifts)
+          .where(
+            and(
+              sql`${gifts.amount} is not null`,
+              or(eq(gifts.paymentStatus, "paid"), sql`lower(${gifts.paymentStatus}) = 'paid'`),
+              isNull((gifts as any).deliveredAt),
+            ),
+          )
+          .orderBy(desc(gifts.paidAt), desc(gifts.id))
+          .limit(limit);
+
+        targets = rows.map((r) => ({ publicId: String(r.publicId || "").trim() })).filter((r) => r.publicId);
+      }
+
+      let attempted = 0;
+      let delivered = 0;
+      let skipped = 0;
+
+      for (const t of targets) {
+        attempted++;
+        const r = await deliverGiftIfEligible(t.publicId, "admin_reconcile_paid");
+        if (!r.ok) {
+          skipped++;
+        } else {
+          if (r.delivered) delivered++;
+          else skipped++;
+        }
+      }
+
+      return res.json({ ok: true, attempted, delivered, skipped, version: VERSION });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Reconcile failed",
+        code: "RECONCILE_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
   /* -------------------- ADMIN: GIFTS LIST -------------------- */
   app.get("/api/admin/gifts", limiterAdmin, async (req, res) => {
     try {
@@ -985,6 +1246,12 @@ export function registerRoutes(app: Express): Server {
           stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
           stripePaymentIntentId: gifts.stripePaymentIntentId,
           paidAt: gifts.paidAt,
+
+          deliveredAt: (gifts as any).deliveredAt,
+          deliveredEmailAt: (gifts as any).deliveredEmailAt,
+          deliveredSmsAt: (gifts as any).deliveredSmsAt,
+          deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
+          deliveryError: (gifts as any).deliveryError,
 
           isClaimed: gifts.isClaimed,
           claimedAt: gifts.claimedAt,
@@ -1680,8 +1947,7 @@ export function registerRoutes(app: Express): Server {
       if (isRegistered && toPhone && DAILY_LIMIT_PHONE > 0) bumpMemPhone(toPhone);
 
       const publicId = crypto.randomBytes(16).toString("hex");
-      const claimUrl =
-        (process.env.PUBLIC_CLAIM_BASE_URL || `${FRONTEND_URL}/claim`).replace(/\/+$/, "") + "/" + publicId;
+      const claimUrl = buildClaimUrl(publicId);
 
       const deliveryMethod = isRegistered ? (toPhone ? (toEmail ? "email+sms" : "sms") : "email") : "email";
 
@@ -1704,6 +1970,12 @@ export function registerRoutes(app: Express): Server {
         stripePaymentIntentId: null,
         paidAt: null,
 
+        deliveredAt: null as any,
+        deliveredEmailAt: null as any,
+        deliveredSmsAt: null as any,
+        deliveryAttemptedAt: null as any,
+        deliveryError: null as any,
+
         isClaimed: false,
         createdAt: now(),
         claimedAt: null,
@@ -1711,48 +1983,27 @@ export function registerRoutes(app: Express): Server {
         reminderCount: 0,
         lastReminderSentAt: null,
         returnedToSenderAt: null,
-      });
-
-      let emailSent = false;
-      let smsQueued = false;
-      let deliveryError: string | null = null;
+      } as any);
 
       /**
-       * IMPORTANT:
        * If gift has an amount, DO NOT deliver yet.
        * Delivery will happen after Stripe webhook confirms payment.
        */
       const requiresPayment = finalAmountCents != null;
 
-      if (!requiresPayment) {
-        if (toEmail) {
-          try {
-            await sendGiftEmail({
-              to: toEmail,
-              publicId,
-              claimUrl,
-              amountCents: finalAmountCents,
-              senderEmail: normSenderEmail || undefined,
-              message: finalMessageMode === "custom" ? (finalMessage || undefined) : undefined,
-            } as any);
-            emailSent = true;
-          } catch (e: any) {
-            deliveryError = String(e?.message || e);
-          }
-        }
+      let emailSent = false;
+      let smsQueued = false;
+      let deliveryError: string | null = null;
 
-        if (isRegistered && toPhone) {
-          try {
-            await sendGiftSms({
-              toPhone,
-              publicId,
-              claimUrl,
-            } as any);
-            smsQueued = true;
-          } catch (e: any) {
-            const msg = String(e?.message || e);
-            deliveryError = deliveryError ? `${deliveryError}; ${msg}` : msg;
-          }
+      if (!requiresPayment) {
+        const r = await deliverGiftIfEligible(publicId, "create_no_payment");
+        if (r.ok) {
+          // best-effort: infer per-channel from stored fields by re-reading? keep response simple:
+          emailSent = Boolean(toEmail);
+          smsQueued = Boolean(isRegistered && toPhone);
+          deliveryError = r.deliveryError ? String(r.deliveryError) : null;
+        } else {
+          deliveryError = "Delivery failed to start";
         }
       }
 
@@ -1760,9 +2011,9 @@ export function registerRoutes(app: Express): Server {
         ok: true,
         publicId,
         claimUrl,
-        deliveryOk: Boolean((toEmail ? emailSent : true) && (toPhone ? smsQueued : true)),
-        emailSent,
-        smsQueued,
+        deliveryOk: requiresPayment ? true : Boolean(!deliveryError),
+        emailSent: requiresPayment ? false : emailSent,
+        smsQueued: requiresPayment ? false : smsQueued,
         deliveryError: deliveryError || undefined,
         version: VERSION,
         paymentRequired: requiresPayment,
@@ -1801,6 +2052,11 @@ export function registerRoutes(app: Express): Server {
           stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
           stripePaymentIntentId: gifts.stripePaymentIntentId,
           paidAt: gifts.paidAt,
+          deliveredAt: (gifts as any).deliveredAt,
+          deliveredEmailAt: (gifts as any).deliveredEmailAt,
+          deliveredSmsAt: (gifts as any).deliveredSmsAt,
+          deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
+          deliveryError: (gifts as any).deliveryError,
           createdAt: gifts.createdAt,
           claimedAt: gifts.claimedAt,
           isClaimed: gifts.isClaimed,
@@ -1828,6 +2084,11 @@ export function registerRoutes(app: Express): Server {
           stripeCheckoutSessionId: g.stripeCheckoutSessionId ?? null,
           stripePaymentIntentId: g.stripePaymentIntentId ?? null,
           paidAt: g.paidAt ?? null,
+          deliveredAt: (g as any).deliveredAt ?? null,
+          deliveredEmailAt: (g as any).deliveredEmailAt ?? null,
+          deliveredSmsAt: (g as any).deliveredSmsAt ?? null,
+          deliveryAttemptedAt: (g as any).deliveryAttemptedAt ?? null,
+          deliveryError: (g as any).deliveryError ?? null,
           createdAt: g.createdAt,
           claimed: Boolean(g.isClaimed || g.claimedAt),
         },
@@ -1961,8 +2222,7 @@ export function registerRoutes(app: Express): Server {
           continue;
         }
 
-        const claimUrl =
-          (process.env.PUBLIC_CLAIM_BASE_URL || `${FRONTEND_URL}/claim`).replace(/\/+$/, "") + "/" + pid;
+        const claimUrl = buildClaimUrl(pid);
 
         try {
           await sendReminderEmail({
