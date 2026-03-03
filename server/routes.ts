@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -23,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-03_002";
+const VERSION = "routes_v2026-03-03_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -306,6 +303,36 @@ async function stripePostForm(pathname: string, params: URLSearchParams) {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: params.toString(),
+  });
+
+  const json: any = await resp.json().catch(() => ({}));
+
+  if (!resp.ok) {
+    return {
+      ok: false as const,
+      status: resp.status,
+      error: json || { error: "Stripe request failed" },
+    };
+  }
+
+  return { ok: true as const, status: resp.status, data: json };
+}
+
+async function stripeGetJson(pathname: string, params?: URLSearchParams) {
+  if (!STRIPE_SECRET_KEY) {
+    return {
+      ok: false as const,
+      status: 503,
+      error: { error: "Stripe not configured", code: "STRIPE_NOT_CONFIGURED" },
+    };
+  }
+
+  const qs = params && Array.from(params.keys()).length ? `?${params.toString()}` : "";
+  const resp = await fetch(`https://api.stripe.com/v1${pathname}${qs}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+    },
   });
 
   const json: any = await resp.json().catch(() => ({}));
@@ -1137,6 +1164,85 @@ export function registerRoutes(app: Express): Server {
   // NOTE: DO NOT add express.raw() here (index.ts handles raw parsing; req.rawBody is populated)
   app.post("/api/webhooks/stripe", limiterStripe, handleStripeWebhook);
   app.post("/api/stripe/webhook", limiterStripe, handleStripeWebhook);
+
+  /* -------------------- ADMIN: STRIPE SESSION FETCH -------------------- */
+  app.get("/api/admin/stripe/session/:sessionId", limiterAdmin, async (req, res) => {
+    try {
+      if (!ADMIN_TOKEN) {
+        return res.status(503).json({
+          error: "ADMIN_TOKEN not configured",
+          code: "ADMIN_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+      if (!isAdmin(req)) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+      if (!STRIPE_SECRET_KEY) {
+        return res.status(503).json({
+          error: "Stripe not configured",
+          code: "STRIPE_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+
+      const sessionId = String(req.params.sessionId || "").trim();
+      if (!sessionId) {
+        return res.status(400).json({
+          error: "Missing sessionId",
+          code: "MISSING_SESSION_ID",
+          version: VERSION,
+        });
+      }
+
+      const params = new URLSearchParams();
+      params.append("expand[]", "payment_intent");
+      params.append("expand[]", "customer");
+      params.append("expand[]", "customer_details");
+
+      const got = await stripeGetJson(`/checkout/sessions/${encodeURIComponent(sessionId)}`, params);
+      if (!got.ok) {
+        return res.status(got.status).json({
+          error: "Stripe fetch failed",
+          code: "STRIPE_FETCH_FAILED",
+          stripe: got.error,
+          version: VERSION,
+        });
+      }
+
+      const s: any = got.data || {};
+      const md: any = s.metadata || {};
+      const publicId = String(md.publicId || "").trim() || null;
+
+      return res.json({
+        ok: true,
+        session: {
+          id: String(s.id || ""),
+          object: String(s.object || ""),
+          status: s.status ?? null,
+          payment_status: s.payment_status ?? null,
+          amount_total: s.amount_total ?? null,
+          currency: s.currency ?? null,
+          client_reference_id: s.client_reference_id ?? null,
+          payment_intent: s.payment_intent ?? null,
+          customer: s.customer ?? null,
+          customer_details: s.customer_details ?? null,
+          created: s.created ?? null,
+          metadata: md,
+        },
+        publicId,
+        version: VERSION,
+        commit: COMMIT,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Admin stripe session fetch failed",
+        code: "ADMIN_STRIPE_SESSION_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
 
   /* -------------------- ADMIN: STRIPE RECONCILE (PAID BUT NOT DELIVERED) -------------------- */
   app.post("/api/admin/stripe/reconcile", limiterAdmin, async (req, res) => {
