@@ -23,7 +23,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-03_001";
+const VERSION = "routes_v2026-03-03_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -647,14 +647,17 @@ async function deliverGiftIfEligible(publicId: string, reason: string) {
   const deliveryOk = Boolean(emailOk && smsOk);
   const deliveryError = errs.length ? errs.join("; ") : null;
 
-  await db.update(gifts).set(
-    {
-      deliveredAt: deliveryOk ? (now() as any) : (null as any),
-      deliveredEmailAt: g.toEmail && emailOk ? (now() as any) : (undefined as any),
-      deliveredSmsAt: g.toPhone && smsOk ? (now() as any) : (undefined as any),
-      deliveryError: deliveryError as any,
-    } as any,
-  ).where(eq(gifts.id, g.id));
+  await db
+    .update(gifts)
+    .set(
+      {
+        deliveredAt: deliveryOk ? (now() as any) : (null as any),
+        deliveredEmailAt: g.toEmail && emailOk ? (now() as any) : (undefined as any),
+        deliveredSmsAt: g.toPhone && smsOk ? (now() as any) : (undefined as any),
+        deliveryError: deliveryError as any,
+      } as any,
+    )
+    .where(eq(gifts.id, g.id));
 
   console.log(
     JSON.stringify({
@@ -1761,24 +1764,48 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      const normSenderEmail = senderEmail ? String(senderEmail).trim().toLowerCase() : "";
-      if (!normSenderEmail) {
-        return res.status(400).json({
-          error: "Sender email is required",
-          field: "senderEmail",
-          code: "SENDER_EMAIL_REQUIRED",
-          version: VERSION,
-        });
-      }
-      if (isDisposableEmail(normSenderEmail)) {
-        return res.status(400).json({
-          error: "Sender email provider not supported",
-          field: "senderEmail",
-          code: "DISPOSABLE_EMAIL_BLOCKED",
-          version: VERSION,
-        });
+      // Sender email:
+      // - Registered: derive from users.email (ignore body senderEmail)
+      // - Guest: require senderEmail from body
+      let normSenderEmail = "";
+
+      if (isRegistered) {
+        const u = await db
+          .select({ email: users.email })
+          .from(users)
+          .where(eq(users.id, a.userId))
+          .limit(1);
+
+        normSenderEmail = String(u?.[0]?.email || "").trim().toLowerCase();
+
+        if (!normSenderEmail) {
+          return res.status(401).json({
+            error: "Unauthorized",
+            code: "UNAUTHORIZED",
+            version: VERSION,
+          });
+        }
+      } else {
+        normSenderEmail = senderEmail ? String(senderEmail).trim().toLowerCase() : "";
+        if (!normSenderEmail) {
+          return res.status(400).json({
+            error: "Sender email is required",
+            field: "senderEmail",
+            code: "SENDER_EMAIL_REQUIRED",
+            version: VERSION,
+          });
+        }
+        if (isDisposableEmail(normSenderEmail)) {
+          return res.status(400).json({
+            error: "Sender email provider not supported",
+            field: "senderEmail",
+            code: "DISPOSABLE_EMAIL_BLOCKED",
+            version: VERSION,
+          });
+        }
       }
 
+      // Sender daily limit (if enabled): applies to derived senderEmail for registered too
       if (DAILY_LIMIT_SENDER > 0 && normSenderEmail) {
         const c = await countDailyBySenderEmail(normSenderEmail);
         if (c >= DAILY_LIMIT_SENDER) {
@@ -1998,7 +2025,6 @@ export function registerRoutes(app: Express): Server {
       if (!requiresPayment) {
         const r = await deliverGiftIfEligible(publicId, "create_no_payment");
         if (r.ok) {
-          // best-effort: infer per-channel from stored fields by re-reading? keep response simple:
           emailSent = Boolean(toEmail);
           smsQueued = Boolean(isRegistered && toPhone);
           deliveryError = r.deliveryError ? String(r.deliveryError) : null;
