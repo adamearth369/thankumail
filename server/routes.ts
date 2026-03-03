@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: Full file replacement (paste exactly)
+
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -20,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-03_003";
+const VERSION = "routes_v2026-03-03_004";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -147,6 +150,9 @@ const REMINDER_SENDING_ENABLED =
 
 /* -------------------- ADMIN -------------------- */
 const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || "").trim();
+
+/* -------------------- DELIVERY IDEMPOTENCY -------------------- */
+const DELIVERY_RETRY_AFTER_MS = Math.max(5_000, Number(process.env.DELIVERY_RETRY_AFTER_MS ?? 60_000));
 
 /* -------------------- HELPERS -------------------- */
 function now() {
@@ -303,36 +309,6 @@ async function stripePostForm(pathname: string, params: URLSearchParams) {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: params.toString(),
-  });
-
-  const json: any = await resp.json().catch(() => ({}));
-
-  if (!resp.ok) {
-    return {
-      ok: false as const,
-      status: resp.status,
-      error: json || { error: "Stripe request failed" },
-    };
-  }
-
-  return { ok: true as const, status: resp.status, data: json };
-}
-
-async function stripeGetJson(pathname: string, params?: URLSearchParams) {
-  if (!STRIPE_SECRET_KEY) {
-    return {
-      ok: false as const,
-      status: 503,
-      error: { error: "Stripe not configured", code: "STRIPE_NOT_CONFIGURED" },
-    };
-  }
-
-  const qs = params && Array.from(params.keys()).length ? `?${params.toString()}` : "";
-  const resp = await fetch(`https://api.stripe.com/v1${pathname}${qs}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
-    },
   });
 
   const json: any = await resp.json().catch(() => ({}));
@@ -564,6 +540,8 @@ async function deliverGiftIfEligible(publicId: string, reason: string) {
         deliveredAt: (gifts as any).deliveredAt,
         deliveredEmailAt: (gifts as any).deliveredEmailAt,
         deliveredSmsAt: (gifts as any).deliveredSmsAt,
+        deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
+        deliveryError: (gifts as any).deliveryError,
       })
       .from(gifts)
       .where(eq(gifts.publicId, publicId))
@@ -586,17 +564,30 @@ async function deliverGiftIfEligible(publicId: string, reason: string) {
 
     if (!toEmail && !toPhone) return { ok: false as const, code: "NO_RECIPIENT" as const };
 
+    const attemptedCol = (gifts as any).deliveryAttemptedAt;
+    const deliveredCol = (gifts as any).deliveredAt;
+    const errCol = (gifts as any).deliveryError;
+    const cutoff = new Date(Date.now() - DELIVERY_RETRY_AFTER_MS);
+
     // claim attempt (idempotency gate)
+    // - allow first attempt if deliveryAttemptedAt is null
+    // - allow retry only if previous attempt is old AND had an error recorded
     const updated = await tx
       .update(gifts)
       .set({
         deliveryAttemptedAt: now() as any,
         deliveryError: null as any,
       })
-      .where(and(eq(gifts.id, g.id), isNull((gifts as any).deliveredAt)))
+      .where(
+        and(
+          eq(gifts.id, g.id),
+          isNull(deliveredCol),
+          or(isNull(attemptedCol), and(lt(attemptedCol, cutoff), sql`${errCol} is not null`)),
+        ),
+      )
       .returning({ id: gifts.id });
 
-    if (!updated?.length) return { ok: false as const, code: "RACE_LOST" as const };
+    if (!updated?.length) return { ok: false as const, code: "IN_PROGRESS_OR_ALREADY_ATTEMPTED" as const };
 
     return {
       ok: true as const,
@@ -1156,12 +1147,10 @@ export function registerRoutes(app: Express): Server {
   });
 
   /* -------------------- STRIPE: CHECKOUT SESSION (CANONICAL + ALIAS) -------------------- */
-  // NOTE: DO NOT add express.json() here (index.ts already parsed JSON for non-webhook routes)
   app.post("/api/stripe/checkout/session", limiterStripe, handleCreateCheckoutSession);
   app.post("/api/stripe/create-checkout-session", limiterStripe, handleCreateCheckoutSession);
 
   /* -------------------- STRIPE: WEBHOOK (CANONICAL + ALIAS) -------------------- */
-  // NOTE: DO NOT add express.raw() here (index.ts handles raw parsing; req.rawBody is populated)
   app.post("/api/webhooks/stripe", limiterStripe, handleStripeWebhook);
   app.post("/api/stripe/webhook", limiterStripe, handleStripeWebhook);
 
@@ -1178,6 +1167,7 @@ export function registerRoutes(app: Express): Server {
       if (!isAdmin(req)) {
         return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
       }
+
       if (!STRIPE_SECRET_KEY) {
         return res.status(503).json({
           error: "Stripe not configured",
@@ -1188,56 +1178,45 @@ export function registerRoutes(app: Express): Server {
 
       const sessionId = String(req.params.sessionId || "").trim();
       if (!sessionId) {
-        return res.status(400).json({
-          error: "Missing sessionId",
-          code: "MISSING_SESSION_ID",
-          version: VERSION,
-        });
+        return res.status(400).json({ error: "Missing sessionId", code: "MISSING_SESSION_ID", version: VERSION });
+      }
+      if (!/^cs_(test|live)_[a-zA-Z0-9]+$/.test(sessionId)) {
+        return res.status(400).json({ error: "Invalid sessionId", code: "INVALID_SESSION_ID", version: VERSION });
       }
 
-      const params = new URLSearchParams();
-      params.append("expand[]", "payment_intent");
-      params.append("expand[]", "customer");
-      params.append("expand[]", "customer_details");
+      const url = new URL(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`);
+      url.searchParams.set("expand[]", "payment_intent");
+      url.searchParams.set("expand[]", "customer");
 
-      const got = await stripeGetJson(`/checkout/sessions/${encodeURIComponent(sessionId)}`, params);
-      if (!got.ok) {
-        return res.status(got.status).json({
+      const resp = await fetch(url.toString(), {
+        method: "GET",
+        headers: { Authorization: `Bearer ${STRIPE_SECRET_KEY}` },
+      });
+
+      const json: any = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        return res.status(resp.status).json({
           error: "Stripe fetch failed",
           code: "STRIPE_FETCH_FAILED",
-          stripe: got.error,
+          stripe: json,
           version: VERSION,
         });
       }
 
-      const s: any = got.data || {};
-      const md: any = s.metadata || {};
-      const publicId = String(md.publicId || "").trim() || null;
+      const metadata = json?.metadata || {};
+      const publicId = String(metadata?.publicId || "").trim() || null;
 
       return res.json({
         ok: true,
-        session: {
-          id: String(s.id || ""),
-          object: String(s.object || ""),
-          status: s.status ?? null,
-          payment_status: s.payment_status ?? null,
-          amount_total: s.amount_total ?? null,
-          currency: s.currency ?? null,
-          client_reference_id: s.client_reference_id ?? null,
-          payment_intent: s.payment_intent ?? null,
-          customer: s.customer ?? null,
-          customer_details: s.customer_details ?? null,
-          created: s.created ?? null,
-          metadata: md,
-        },
+        session: json,
         publicId,
         version: VERSION,
         commit: COMMIT,
       });
     } catch (err: any) {
       return res.status(500).json({
-        error: "Admin stripe session fetch failed",
-        code: "ADMIN_STRIPE_SESSION_FAILED",
+        error: "Admin session fetch failed",
+        code: "ADMIN_SESSION_FETCH_FAILED",
         detail: String(err?.message || err),
         version: VERSION,
       });
@@ -2118,10 +2097,6 @@ export function registerRoutes(app: Express): Server {
         returnedToSenderAt: null,
       } as any);
 
-      /**
-       * If gift has an amount, DO NOT deliver yet.
-       * Delivery will happen after Stripe webhook confirms payment.
-       */
       const requiresPayment = finalAmountCents != null;
 
       let emailSent = false;
