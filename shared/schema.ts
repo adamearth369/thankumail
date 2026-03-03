@@ -59,7 +59,7 @@ export const gifts = pgTable("gifts", {
   // FUTURE-PROOF (accounts): nullable until auth exists
   senderUserId: text("sender_user_id"),
 
-  // OPTIONAL
+  // OPTIONAL (server should set from authed user; guests provide)
   senderEmail: text("sender_email"),
 
   // Delivery targets (at least one required at API layer)
@@ -88,6 +88,16 @@ export const gifts = pgTable("gifts", {
   stripeCheckoutSessionId: text("stripe_checkout_session_id"),
   stripePaymentIntentId: text("stripe_payment_intent_id"),
   paidAt: timestamp("paid_at", { withTimezone: true }),
+
+  /* -------------------- DELIVERY TRACKING (SERVER-CONTROLLED) -------------------- */
+  // Set when delivery has successfully occurred (any channel)
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  // Channel-specific success timestamps
+  deliveredEmailAt: timestamp("delivered_email_at", { withTimezone: true }),
+  deliveredSmsAt: timestamp("delivered_sms_at", { withTimezone: true }),
+  // Last delivery attempt timestamp + last error (if any)
+  deliveryAttemptedAt: timestamp("delivery_attempted_at", { withTimezone: true }),
+  deliveryError: text("delivery_error"),
 
   isClaimed: boolean("is_claimed").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -122,8 +132,20 @@ export const insertGiftSchema = createInsertSchema(gifts)
     stripeCheckoutSessionId: true,
     stripePaymentIntentId: true,
     paidAt: true,
+
+    // delivery: never accept from client
+    deliveredAt: true,
+    deliveredEmailAt: true,
+    deliveredSmsAt: true,
+    deliveryAttemptedAt: true,
+    deliveryError: true,
   })
   .extend({
+    /**
+     * CHANGE:
+     * - Keep optional for DB compatibility.
+     * - Server will REQUIRE for guests, and IGNORE/DERIVE for registered users.
+     */
     senderEmail: z.string().email("Enter a valid sender email").optional(),
 
     recipientEmail: z.string().email("Enter a valid recipient email").optional(),
