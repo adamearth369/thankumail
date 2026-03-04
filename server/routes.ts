@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-04_001";
+const VERSION = "routes_v2026-03-04_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -2280,11 +2280,7 @@ export function registerRoutes(app: Express): Server {
           recipientEmail: gifts.recipientEmail,
           senderEmail: gifts.senderEmail,
           amount: gifts.amount,
-          isClaimed: gifts.isClaimed,
-          claimedAt: gifts.claimedAt,
           reminderCount: gifts.reminderCount,
-          lastReminderSentAt: gifts.lastReminderSentAt,
-          returnedToSenderAt: gifts.returnedToSenderAt,
         })
         .from(gifts)
         .where(
@@ -2322,13 +2318,29 @@ export function registerRoutes(app: Express): Server {
             senderEmail: g.senderEmail || undefined,
           } as any);
 
-          await db
+          // Atomic, race-safe update (no stale read of reminderCount)
+          const updated = await db
             .update(gifts)
             .set({
-              reminderCount: Number(g.reminderCount || 0) + 1,
+              reminderCount: sql<number>`coalesce(${gifts.reminderCount}, 0) + 1` as any,
               lastReminderSentAt: now(),
             })
-            .where(eq(gifts.id, g.id));
+            .where(
+              and(
+                eq(gifts.id, g.id),
+                eq(gifts.isClaimed, false),
+                isNull(gifts.claimedAt),
+                isNull(gifts.returnedToSenderAt),
+                lt(gifts.reminderCount, REMINDER_MAX),
+                or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
+              ),
+            )
+            .returning({ id: gifts.id });
+
+          if (!updated?.length) {
+            skipped++;
+            continue;
+          }
 
           sent++;
         } catch {
