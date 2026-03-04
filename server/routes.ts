@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-03_004";
+const VERSION = "routes_v2026-03-04_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -2136,7 +2136,7 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  /* -------------------- GIFTS: GET -------------------- */
+  /* -------------------- GIFTS: GET (CLAIM-SAFE) -------------------- */
   app.get("/api/gifts/:publicId", async (req, res) => {
     try {
       const publicId = String(req.params.publicId || "").trim();
@@ -2147,23 +2147,12 @@ export function registerRoutes(app: Express): Server {
       const row = await db
         .select({
           publicId: gifts.publicId,
-          senderEmail: gifts.senderEmail,
-          recipientEmail: gifts.recipientEmail,
-          recipientPhone: gifts.recipientPhone,
           deliveryMethod: gifts.deliveryMethod,
           messageMode: gifts.messageMode,
           presetMessageId: gifts.presetMessageId,
           message: gifts.message,
           amount: gifts.amount,
           paymentStatus: gifts.paymentStatus,
-          stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
-          stripePaymentIntentId: gifts.stripePaymentIntentId,
-          paidAt: gifts.paidAt,
-          deliveredAt: (gifts as any).deliveredAt,
-          deliveredEmailAt: (gifts as any).deliveredEmailAt,
-          deliveredSmsAt: (gifts as any).deliveredSmsAt,
-          deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
-          deliveryError: (gifts as any).deliveryError,
           createdAt: gifts.createdAt,
           claimedAt: gifts.claimedAt,
           isClaimed: gifts.isClaimed,
@@ -2177,25 +2166,18 @@ export function registerRoutes(app: Express): Server {
         return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
       }
 
+      const mode = (g.messageMode as any) || "preset";
+
       return res.json({
         ok: true,
         gift: {
           publicId: g.publicId,
-          senderEmail: g.senderEmail || null,
           deliveryMethod: (g.deliveryMethod as any) || null,
-          messageMode: (g.messageMode as any) || "preset",
+          messageMode: mode,
           presetMessageId: g.presetMessageId ?? null,
-          message: (g.messageMode as any) === "custom" ? g.message || "" : "",
+          message: mode === "custom" ? String(g.message || "") : "",
           amount: g.amount ?? null,
           paymentStatus: g.paymentStatus ?? null,
-          stripeCheckoutSessionId: g.stripeCheckoutSessionId ?? null,
-          stripePaymentIntentId: g.stripePaymentIntentId ?? null,
-          paidAt: g.paidAt ?? null,
-          deliveredAt: (g as any).deliveredAt ?? null,
-          deliveredEmailAt: (g as any).deliveredEmailAt ?? null,
-          deliveredSmsAt: (g as any).deliveredSmsAt ?? null,
-          deliveryAttemptedAt: (g as any).deliveryAttemptedAt ?? null,
-          deliveryError: (g as any).deliveryError ?? null,
           createdAt: g.createdAt,
           claimed: Boolean(g.isClaimed || g.claimedAt),
         },
