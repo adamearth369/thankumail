@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-04_003";
+const VERSION = "routes_v2026-03-04_004";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -2300,6 +2300,12 @@ export function registerRoutes(app: Express): Server {
       let skipped = 0;
       let updated = 0;
 
+      const persisted: Array<{
+        publicId: string;
+        reminderCount: any;
+        lastReminderSentAt: any;
+      }> = [];
+
       for (const g of rows) {
         const pid = String(g.publicId || "").trim();
         const to = String(g.recipientEmail || "").trim();
@@ -2320,7 +2326,7 @@ export function registerRoutes(app: Express): Server {
           } as any);
 
           // IMPORTANT: DB-side atomic increment + strict eligibility re-check.
-          // Also uses publicId (text) to avoid any bigint/id mismatch issues.
+          // Return the NEW values so we can prove persistence in the response itself.
           const write = await db
             .update(gifts)
             .set({
@@ -2337,13 +2343,23 @@ export function registerRoutes(app: Express): Server {
                 or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
               ),
             )
-            .returning({ publicId: gifts.publicId });
+            .returning({
+              publicId: gifts.publicId,
+              reminderCount: gifts.reminderCount,
+              lastReminderSentAt: gifts.lastReminderSentAt,
+            });
 
           if (!write?.length) {
-            // email sent but row no longer eligible / mismatch; do not count as "sent"
             skipped++;
             continue;
           }
+
+          const w = write[0];
+          persisted.push({
+            publicId: String(w.publicId || ""),
+            reminderCount: (w as any).reminderCount,
+            lastReminderSentAt: (w as any).lastReminderSentAt,
+          });
 
           updated += 1;
           sent += 1;
@@ -2352,7 +2368,15 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      return res.json({ ok: true, sent, skipped, scanned: rows.length, updated, version: VERSION });
+      return res.json({
+        ok: true,
+        sent,
+        skipped,
+        scanned: rows.length,
+        updated,
+        persistedSample: persisted.slice(0, 5),
+        version: VERSION,
+      });
     } catch (err: any) {
       return res.status(500).json({
         error: "Reminders send failed",
