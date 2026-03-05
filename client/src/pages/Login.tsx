@@ -1,30 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+// WHERE TO PASTE: client/src/pages/Login.tsx
+// ACTION: Full file replacement (paste exactly)
+
+import React from "react";
 import { Link } from "wouter";
-import { apiJson } from "@/lib/api";
-
-/* ❌ FIX: removed invalid Turnstile TS declaration that was breaking Vite build */
-
-type ApiError = {
-  error: string;
-  field?: string;
-  code?: string;
-  codes?: string[];
-  issues?: any[];
-  retryAfterSec?: number;
-  version?: string;
-};
-
-type AuthRequestOk = {
-  ok: true;
-  token?: string;
-  loginUrl?: string;
-  expiresAt: string;
-  sent?: boolean;
-  emailSent?: boolean;
-  version?: string;
-};
-
-const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 function classNames(...xs: Array<string | false | undefined | null>) {
   return xs.filter(Boolean).join(" ");
@@ -44,9 +22,14 @@ function buildGoogleAuthUrl(): string {
   return `${base}/api/auth/google`;
 }
 
+function buildFacebookAuthUrl(): string {
+  const base = resolveApiBase();
+  return `${base}/api/auth/facebook`;
+}
+
 export default function Login() {
-  const GOOGLE_ONLY = true;
   const googleAuthUrl = buildGoogleAuthUrl();
+  const facebookAuthUrl = buildFacebookAuthUrl();
 
   const box = "rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal";
 
@@ -61,10 +44,11 @@ export default function Login() {
         </div>
 
         <div className="mt-3 text-sm text-tm-charcoal/75">
-          Registered accounts use <span className="font-medium text-tm-charcoal">Google sign-in</span>.
+          Registered accounts use <span className="font-medium text-tm-charcoal">Google</span> or{" "}
+          <span className="font-medium text-tm-charcoal">Facebook</span> sign-in.
         </div>
 
-        <div className="mt-4">
+        <div className="mt-4 grid gap-3">
           <a
             href={googleAuthUrl}
             className={classNames(
@@ -73,6 +57,16 @@ export default function Login() {
             )}
           >
             Continue with Google
+          </a>
+
+          <a
+            href={facebookAuthUrl}
+            className={classNames(
+              "w-full inline-flex items-center justify-center rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
+              "bg-white text-tm-charcoal border-tm-charcoal/30 cursor-pointer shadow-soft hover:shadow-xl hover:bg-tm-cream hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
+            )}
+          >
+            Continue with Facebook
           </a>
         </div>
 
