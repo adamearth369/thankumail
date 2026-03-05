@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-04_005";
+const VERSION = "routes_v2026-03-05_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -304,7 +304,9 @@ async function revokeSessionToken(sessionToken: string) {
     .where(and(eq(authSessions.sessionHash, sessionHash), isNull(authSessions.revokedAt)))
     .returning({ userId: authSessions.userId });
 
-  return updated?.length ? { ok: true as const, userId: String(updated[0].userId) } : { ok: false as const, code: "NOT_FOUND_OR_ALREADY_REVOKED" as const };
+  return updated?.length
+    ? { ok: true as const, userId: String(updated[0].userId) }
+    : { ok: false as const, code: "NOT_FOUND_OR_ALREADY_REVOKED" as const };
 }
 
 /* -------------------- STRIPE HELPERS -------------------- */
@@ -2366,6 +2368,7 @@ export function registerRoutes(app: Express): Server {
 
       const rows = await db
         .select({
+          id: gifts.id,
           publicId: gifts.publicId,
           recipientEmail: gifts.recipientEmail,
           senderEmail: gifts.senderEmail,
@@ -2379,7 +2382,8 @@ export function registerRoutes(app: Express): Server {
             eq(gifts.isClaimed, false),
             isNull(gifts.claimedAt),
             isNull(gifts.returnedToSenderAt),
-            lt(gifts.reminderCount, REMINDER_MAX),
+            // be null-safe (older rows)
+            lt(sql<number>`coalesce(${gifts.reminderCount}, 0)`, REMINDER_MAX),
             or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
             sql`${gifts.recipientEmail} is not null`,
           ),
@@ -2390,11 +2394,14 @@ export function registerRoutes(app: Express): Server {
       let sent = 0;
       let skipped = 0;
       let updated = 0;
+      let updatedButReadBackMismatch = 0;
 
       for (const g of rows) {
+        const id = Number(g.id as any);
         const pid = String(g.publicId || "").trim();
         const to = String(g.recipientEmail || "").trim();
-        if (!pid || !to) {
+
+        if (!id || !pid || !to) {
           skipped++;
           continue;
         }
@@ -2410,23 +2417,29 @@ export function registerRoutes(app: Express): Server {
             senderEmail: g.senderEmail || undefined,
           } as any);
 
+          sent += 1;
+
           const write = await db
             .update(gifts)
             .set({
-              reminderCount: sql`${gifts.reminderCount} + 1`,
+              reminderCount: sql<number>`coalesce(${gifts.reminderCount}, 0) + 1`,
               lastReminderSentAt: now(),
             })
             .where(
               and(
+                eq(gifts.id, id as any),
                 eq(gifts.publicId, pid),
                 eq(gifts.isClaimed, false),
                 isNull(gifts.claimedAt),
                 isNull(gifts.returnedToSenderAt),
-                lt(gifts.reminderCount, REMINDER_MAX),
-                or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
+                lt(sql<number>`coalesce(${gifts.reminderCount}, 0)`, REMINDER_MAX),
               ),
             )
-            .returning({ publicId: gifts.publicId });
+            .returning({
+              id: gifts.id,
+              reminderCount: gifts.reminderCount,
+              lastReminderSentAt: gifts.lastReminderSentAt,
+            });
 
           if (!write?.length) {
             skipped++;
@@ -2434,13 +2447,44 @@ export function registerRoutes(app: Express): Server {
           }
 
           updated += 1;
-          sent += 1;
-        } catch {
+
+          // sanity read-back (cheap, helps catch "write went elsewhere" cases)
+          const check = await db
+            .select({
+              reminderCount: gifts.reminderCount,
+              lastReminderSentAt: gifts.lastReminderSentAt,
+            })
+            .from(gifts)
+            .where(eq(gifts.id, id as any))
+            .limit(1);
+
+          const c = check?.[0];
+          if (!c || !c.lastReminderSentAt || Number(c.reminderCount ?? 0) <= 0) {
+            updatedButReadBackMismatch += 1;
+          }
+        } catch (e: any) {
           skipped++;
+          console.log(
+            JSON.stringify({
+              ts: new Date().toISOString(),
+              event: "reminder_send_or_persist_failed",
+              publicId: pid,
+              error: String(e?.message || e),
+              version: VERSION,
+            }),
+          );
         }
       }
 
-      return res.json({ ok: true, sent, skipped, scanned: rows.length, updated, version: VERSION });
+      return res.json({
+        ok: true,
+        scanned: rows.length,
+        sent,
+        updated,
+        skipped,
+        updatedButReadBackMismatch,
+        version: VERSION,
+      });
     } catch (err: any) {
       return res.status(500).json({
         error: "Reminders send failed",
