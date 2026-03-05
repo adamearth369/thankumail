@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -23,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-05_001";
+const VERSION = "routes_v2026-03-05_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -1455,6 +1452,81 @@ export function registerRoutes(app: Express): Server {
       return res.status(500).json({
         error: "Admin gifts list failed",
         code: "ADMIN_GIFTS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
+  /* -------------------- ADMIN: GIFT GET (BY PUBLIC ID) -------------------- */
+  app.get("/api/admin/gifts/:publicId", limiterAdmin, async (req, res) => {
+    try {
+      if (!ADMIN_TOKEN) {
+        return res.status(503).json({
+          error: "ADMIN_TOKEN not configured",
+          code: "ADMIN_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+      if (!isAdmin(req)) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const publicId = String(req.params.publicId || "").trim();
+      if (!publicId) {
+        return res.status(400).json({ error: "Missing publicId", code: "MISSING_PUBLIC_ID", version: VERSION });
+      }
+
+      const rows = await db
+        .select({
+          id: gifts.id,
+          publicId: gifts.publicId,
+
+          senderUserId: gifts.senderUserId,
+          senderEmail: gifts.senderEmail,
+
+          recipientEmail: gifts.recipientEmail,
+          recipientPhone: gifts.recipientPhone,
+          deliveryMethod: gifts.deliveryMethod,
+
+          messageMode: gifts.messageMode,
+          presetMessageId: gifts.presetMessageId,
+          message: gifts.message,
+
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
+          stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
+          stripePaymentIntentId: gifts.stripePaymentIntentId,
+          paidAt: gifts.paidAt,
+
+          deliveredAt: (gifts as any).deliveredAt,
+          deliveredEmailAt: (gifts as any).deliveredEmailAt,
+          deliveredSmsAt: (gifts as any).deliveredSmsAt,
+          deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
+          deliveryError: (gifts as any).deliveryError,
+
+          isClaimed: gifts.isClaimed,
+          claimedAt: gifts.claimedAt,
+          createdAt: gifts.createdAt,
+
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+          returnedToSenderAt: gifts.returnedToSenderAt,
+        })
+        .from(gifts)
+        .where(eq(gifts.publicId, publicId))
+        .limit(1);
+
+      const g = rows?.[0];
+      if (!g) {
+        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
+      }
+
+      return res.json({ ok: true, gift: g, version: VERSION });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Admin gift get failed",
+        code: "ADMIN_GIFT_GET_FAILED",
         detail: String(err?.message || err),
         version: VERSION,
       });
