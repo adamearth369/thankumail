@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-05_003";
+const VERSION = "routes_v2026-03-05_004";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -80,6 +80,17 @@ function pruneOauthState() {
   for (const [k, v] of oauthStateStore.entries()) {
     if (!v || v.exp <= nowMs) oauthStateStore.delete(k);
   }
+}
+
+/* -------------------- ENV HELPERS -------------------- */
+function readNumberEnv(name: string, def: number) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null) return { raw: null as string | null, num: def };
+  const trimmed = String(raw).trim();
+  if (!trimmed) return { raw: "", num: def };
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return { raw: trimmed, num: def };
+  return { raw: trimmed, num: n };
 }
 
 /**
@@ -143,7 +154,9 @@ const DAILY_LIMIT_PHONE = Math.max(0, Number(process.env.DAILY_LIMIT_PHONE ?? 3)
 const MIN_CLAIM_DELAY_SEC = Math.max(0, Number(process.env.MIN_CLAIM_DELAY_SEC ?? 60));
 const SMS_DUPLICATE_WINDOW_SEC = Math.max(0, Number(process.env.SMS_DUPLICATE_WINDOW_SEC ?? 90));
 
-const REMINDER_GAP_MS = Math.max(1_000, Number(process.env.REMINDER_GAP_MS ?? 172800000));
+const REMINDER_GAP_ENV = readNumberEnv("REMINDER_GAP_MS", 172800000);
+const REMINDER_GAP_MS = Math.max(1_000, REMINDER_GAP_ENV.num);
+
 const REMINDER_MAX = Math.max(0, Number(process.env.REMINDER_MAX ?? 3));
 const REMINDER_SENDING_ENABLED =
   String(process.env.REMINDER_SENDING_ENABLED ?? "true").toLowerCase() === "true";
@@ -1128,6 +1141,10 @@ export function registerRoutes(app: Express): Server {
 
       reminders: {
         reminderGapMs: REMINDER_GAP_MS,
+        reminderGapEnv: {
+          raw: REMINDER_GAP_ENV.raw,
+          parsed: REMINDER_GAP_ENV.num,
+        },
         reminderMax: REMINDER_MAX,
         reminderSendingEnabled: REMINDER_SENDING_ENABLED,
       },
