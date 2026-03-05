@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-05_004";
+const VERSION = "routes_v2026-03-05_005";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -72,7 +72,16 @@ const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 
-/* -------------------- GOOGLE OAUTH STATE STORE -------------------- */
+/* -------------------- FACEBOOK OAUTH -------------------- */
+const FACEBOOK_APP_ID = (process.env.FACEBOOK_APP_ID || "").trim();
+const FACEBOOK_APP_SECRET = (process.env.FACEBOOK_APP_SECRET || "").trim();
+const FACEBOOK_REDIRECT_URI = `${API_URL}/api/auth/facebook/callback`;
+
+const FACEBOOK_AUTH_URL = "https://www.facebook.com/v19.0/dialog/oauth";
+const FACEBOOK_TOKEN_URL = "https://graph.facebook.com/v19.0/oauth/access_token";
+const FACEBOOK_ME_URL = "https://graph.facebook.com/me";
+
+/* -------------------- OAUTH STATE STORE -------------------- */
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const oauthStateStore = new Map<string, { exp: number; ip: string; ua: string }>();
 function pruneOauthState() {
@@ -271,6 +280,13 @@ function buildGoogleConsumeUrl(sessionToken: string, email: string) {
   const token = encodeURIComponent(sessionToken);
   const e = encodeURIComponent(email || "");
   return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}`;
+}
+
+function buildFacebookConsumeUrl(sessionToken: string, email: string) {
+  // Reuse existing frontend handler (/auth/google) to store session token.
+  const token = encodeURIComponent(sessionToken);
+  const e = encodeURIComponent(email || "");
+  return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}&provider=facebook`;
 }
 
 function logAuth(event: string, fields: Record<string, any> = {}) {
@@ -805,6 +821,13 @@ const limiterGoogle = rateLimit({
   legacyHeaders: false,
 });
 
+const limiterFacebook = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const limiterStripe = rateLimit({
   windowMs: 60_000,
   max: 30,
@@ -1131,6 +1154,13 @@ export function registerRoutes(app: Express): Server {
         redirectUri: GOOGLE_REDIRECT_URI,
       },
 
+      facebook: {
+        configured: Boolean(FACEBOOK_APP_ID && FACEBOOK_APP_SECRET),
+        redirectUri: FACEBOOK_REDIRECT_URI,
+        hasAppId: Boolean(FACEBOOK_APP_ID),
+        hasAppSecret: Boolean(FACEBOOK_APP_SECRET),
+      },
+
       limits: {
         dailyLimitIp: DAILY_LIMIT_IP,
         dailyLimitSender: DAILY_LIMIT_SENDER,
@@ -1156,7 +1186,7 @@ export function registerRoutes(app: Express): Server {
           message: "preset-or-custom (max 280)",
           amount: `optional (allowed: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}; min $25 when present)`,
           sms: "optional",
-          auth: "google-only",
+          auth: "google + facebook",
         },
       },
 
@@ -1561,7 +1591,7 @@ export function registerRoutes(app: Express): Server {
     const ip = getIp(req);
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
-    const state = randomToken(16);
+    const state = `g_${randomToken(16)}`;
     oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
 
     const url = new URL(GOOGLE_AUTH_URL);
@@ -1588,7 +1618,7 @@ export function registerRoutes(app: Express): Server {
     const ip = getIp(req);
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
-    const state = randomToken(16);
+    const state = `g_${randomToken(16)}`;
     oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
 
     const url = new URL(GOOGLE_AUTH_URL);
@@ -1691,6 +1721,128 @@ export function registerRoutes(app: Express): Server {
     }
 
     return res.redirect(302, buildGoogleConsumeUrl(issued.sessionToken, email));
+  });
+
+  /* -------------------- AUTH: FACEBOOK OAUTH -------------------- */
+  app.get("/api/auth/facebook", limiterFacebook, async (req, res) => {
+    pruneOauthState();
+
+    if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET) {
+      return res
+        .status(503)
+        .json({ error: "Facebook auth not configured", code: "FACEBOOK_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+    const state = `f_${randomToken(16)}`;
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+
+    const url = new URL(FACEBOOK_AUTH_URL);
+    url.searchParams.set("client_id", FACEBOOK_APP_ID);
+    url.searchParams.set("redirect_uri", FACEBOOK_REDIRECT_URI);
+    url.searchParams.set("state", state);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "email");
+
+    return res.redirect(302, url.toString());
+  });
+
+  app.get("/api/auth/facebook/callback", limiterFacebook, async (req, res) => {
+    pruneOauthState();
+
+    if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET) {
+      return res
+        .status(503)
+        .json({ error: "Facebook auth not configured", code: "FACEBOOK_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const code = String(req.query.code || "").trim();
+    const state = String(req.query.state || "").trim();
+
+    const error = String(req.query.error || "").trim();
+    const errorReason = String(req.query.error_reason || "").trim();
+    const errorDescription = String(req.query.error_description || "").trim();
+
+    if (error) {
+      return res.status(400).json({
+        error: "Facebook auth failed",
+        code: "FACEBOOK_OAUTH_ERROR",
+        detail: { error, errorReason, errorDescription },
+        version: VERSION,
+      });
+    }
+
+    if (!code || !state) {
+      return res.status(400).json({ error: "Invalid callback", code: "FACEBOOK_CALLBACK_INVALID", version: VERSION });
+    }
+
+    const saved = oauthStateStore.get(state);
+    oauthStateStore.delete(state);
+
+    if (!saved || saved.exp <= Date.now()) {
+      return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+    if (saved.ip && saved.ip !== ip) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+    if (saved.ua && saved.ua !== ua) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+
+    const tokenUrl = new URL(FACEBOOK_TOKEN_URL);
+    tokenUrl.searchParams.set("client_id", FACEBOOK_APP_ID);
+    tokenUrl.searchParams.set("redirect_uri", FACEBOOK_REDIRECT_URI);
+    tokenUrl.searchParams.set("client_secret", FACEBOOK_APP_SECRET);
+    tokenUrl.searchParams.set("code", code);
+
+    const tokenResp = await fetch(tokenUrl.toString(), { method: "GET" });
+    const tokenJson: any = await tokenResp.json().catch(() => ({}));
+
+    const accessToken = String(tokenJson?.access_token || "").trim();
+    if (!accessToken) {
+      return res.status(400).json({
+        error: "Token exchange failed",
+        code: "FACEBOOK_TOKEN_EXCHANGE_FAILED",
+        detail: tokenJson,
+        version: VERSION,
+      });
+    }
+
+    const meUrl = new URL(FACEBOOK_ME_URL);
+    meUrl.searchParams.set("fields", "id,name,email");
+    meUrl.searchParams.set("access_token", accessToken);
+
+    const infoResp = await fetch(meUrl.toString(), { method: "GET" });
+    const infoJson: any = await infoResp.json().catch(() => ({}));
+
+    const email = normalizeEmail(String(infoJson?.email || ""));
+    if (!email) {
+      return res.status(400).json({
+        error: "Facebook did not return email",
+        code: "FACEBOOK_NO_EMAIL",
+        detail: { hasId: Boolean(infoJson?.id), hasName: Boolean(infoJson?.name) },
+        version: VERSION,
+      });
+    }
+
+    const issued = await issueSessionForEmail(email, req);
+    if (!issued.ok) {
+      return res.status(400).json({
+        error: issued.error,
+        code: issued.code,
+        reason: (issued as any).reason,
+        version: VERSION,
+      });
+    }
+
+    logAuth("auth_facebook_success", { emailDomain: extractDomain(email) });
+
+    return res.redirect(302, buildFacebookConsumeUrl(issued.sessionToken, email));
   });
 
   /* -------------------- AUTH: MAGIC LINK (DISABLED BY DEFAULT) -------------------- */
@@ -2494,7 +2646,9 @@ export function registerRoutes(app: Express): Server {
 
         const g = one?.[0];
         if (!g) {
-          return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION, attemptedPublicIds: [] });
+          return res
+            .status(404)
+            .json({ error: "Not found", code: "NOT_FOUND", version: VERSION, attemptedPublicIds: [] });
         }
 
         const eligible =
