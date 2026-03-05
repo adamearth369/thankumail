@@ -1,3 +1,6 @@
+// WHERE TO PASTE: server/routes.ts
+// ACTION: Full file replacement (paste exactly)
+
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -20,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-05_002";
+const VERSION = "routes_v2026-03-05_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -748,6 +751,11 @@ const zAdminRevokeSessions = z.object({
   sessionHash: z.string().trim().optional().nullable(),
 });
 
+const zAdminRemindersSend = z.object({
+  limit: z.coerce.number().int().optional().nullable(),
+  publicId: z.string().trim().optional().nullable(),
+});
+
 /* -------------------- RATE LIMITERS -------------------- */
 const limiterCreateGift = rateLimit({
   windowMs: 60_000,
@@ -1374,7 +1382,7 @@ export function registerRoutes(app: Express): Server {
         if (!r.ok) {
           skipped++;
         } else {
-          if (r.delivered) delivered++;
+          if ((r as any).delivered) delivered++;
           else skipped++;
         }
       }
@@ -1404,7 +1412,7 @@ export function registerRoutes(app: Express): Server {
         return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
       }
 
-      const limit = Math.max(1, Math.min(200, Number(req.query.limit ?? 20)));
+      const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 20)));
 
       const rows = await db
         .select({
@@ -1457,7 +1465,7 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  /* -------------------- ADMIN: GIFT GET (BY PUBLIC ID) -------------------- */
+  /* -------------------- ADMIN: GIFT GET -------------------- */
   app.get("/api/admin/gifts/:publicId", limiterAdmin, async (req, res) => {
     try {
       if (!ADMIN_TOKEN) {
@@ -1480,34 +1488,27 @@ export function registerRoutes(app: Express): Server {
         .select({
           id: gifts.id,
           publicId: gifts.publicId,
-
           senderUserId: gifts.senderUserId,
           senderEmail: gifts.senderEmail,
-
           recipientEmail: gifts.recipientEmail,
           recipientPhone: gifts.recipientPhone,
           deliveryMethod: gifts.deliveryMethod,
-
           messageMode: gifts.messageMode,
           presetMessageId: gifts.presetMessageId,
           message: gifts.message,
-
           amount: gifts.amount,
           paymentStatus: gifts.paymentStatus,
           stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
           stripePaymentIntentId: gifts.stripePaymentIntentId,
           paidAt: gifts.paidAt,
-
           deliveredAt: (gifts as any).deliveredAt,
           deliveredEmailAt: (gifts as any).deliveredEmailAt,
           deliveredSmsAt: (gifts as any).deliveredSmsAt,
           deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
           deliveryError: (gifts as any).deliveryError,
-
           isClaimed: gifts.isClaimed,
           claimedAt: gifts.claimedAt,
           createdAt: gifts.createdAt,
-
           reminderCount: gifts.reminderCount,
           lastReminderSentAt: gifts.lastReminderSentAt,
           returnedToSenderAt: gifts.returnedToSenderAt,
@@ -1517,9 +1518,7 @@ export function registerRoutes(app: Express): Server {
         .limit(1);
 
       const g = rows?.[0];
-      if (!g) {
-        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
-      }
+      if (!g) return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
 
       return res.json({ ok: true, gift: g, version: VERSION });
     } catch (err: any) {
@@ -2272,7 +2271,7 @@ export function registerRoutes(app: Express): Server {
         if (r.ok) {
           emailSent = Boolean(toEmail);
           smsQueued = Boolean(isRegistered && toPhone);
-          deliveryError = r.deliveryError ? String(r.deliveryError) : null;
+          deliveryError = (r as any).deliveryError ? String((r as any).deliveryError) : null;
         } else {
           deliveryError = "Delivery failed to start";
         }
@@ -2431,45 +2430,128 @@ export function registerRoutes(app: Express): Server {
         return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
       }
       if (!REMINDER_SENDING_ENABLED) {
-        return res.json({ ok: true, sent: 0, skipped: 0, disabled: true, version: VERSION });
+        return res.json({ ok: true, sent: 0, skipped: 0, disabled: true, version: VERSION, attemptedPublicIds: [] });
       }
 
-      const limit = Math.max(1, Math.min(50, Number((req.body || {}).limit ?? 20)));
+      const parsed = zAdminRemindersSend.safeParse(req.body || {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
+          issues: parsed.error.issues,
+          version: VERSION,
+        });
+      }
+
+      const limit = Math.max(1, Math.min(50, Number(parsed.data.limit ?? 20)));
+      const targetPublicId = String(parsed.data.publicId || "").trim();
       const cutoff = new Date(Date.now() - REMINDER_GAP_MS);
 
-      const rows = await db
-        .select({
-          id: gifts.id,
-          publicId: gifts.publicId,
-          recipientEmail: gifts.recipientEmail,
-          senderEmail: gifts.senderEmail,
-          amount: gifts.amount,
-          reminderCount: gifts.reminderCount,
-          lastReminderSentAt: gifts.lastReminderSentAt,
-        })
-        .from(gifts)
-        .where(
-          and(
-            eq(gifts.isClaimed, false),
-            isNull(gifts.claimedAt),
-            isNull(gifts.returnedToSenderAt),
-            lt(sql<number>`coalesce(${gifts.reminderCount}, 0)`, REMINDER_MAX),
-            or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
-            sql`${gifts.recipientEmail} is not null`,
-          ),
-        )
-        .orderBy(asc(gifts.lastReminderSentAt), asc(gifts.id))
-        .limit(limit);
+      let rows: Array<{
+        id: any;
+        publicId: any;
+        recipientEmail: any;
+        senderEmail: any;
+        amount: any;
+        reminderCount: any;
+        lastReminderSentAt: any;
+      }> = [];
+
+      if (targetPublicId) {
+        const one = await db
+          .select({
+            id: gifts.id,
+            publicId: gifts.publicId,
+            recipientEmail: gifts.recipientEmail,
+            senderEmail: gifts.senderEmail,
+            amount: gifts.amount,
+            reminderCount: gifts.reminderCount,
+            lastReminderSentAt: gifts.lastReminderSentAt,
+            isClaimed: gifts.isClaimed,
+            claimedAt: gifts.claimedAt,
+            returnedToSenderAt: gifts.returnedToSenderAt,
+          })
+          .from(gifts)
+          .where(eq(gifts.publicId, targetPublicId))
+          .limit(1);
+
+        const g = one?.[0];
+        if (!g) {
+          return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION, attemptedPublicIds: [] });
+        }
+
+        const eligible =
+          g.isClaimed === false &&
+          !g.claimedAt &&
+          !g.returnedToSenderAt &&
+          String(g.recipientEmail || "").trim() &&
+          Number(g.reminderCount ?? 0) < REMINDER_MAX &&
+          (!g.lastReminderSentAt || new Date(g.lastReminderSentAt).getTime() < cutoff.getTime());
+
+        if (!eligible) {
+          return res.json({
+            ok: true,
+            scanned: 1,
+            sent: 0,
+            updated: 0,
+            skipped: 1,
+            updatedButReadBackMismatch: 0,
+            version: VERSION,
+            attemptedPublicIds: [targetPublicId],
+            note: "Target not eligible (claimed/returned/maxed/recently-reminded/no-email)",
+          });
+        }
+
+        rows = [
+          {
+            id: g.id,
+            publicId: g.publicId,
+            recipientEmail: g.recipientEmail,
+            senderEmail: g.senderEmail,
+            amount: g.amount,
+            reminderCount: g.reminderCount,
+            lastReminderSentAt: g.lastReminderSentAt,
+          },
+        ];
+      } else {
+        rows = await db
+          .select({
+            id: gifts.id,
+            publicId: gifts.publicId,
+            recipientEmail: gifts.recipientEmail,
+            senderEmail: gifts.senderEmail,
+            amount: gifts.amount,
+            reminderCount: gifts.reminderCount,
+            lastReminderSentAt: gifts.lastReminderSentAt,
+          })
+          .from(gifts)
+          .where(
+            and(
+              eq(gifts.isClaimed, false),
+              isNull(gifts.claimedAt),
+              isNull(gifts.returnedToSenderAt),
+              lt(sql<number>`coalesce(${gifts.reminderCount}, 0)`, REMINDER_MAX),
+              or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
+              sql`${gifts.recipientEmail} is not null`,
+            ),
+          )
+          .orderBy(asc(gifts.lastReminderSentAt), asc(gifts.id))
+          .limit(limit);
+      }
 
       let sent = 0;
       let skipped = 0;
       let updated = 0;
       let updatedButReadBackMismatch = 0;
 
+      const attemptedPublicIds: string[] = [];
+
       for (const g of rows) {
         const id = Number(g.id as any);
         const pid = String(g.publicId || "").trim();
         const to = String(g.recipientEmail || "").trim();
+
+        if (pid) attemptedPublicIds.push(pid);
 
         if (!id || !pid || !to) {
           skipped++;
@@ -2553,6 +2635,7 @@ export function registerRoutes(app: Express): Server {
         skipped,
         updatedButReadBackMismatch,
         version: VERSION,
+        attemptedPublicIds,
       });
     } catch (err: any) {
       return res.status(500).json({
