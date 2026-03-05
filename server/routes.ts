@@ -536,7 +536,6 @@ async function issueSessionForEmail(email: string, req: Request) {
 
 /* -------------------- DELIVERY (EXACT-ONCE BEST-EFFORT) -------------------- */
 async function deliverGiftIfEligible(publicId: string, reason: string) {
-  // Step A: claim an attempt slot (prevents concurrent double-send)
   const claimed = await db.transaction(async (tx) => {
     const row = await tx
       .select({
@@ -1405,7 +1404,7 @@ export function registerRoutes(app: Express): Server {
         return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
       }
 
-      const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 20)));
+      const limit = Math.max(1, Math.min(200, Number(req.query.limit ?? 20)));
 
       const rows = await db
         .select({
@@ -2454,7 +2453,6 @@ export function registerRoutes(app: Express): Server {
             eq(gifts.isClaimed, false),
             isNull(gifts.claimedAt),
             isNull(gifts.returnedToSenderAt),
-            // be null-safe (older rows)
             lt(sql<number>`coalesce(${gifts.reminderCount}, 0)`, REMINDER_MAX),
             or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
             sql`${gifts.recipientEmail} is not null`,
@@ -2520,7 +2518,6 @@ export function registerRoutes(app: Express): Server {
 
           updated += 1;
 
-          // sanity read-back (cheap, helps catch "write went elsewhere" cases)
           const check = await db
             .select({
               reminderCount: gifts.reminderCount,
