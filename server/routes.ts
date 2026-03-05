@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-04_004";
+const VERSION = "routes_v2026-03-04_005";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -290,6 +290,21 @@ function normalizeFixedAmountToCents(v: any): number | null {
 function buildClaimUrl(publicId: string) {
   const base = (process.env.PUBLIC_CLAIM_BASE_URL || `${FRONTEND_URL}/claim`).replace(/\/+$/, "");
   return `${base}/${publicId}`;
+}
+
+/* -------------------- AUTH: SESSION REVOKE HELPERS -------------------- */
+async function revokeSessionToken(sessionToken: string) {
+  const t = String(sessionToken || "").trim();
+  if (!t) return { ok: false as const, code: "MISSING_TOKEN" as const };
+  const sessionHash = sha256Hex(t);
+
+  const updated = await db
+    .update(authSessions)
+    .set({ revokedAt: now() })
+    .where(and(eq(authSessions.sessionHash, sessionHash), isNull(authSessions.revokedAt)))
+    .returning({ userId: authSessions.userId });
+
+  return updated?.length ? { ok: true as const, userId: String(updated[0].userId) } : { ok: false as const, code: "NOT_FOUND_OR_ALREADY_REVOKED" as const };
 }
 
 /* -------------------- STRIPE HELPERS -------------------- */
@@ -569,9 +584,6 @@ async function deliverGiftIfEligible(publicId: string, reason: string) {
     const errCol = (gifts as any).deliveryError;
     const cutoff = new Date(Date.now() - DELIVERY_RETRY_AFTER_MS);
 
-    // claim attempt (idempotency gate)
-    // - allow first attempt if deliveryAttemptedAt is null
-    // - allow retry only if previous attempt is old AND had an error recorded
     const updated = await tx
       .update(gifts)
       .set({
@@ -618,7 +630,6 @@ async function deliverGiftIfEligible(publicId: string, reason: string) {
   let smsOk = false;
   const errs: string[] = [];
 
-  // Email: if present, send unless already marked deliveredEmailAt
   if (g.toEmail) {
     if (g.deliveredEmailAt) {
       emailOk = true;
@@ -642,7 +653,6 @@ async function deliverGiftIfEligible(publicId: string, reason: string) {
     emailOk = true;
   }
 
-  // SMS: if present, send unless already marked deliveredSmsAt
   if (g.toPhone) {
     if (g.deliveredSmsAt) {
       smsOk = true;
@@ -733,6 +743,11 @@ const zStripeCheckout = z.object({
 const zAdminReconcile = z.object({
   publicId: z.string().trim().optional().nullable(),
   limit: z.coerce.number().int().optional().nullable(),
+});
+
+const zAdminRevokeSessions = z.object({
+  userId: z.string().trim().optional().nullable(),
+  sessionHash: z.string().trim().optional().nullable(),
 });
 
 /* -------------------- RATE LIMITERS -------------------- */
@@ -1012,7 +1027,6 @@ async function handleStripeWebhook(req: Request, res: any) {
             .where(eq(gifts.id, g.id));
         });
 
-        // Deliver after paid (exact-once best-effort)
         if (stripeIsPaid(paymentStatus)) {
           try {
             await deliverGiftIfEligible(publicId, "stripe_webhook_paid");
@@ -1153,6 +1167,87 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- STRIPE: WEBHOOK (CANONICAL + ALIAS) -------------------- */
   app.post("/api/webhooks/stripe", limiterStripe, handleStripeWebhook);
   app.post("/api/stripe/webhook", limiterStripe, handleStripeWebhook);
+
+  /* -------------------- AUTH: LOGOUT (REVOKE CURRENT SESSION) -------------------- */
+  app.post("/api/auth/logout", async (req, res) => {
+    const a = await getAuth(req);
+    if (!a.isAuthed) {
+      return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+    }
+
+    const r = await revokeSessionToken(a.sessionToken);
+    return res.json({
+      ok: true,
+      revoked: r.ok,
+      version: VERSION,
+    });
+  });
+
+  /* -------------------- ADMIN: REVOKE SESSIONS -------------------- */
+  app.post("/api/admin/auth/sessions/revoke", limiterAdmin, async (req, res) => {
+    try {
+      if (!ADMIN_TOKEN) {
+        return res.status(503).json({
+          error: "ADMIN_TOKEN not configured",
+          code: "ADMIN_NOT_CONFIGURED",
+          version: VERSION,
+        });
+      }
+      if (!isAdmin(req)) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const parsed = zAdminRevokeSessions.safeParse(req.body || {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
+          issues: parsed.error.issues,
+          version: VERSION,
+        });
+      }
+
+      const userId = String(parsed.data.userId || "").trim();
+      const sessionHash = String(parsed.data.sessionHash || "").trim();
+
+      if (!userId && !sessionHash) {
+        return res.status(400).json({
+          error: "userId or sessionHash required",
+          code: "MISSING_TARGET",
+          version: VERSION,
+        });
+      }
+
+      let updatedCount = 0;
+
+      if (sessionHash) {
+        const updated = await db
+          .update(authSessions)
+          .set({ revokedAt: now() })
+          .where(and(eq(authSessions.sessionHash, sessionHash), isNull(authSessions.revokedAt)))
+          .returning({ userId: authSessions.userId });
+
+        updatedCount += updated?.length ? updated.length : 0;
+      } else if (userId) {
+        const updated = await db
+          .update(authSessions)
+          .set({ revokedAt: now() })
+          .where(and(eq(authSessions.userId, userId), isNull(authSessions.revokedAt)))
+          .returning({ userId: authSessions.userId });
+
+        updatedCount += updated?.length ? updated.length : 0;
+      }
+
+      return res.json({ ok: true, revokedCount: updatedCount, version: VERSION });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Admin revoke failed",
+        code: "ADMIN_REVOKE_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
 
   /* -------------------- ADMIN: STRIPE SESSION FETCH -------------------- */
   app.get("/api/admin/stripe/session/:sessionId", limiterAdmin, async (req, res) => {
@@ -1849,9 +1944,6 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      // Sender email:
-      // - Registered: derive from users.email (ignore body senderEmail)
-      // - Guest: require senderEmail from body
       let normSenderEmail = "";
 
       if (isRegistered) {
@@ -1890,7 +1982,6 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      // Sender daily limit (if enabled): applies to derived senderEmail for registered too
       if (DAILY_LIMIT_SENDER > 0 && normSenderEmail) {
         const c = await countDailyBySenderEmail(normSenderEmail);
         if (c >= DAILY_LIMIT_SENDER) {
@@ -2300,12 +2391,6 @@ export function registerRoutes(app: Express): Server {
       let skipped = 0;
       let updated = 0;
 
-      const persisted: Array<{
-        publicId: string;
-        reminderCount: any;
-        lastReminderSentAt: any;
-      }> = [];
-
       for (const g of rows) {
         const pid = String(g.publicId || "").trim();
         const to = String(g.recipientEmail || "").trim();
@@ -2325,8 +2410,6 @@ export function registerRoutes(app: Express): Server {
             senderEmail: g.senderEmail || undefined,
           } as any);
 
-          // IMPORTANT: DB-side atomic increment + strict eligibility re-check.
-          // Return the NEW values so we can prove persistence in the response itself.
           const write = await db
             .update(gifts)
             .set({
@@ -2343,23 +2426,12 @@ export function registerRoutes(app: Express): Server {
                 or(isNull(gifts.lastReminderSentAt), lt(gifts.lastReminderSentAt, cutoff)),
               ),
             )
-            .returning({
-              publicId: gifts.publicId,
-              reminderCount: gifts.reminderCount,
-              lastReminderSentAt: gifts.lastReminderSentAt,
-            });
+            .returning({ publicId: gifts.publicId });
 
           if (!write?.length) {
             skipped++;
             continue;
           }
-
-          const w = write[0];
-          persisted.push({
-            publicId: String(w.publicId || ""),
-            reminderCount: (w as any).reminderCount,
-            lastReminderSentAt: (w as any).lastReminderSentAt,
-          });
 
           updated += 1;
           sent += 1;
@@ -2368,15 +2440,7 @@ export function registerRoutes(app: Express): Server {
         }
       }
 
-      return res.json({
-        ok: true,
-        sent,
-        skipped,
-        scanned: rows.length,
-        updated,
-        persistedSample: persisted.slice(0, 5),
-        version: VERSION,
-      });
+      return res.json({ ok: true, sent, skipped, scanned: rows.length, updated, version: VERSION });
     } catch (err: any) {
       return res.status(500).json({
         error: "Reminders send failed",
