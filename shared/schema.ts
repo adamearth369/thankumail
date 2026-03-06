@@ -1,6 +1,3 @@
-// WHERE TO PASTE: shared/schema.ts
-// ACTION: Full file replacement (paste exactly)
-
 import { pgTable, pgEnum, text, serial, integer, boolean, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -12,7 +9,7 @@ function isE164(s: string) {
 /* -------------------- ENUMS -------------------- */
 export const messageModeEnum = pgEnum("message_mode", ["preset", "custom"]);
 
-/* -------------------- AUTH TABLES (MAGIC LINK) -------------------- */
+/* -------------------- AUTH TABLES -------------------- */
 /**
  * NOTE:
  * - We use text IDs so we can generate IDs server-side (crypto hex) without relying on uuid extensions.
@@ -21,6 +18,16 @@ export const messageModeEnum = pgEnum("message_mode", ["preset", "custom"]);
 export const users = pgTable("users", {
   id: text("id").primaryKey(), // server-generated (hex)
   email: text("email").notNull().unique(),
+
+  /**
+   * Provider identity (NEW)
+   * - authProvider: "email" | "google" | "facebook"
+   * - googleSub/facebookId: provider user ids when available
+   */
+  authProvider: text("auth_provider").notNull().default("email"),
+  googleSub: text("google_sub").unique(),
+  facebookId: text("facebook_id").unique(),
+
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
 });
