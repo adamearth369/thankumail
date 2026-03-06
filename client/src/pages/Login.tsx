@@ -45,7 +45,7 @@ export default function Login() {
 
         <div className="mt-3 text-sm text-tm-charcoal/75">
           Registered accounts use <span className="font-medium text-tm-charcoal">Google</span> or{" "}
-          <span className="font-medium text-tm-charcoal">Facebook</span> sign-in.
+          <span className="font-medium text-tm-charcoal">Facebook</span>.
         </div>
 
         <div className="mt-4 grid gap-3">
