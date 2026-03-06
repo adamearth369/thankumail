@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-05_005";
+const VERSION = "routes_v2026-03-06_006";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -321,6 +321,18 @@ function buildClaimUrl(publicId: string) {
   return `${base}/${publicId}`;
 }
 
+type AuthProvider = "google" | "facebook" | "magic_link";
+
+function deriveAuthProvider(user: {
+  googleSub?: string | null;
+  facebookId?: string | null;
+} | null) {
+  if (!user) return null;
+  if (String(user.googleSub || "").trim()) return "google";
+  if (String(user.facebookId || "").trim()) return "facebook";
+  return "magic_link";
+}
+
 /* -------------------- AUTH: SESSION REVOKE HELPERS -------------------- */
 async function revokeSessionToken(sessionToken: string) {
   const t = String(sessionToken || "").trim();
@@ -506,7 +518,15 @@ async function getAuth(req: Request): Promise<Authed> {
   return { isAuthed: true, userId: String(s.userId), sessionToken };
 }
 
-async function issueSessionForEmail(email: string, req: Request) {
+async function issueSessionForEmail(
+  email: string,
+  req: Request,
+  opts?: {
+    authProvider?: AuthProvider;
+    googleSub?: string | null;
+    facebookId?: string | null;
+  },
+) {
   const norm = normalizeEmail(email);
   const domain = extractDomain(norm);
 
@@ -530,7 +550,18 @@ async function issueSessionForEmail(email: string, req: Request) {
     };
   }
 
-  const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, norm)).limit(1);
+  const googleSub = String(opts?.googleSub || "").trim() || null;
+  const facebookId = String(opts?.facebookId || "").trim() || null;
+
+  const existing = await db
+    .select({
+      id: users.id,
+      googleSub: users.googleSub,
+      facebookId: users.facebookId,
+    })
+    .from(users)
+    .where(eq(users.email, norm))
+    .limit(1);
 
   let userId = String(existing?.[0]?.id || "");
   if (!userId) {
@@ -538,9 +569,11 @@ async function issueSessionForEmail(email: string, req: Request) {
     await db.insert(users).values({
       id: userId,
       email: norm,
+      googleSub,
+      facebookId,
       createdAt: now(),
       lastLoginAt: null,
-    });
+    } as any);
   }
 
   const sessionToken = randomToken(32);
@@ -560,7 +593,14 @@ async function issueSessionForEmail(email: string, req: Request) {
       createdAt: now(),
     });
 
-    await tx.update(users).set({ lastLoginAt: now() }).where(eq(users.id, userId));
+    const userPatch: Record<string, any> = {
+      lastLoginAt: now(),
+    };
+
+    if (googleSub) userPatch.googleSub = googleSub;
+    if (facebookId) userPatch.facebookId = facebookId;
+
+    await tx.update(users).set(userPatch).where(eq(users.id, userId));
   });
 
   return { ok: true as const, userId, sessionToken, expiresAt };
@@ -1702,6 +1742,7 @@ export function registerRoutes(app: Express): Server {
 
     const email = normalizeEmail(String(infoJson?.email || ""));
     const emailVerified = infoJson?.email_verified;
+    const googleSub = String(infoJson?.sub || "").trim();
 
     if (!email) {
       return res.status(400).json({ error: "Google did not return email", code: "GOOGLE_NO_EMAIL", version: VERSION });
@@ -1710,7 +1751,10 @@ export function registerRoutes(app: Express): Server {
       return res.status(400).json({ error: "Email not verified", code: "EMAIL_NOT_VERIFIED", version: VERSION });
     }
 
-    const issued = await issueSessionForEmail(email, req);
+    const issued = await issueSessionForEmail(email, req, {
+      authProvider: "google",
+      googleSub: googleSub || null,
+    });
     if (!issued.ok) {
       return res.status(400).json({
         error: issued.error,
@@ -1821,6 +1865,8 @@ export function registerRoutes(app: Express): Server {
     const infoJson: any = await infoResp.json().catch(() => ({}));
 
     const email = normalizeEmail(String(infoJson?.email || ""));
+    const facebookId = String(infoJson?.id || "").trim();
+
     if (!email) {
       return res.status(400).json({
         error: "Facebook did not return email",
@@ -1830,7 +1876,10 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    const issued = await issueSessionForEmail(email, req);
+    const issued = await issueSessionForEmail(email, req, {
+      authProvider: "facebook",
+      facebookId: facebookId || null,
+    });
     if (!issued.ok) {
       return res.status(400).json({
         error: issued.error,
@@ -2065,7 +2114,7 @@ export function registerRoutes(app: Express): Server {
       }
 
       const email = normalizeEmail(consumed.email);
-      const issued = await issueSessionForEmail(email, req);
+      const issued = await issueSessionForEmail(email, req, { authProvider: "magic_link" });
       if (!issued.ok) {
         return res.status(400).json({
           error: issued.error,
@@ -2101,6 +2150,8 @@ export function registerRoutes(app: Express): Server {
       .select({
         id: users.id,
         email: users.email,
+        googleSub: users.googleSub,
+        facebookId: users.facebookId,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
       })
@@ -2108,7 +2159,18 @@ export function registerRoutes(app: Express): Server {
       .where(eq(users.id, a.userId))
       .limit(1);
 
-    return res.json({ ok: true, user: row?.[0] || null, version: VERSION });
+    const user = row?.[0] || null;
+
+    return res.json({
+      ok: true,
+      user: user
+        ? {
+            ...user,
+            authProvider: deriveAuthProvider(user),
+          }
+        : null,
+      version: VERSION,
+    });
   });
 
   app.get("/api/me", async (req, res) => {
@@ -2121,6 +2183,8 @@ export function registerRoutes(app: Express): Server {
       .select({
         id: users.id,
         email: users.email,
+        googleSub: users.googleSub,
+        facebookId: users.facebookId,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
       })
@@ -2128,7 +2192,18 @@ export function registerRoutes(app: Express): Server {
       .where(eq(users.id, a.userId))
       .limit(1);
 
-    return res.json({ ok: true, user: row?.[0] || null, version: VERSION });
+    const user = row?.[0] || null;
+
+    return res.json({
+      ok: true,
+      user: user
+        ? {
+            ...user,
+            authProvider: deriveAuthProvider(user),
+          }
+        : null,
+      version: VERSION,
+    });
   });
 
   /* -------------------- GIFTS: CREATE -------------------- */
