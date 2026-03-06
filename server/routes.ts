@@ -23,12 +23,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-06_006";
+const VERSION = "routes_v2026-03-06_007";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -283,7 +283,6 @@ function buildGoogleConsumeUrl(sessionToken: string, email: string) {
 }
 
 function buildFacebookConsumeUrl(sessionToken: string, email: string) {
-  // Reuse existing frontend handler (/auth/google) to store session token.
   const token = encodeURIComponent(sessionToken);
   const e = encodeURIComponent(email || "");
   return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}&provider=facebook`;
@@ -321,16 +320,26 @@ function buildClaimUrl(publicId: string) {
   return `${base}/${publicId}`;
 }
 
-type AuthProvider = "google" | "facebook" | "magic_link";
+type AuthProvider = "google" | "facebook" | "email";
+
+function normalizeAuthProvider(v: unknown): AuthProvider {
+  const raw = String(v || "").trim().toLowerCase();
+  if (raw === "google") return "google";
+  if (raw === "facebook") return "facebook";
+  return "email";
+}
 
 function deriveAuthProvider(user: {
+  authProvider?: string | null;
   googleSub?: string | null;
   facebookId?: string | null;
-} | null) {
+} | null): AuthProvider | null {
   if (!user) return null;
+  const persisted = normalizeAuthProvider(user.authProvider);
+  if (persisted !== "email") return persisted;
   if (String(user.googleSub || "").trim()) return "google";
   if (String(user.facebookId || "").trim()) return "facebook";
-  return "magic_link";
+  return "email";
 }
 
 /* -------------------- AUTH: SESSION REVOKE HELPERS -------------------- */
@@ -550,12 +559,14 @@ async function issueSessionForEmail(
     };
   }
 
+  const authProvider = normalizeAuthProvider(opts?.authProvider);
   const googleSub = String(opts?.googleSub || "").trim() || null;
   const facebookId = String(opts?.facebookId || "").trim() || null;
 
   const existing = await db
     .select({
       id: users.id,
+      authProvider: users.authProvider,
       googleSub: users.googleSub,
       facebookId: users.facebookId,
     })
@@ -569,6 +580,7 @@ async function issueSessionForEmail(
     await db.insert(users).values({
       id: userId,
       email: norm,
+      authProvider,
       googleSub,
       facebookId,
       createdAt: now(),
@@ -595,6 +607,7 @@ async function issueSessionForEmail(
 
     const userPatch: Record<string, any> = {
       lastLoginAt: now(),
+      authProvider,
     };
 
     if (googleSub) userPatch.googleSub = googleSub;
@@ -2114,7 +2127,7 @@ export function registerRoutes(app: Express): Server {
       }
 
       const email = normalizeEmail(consumed.email);
-      const issued = await issueSessionForEmail(email, req, { authProvider: "magic_link" });
+      const issued = await issueSessionForEmail(email, req, { authProvider: "email" });
       if (!issued.ok) {
         return res.status(400).json({
           error: issued.error,
@@ -2150,6 +2163,7 @@ export function registerRoutes(app: Express): Server {
       .select({
         id: users.id,
         email: users.email,
+        authProvider: users.authProvider,
         googleSub: users.googleSub,
         facebookId: users.facebookId,
         createdAt: users.createdAt,
@@ -2183,6 +2197,7 @@ export function registerRoutes(app: Express): Server {
       .select({
         id: users.id,
         email: users.email,
+        authProvider: users.authProvider,
         googleSub: users.googleSub,
         facebookId: users.facebookId,
         createdAt: users.createdAt,
