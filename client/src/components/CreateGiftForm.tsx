@@ -61,8 +61,7 @@ declare global {
 }
 
 const API_BASE = "https://api.thankumail.com";
-const TURNSTILE_SCRIPT_SRC =
-  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 // Cloudflare Turnstile "Always Pass" test sitekey (safe for client-side fallback)
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
@@ -160,7 +159,6 @@ function removeSessionToken() {
   } catch {}
 }
 
-/* -------------------- CAPTURE BACKEND IDENTITY HEADERS -------------------- */
 function rememberBackendIdentityFromHeaders(headers: Headers) {
   try {
     const xCommit = headers.get("x-commit") || headers.get("X-Commit") || "";
@@ -168,6 +166,20 @@ function rememberBackendIdentityFromHeaders(headers: Headers) {
     if (xCommit) localStorage.setItem("tm_api_commit", xCommit);
     if (xApiVersion) localStorage.setItem("tm_api_version", xApiVersion);
   } catch {}
+}
+
+async function logoutServerSideIfPossible() {
+  const st = getSessionToken();
+  if (!st) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${st}` },
+    });
+    rememberBackendIdentityFromHeaders(r.headers);
+  } catch {
+    // ignore network issues; client still clears token
+  }
 }
 
 export default function CreateGiftForm() {
@@ -185,7 +197,6 @@ export default function CreateGiftForm() {
   const [messageMode, setMessageMode] = useState<"preset" | "custom">("preset");
   const [customMessage, setCustomMessage] = useState<string>("");
 
-  // Amount preset (cents). Optional for registered.
   const [amountCents, setAmountCents] = useState<number | null>(null);
 
   const [presetIdx, setPresetIdx] = useState<number>(1);
@@ -210,7 +221,6 @@ export default function CreateGiftForm() {
   const TURNSTILE_SITE_KEY = useMemo(() => getTurnstileSiteKey(), []);
   const wordmark = "thankümail";
 
-  // Expose latest token for DevTools
   useEffect(() => {
     window.getTurnstileToken = () => String(window.__turnstileToken || window.turnstileToken || "").trim();
     return () => {
@@ -220,7 +230,6 @@ export default function CreateGiftForm() {
     };
   }, []);
 
-  // Cross-tab/session updates
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === SESSION_KEY) setSessionToken(getSessionToken());
@@ -229,7 +238,6 @@ export default function CreateGiftForm() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  // Verify session token with /api/auth/me (do NOT assume token => registered)
   useEffect(() => {
     let cancelled = false;
     const seq = ++authReqSeqRef.current;
@@ -272,7 +280,6 @@ export default function CreateGiftForm() {
           return;
         }
 
-        // Invalid/expired token
         removeSessionToken();
         setSessionToken("");
         setAuthOk(false);
@@ -280,7 +287,6 @@ export default function CreateGiftForm() {
         setAuthChecked(true);
       } catch {
         if (cancelled || seq !== authReqSeqRef.current) return;
-        // Network issues: keep token, treat as guest until recovery
         setAuthOk(false);
         setAuthEmail("");
         setAuthChecked(true);
@@ -294,15 +300,12 @@ export default function CreateGiftForm() {
     };
   }, [sessionToken]);
 
-  // Guests: preset-only, no amount
-  // Registered: preset/custom, amount optional
   useEffect(() => {
     if (!isRegistered) {
       setMessageMode("preset");
       setCustomMessage("");
       setAmountCents(null);
     } else {
-      // registered: backend owns senderEmail (derived from auth)
       setSenderEmail("");
     }
   }, [isRegistered]);
@@ -546,7 +549,7 @@ export default function CreateGiftForm() {
         Authorization: `Bearer ${authToken}`,
       },
       body: JSON.stringify({
-        amount: cents, // backend accepts cents (normalizeFixedAmountToCents)
+        amount: cents,
         publicId,
       }),
     });
@@ -638,13 +641,11 @@ export default function CreateGiftForm() {
       turnstileToken: token,
     };
 
-    // Guest: must send senderEmail
     if (!st) {
       payload.senderEmail = se;
       payload.messageMode = "preset";
       payload.presetMessageId = presetMessageId;
     } else {
-      // Registered: backend derives senderEmail from auth; do NOT send senderEmail
       payload.messageMode = messageMode;
 
       if (messageMode === "preset") {
@@ -699,7 +700,6 @@ export default function CreateGiftForm() {
 
       const ok = data as CreateGiftOk;
 
-      // If payment is required, redirect to Stripe Checkout immediately (so user sees payment BEFORE “sent”)
       if (isRegistered && amountCents !== null && ok.paymentRequired) {
         const authToken = getSessionToken();
         if (!authToken) {
@@ -728,7 +728,6 @@ export default function CreateGiftForm() {
         }
       }
 
-      // Normal “sent” path (no payment)
       setLastSentRecipientEmail(re);
       setResult(ok);
       setSubmitting(false);
@@ -771,7 +770,13 @@ export default function CreateGiftForm() {
     }
   }
 
-  function signOut() {
+  async function signOut() {
+    setSubmitting(false);
+    setRedirectingToPayment(false);
+    clearErrorsAndUnlock();
+    setResult(null);
+
+    await logoutServerSideIfPossible();
     removeSessionToken();
     setSessionToken("");
     setAuthOk(false);
@@ -779,6 +784,7 @@ export default function CreateGiftForm() {
     setMessageMode("preset");
     setCustomMessage("");
     setAmountCents(null);
+
     window.location.replace("/");
   }
 
@@ -810,7 +816,10 @@ export default function CreateGiftForm() {
 
   return (
     <div className="w-full max-w-xl mx-auto">
-      <form onSubmit={onSubmit} className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal">
+      <form
+        onSubmit={onSubmit}
+        className="rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal"
+      >
         <div className="space-y-4">
           <div className="space-y-1">
             <div className="text-lg font-outfit font-semibold tracking-tight text-tm-charcoal">
@@ -818,7 +827,6 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
-          {/* AUTH STRIP */}
           <div className="rounded-2xl border border-tm-charcoal/15 bg-tm-cream px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm font-medium text-tm-charcoal">{authLabel}</div>
@@ -838,7 +846,8 @@ export default function CreateGiftForm() {
               {isRegistered ? (
                 <>
                   Sender is your signed-in email
-                  {authEmail ? <span className="text-tm-charcoal/70"> • {authEmail}</span> : null}. Custom message + optional gift amounts are unlocked.
+                  {authEmail ? <span className="text-tm-charcoal/70"> • {authEmail}</span> : null}. Custom message +
+                  optional gift amounts are unlocked.
                 </>
               ) : (
                 "Guests can send preset messages only (no amount)."
@@ -846,7 +855,6 @@ export default function CreateGiftForm() {
             </div>
           </div>
 
-          {/* SENDER (guest only) */}
           {!isRegistered ? (
             <div>
               <input
@@ -864,7 +872,6 @@ export default function CreateGiftForm() {
             </div>
           ) : null}
 
-          {/* RECIPIENT */}
           <div>
             <input
               value={recipientEmail}
@@ -880,7 +887,6 @@ export default function CreateGiftForm() {
             />
           </div>
 
-          {/* MESSAGE MODE (registered only) */}
           {isRegistered ? (
             <div className="rounded-2xl border border-tm-charcoal/15 bg-white p-3">
               <div className="flex items-center justify-between gap-3">
@@ -928,7 +934,6 @@ export default function CreateGiftForm() {
             </div>
           ) : null}
 
-          {/* PRESET SELECTOR */}
           {!isRegistered || messageMode === "preset" ? (
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
@@ -968,12 +973,13 @@ export default function CreateGiftForm() {
             </div>
           ) : null}
 
-          {/* AMOUNT PRESETS (registered only; optional) */}
           {isRegistered ? (
             <div className="rounded-2xl border border-tm-charcoal/15 bg-white p-3">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="text-sm font-medium text-tm-charcoal">Gift amount (optional)</div>
-                <div className="text-xs text-tm-charcoal/60">{amountCents === null ? "none" : centsToLabel(amountCents)}</div>
+                <div className="text-xs text-tm-charcoal/60">
+                  {amountCents === null ? "none" : centsToLabel(amountCents)}
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -1070,9 +1076,7 @@ export default function CreateGiftForm() {
                 <div className="mt-2 text-xs text-emerald-900/80">Delivery: queued ✓</div>
               ) : null}
 
-              {result.deliveryError ? (
-                <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div>
-              ) : null}
+              {result.deliveryError ? <div className="mt-2 text-emerald-900/80">Delivery note: {result.deliveryError}</div> : null}
 
               <div className="mt-3">
                 <button
