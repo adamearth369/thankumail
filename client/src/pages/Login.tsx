@@ -109,6 +109,13 @@ export default function Login() {
   const facebookAuthUrl = buildFacebookAuthUrl();
   const linkedinAuthUrl = buildLinkedinAuthUrl();
 
+  const [mounted, setMounted] = React.useState(false);
+
+  React.useEffect(() => {
+    const t = setTimeout(() => setMounted(true), 30);
+    return () => clearTimeout(t);
+  }, []);
+
   const box =
     "w-full max-w-xl rounded-2xl border border-white/20 bg-white/92 backdrop-blur-sm p-5 shadow-soft text-tm-charcoal";
 
@@ -118,48 +125,55 @@ export default function Login() {
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
       <div className="min-h-screen bg-black/30 flex items-center justify-center px-4">
-        <div className={box}>
-          <div className="flex items-center justify-between gap-4">
-            <div className="text-lg font-outfit font-semibold tracking-tight">Registered sign in</div>
-            <Link href="/" className="text-sm underline text-tm-charcoal/70 hover:text-tm-charcoal">
-              Back
-            </Link>
-          </div>
+        <div
+          className={[
+            "transition-all duration-700 ease-out",
+            mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3",
+          ].join(" ")}
+        >
+          <div className={box}>
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-lg font-outfit font-semibold tracking-tight">Registered sign in</div>
+              <Link href="/" className="text-sm underline text-tm-charcoal/70 hover:text-tm-charcoal">
+                Back
+              </Link>
+            </div>
 
-          <div className="mt-3 text-sm text-tm-charcoal/75">
-            Registered accounts use <span className="font-medium text-tm-charcoal">Google</span>,{" "}
-            <span className="font-medium text-tm-charcoal">LinkedIn</span>, or{" "}
-            <span className="font-medium text-tm-charcoal">Facebook</span>.
-          </div>
+            <div className="mt-3 text-sm text-tm-charcoal/75">
+              Registered accounts use <span className="font-medium text-tm-charcoal">Google</span>,{" "}
+              <span className="font-medium text-tm-charcoal">LinkedIn</span>, or{" "}
+              <span className="font-medium text-tm-charcoal">Facebook</span>.
+            </div>
 
-          <div className="mt-4 grid gap-3">
-            <ProviderButton
-              href={googleAuthUrl}
-              label="Continue with Google"
-              icon={<GoogleIcon />}
-              className="bg-white text-[#1F1F1F] border-[#DADCE0] hover:bg-[#F8F9FA]"
-              iconWrapClassName="bg-white border-[#DADCE0]"
-            />
+            <div className="mt-4 grid gap-3">
+              <ProviderButton
+                href={googleAuthUrl}
+                label="Continue with Google"
+                icon={<GoogleIcon />}
+                className="bg-white text-[#1F1F1F] border-[#DADCE0] hover:bg-[#F8F9FA]"
+                iconWrapClassName="bg-white border-[#DADCE0]"
+              />
 
-            <ProviderButton
-              href={linkedinAuthUrl}
-              label="Continue with LinkedIn"
-              icon={<LinkedinIcon />}
-              className="bg-[#0A66C2] text-white border-[#0A66C2] hover:bg-[#004182]"
-              iconWrapClassName="bg-white/10 border-white/20 text-white"
-            />
+              <ProviderButton
+                href={linkedinAuthUrl}
+                label="Continue with LinkedIn"
+                icon={<LinkedinIcon />}
+                className="bg-[#0A66C2] text-white border-[#0A66C2] hover:bg-[#004182]"
+                iconWrapClassName="bg-white/10 border-white/20 text-white"
+              />
 
-            <ProviderButton
-              href={facebookAuthUrl}
-              label="Continue with Facebook"
-              icon={<FacebookIcon />}
-              className="bg-[#1877F2] text-white border-[#1877F2] hover:bg-[#166FE5]"
-              iconWrapClassName="bg-white/10 border-white/20 text-white"
-            />
-          </div>
+              <ProviderButton
+                href={facebookAuthUrl}
+                label="Continue with Facebook"
+                icon={<FacebookIcon />}
+                className="bg-[#1877F2] text-white border-[#1877F2] hover:bg-[#166FE5]"
+                iconWrapClassName="bg-white/10 border-white/20 text-white"
+              />
+            </div>
 
-          <div className="mt-3 text-xs text-tm-charcoal/60">
-            This keeps the flow fast and helps protect the system from abuse.
+            <div className="mt-3 text-xs text-tm-charcoal/60">
+              This keeps the flow fast and helps protect the system from abuse.
+            </div>
           </div>
         </div>
       </div>
