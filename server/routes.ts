@@ -1,6 +1,3 @@
-// WHERE TO PASTE: server/routes.ts
-// ACTION: Full file replacement (paste exactly)
-
 import express from "express";
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
@@ -23,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-06_007";
+const VERSION = "routes_v2026-03-06_008";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -80,6 +77,15 @@ const FACEBOOK_REDIRECT_URI = `${API_URL}/api/auth/facebook/callback`;
 const FACEBOOK_AUTH_URL = "https://www.facebook.com/v19.0/dialog/oauth";
 const FACEBOOK_TOKEN_URL = "https://graph.facebook.com/v19.0/oauth/access_token";
 const FACEBOOK_ME_URL = "https://graph.facebook.com/me";
+
+/* -------------------- LINKEDIN OIDC -------------------- */
+const LINKEDIN_CLIENT_ID = (process.env.LINKEDIN_CLIENT_ID || "").trim();
+const LINKEDIN_CLIENT_SECRET = (process.env.LINKEDIN_CLIENT_SECRET || "").trim();
+const LINKEDIN_REDIRECT_URI = `${API_URL}/api/auth/linkedin/callback`;
+
+const LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization";
+const LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken";
+const LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo";
 
 /* -------------------- OAUTH STATE STORE -------------------- */
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -288,6 +294,12 @@ function buildFacebookConsumeUrl(sessionToken: string, email: string) {
   return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}&provider=facebook`;
 }
 
+function buildLinkedinConsumeUrl(sessionToken: string, email: string) {
+  const token = encodeURIComponent(sessionToken);
+  const e = encodeURIComponent(email || "");
+  return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}&provider=linkedin`;
+}
+
 function logAuth(event: string, fields: Record<string, any> = {}) {
   console.log(
     JSON.stringify({
@@ -320,12 +332,13 @@ function buildClaimUrl(publicId: string) {
   return `${base}/${publicId}`;
 }
 
-type AuthProvider = "google" | "facebook" | "email";
+type AuthProvider = "google" | "facebook" | "linkedin" | "email";
 
 function normalizeAuthProvider(v: unknown): AuthProvider {
   const raw = String(v || "").trim().toLowerCase();
   if (raw === "google") return "google";
   if (raw === "facebook") return "facebook";
+  if (raw === "linkedin") return "linkedin";
   return "email";
 }
 
@@ -333,12 +346,14 @@ function deriveAuthProvider(user: {
   authProvider?: string | null;
   googleSub?: string | null;
   facebookId?: string | null;
+  linkedinId?: string | null;
 } | null): AuthProvider | null {
   if (!user) return null;
   const persisted = normalizeAuthProvider(user.authProvider);
   if (persisted !== "email") return persisted;
   if (String(user.googleSub || "").trim()) return "google";
   if (String(user.facebookId || "").trim()) return "facebook";
+  if (String(user.linkedinId || "").trim()) return "linkedin";
   return "email";
 }
 
@@ -534,6 +549,7 @@ async function issueSessionForEmail(
     authProvider?: AuthProvider;
     googleSub?: string | null;
     facebookId?: string | null;
+    linkedinId?: string | null;
   },
 ) {
   const norm = normalizeEmail(email);
@@ -562,6 +578,7 @@ async function issueSessionForEmail(
   const authProvider = normalizeAuthProvider(opts?.authProvider);
   const googleSub = String(opts?.googleSub || "").trim() || null;
   const facebookId = String(opts?.facebookId || "").trim() || null;
+  const linkedinId = String(opts?.linkedinId || "").trim() || null;
 
   const existing = await db
     .select({
@@ -569,6 +586,7 @@ async function issueSessionForEmail(
       authProvider: users.authProvider,
       googleSub: users.googleSub,
       facebookId: users.facebookId,
+      linkedinId: users.linkedinId,
     })
     .from(users)
     .where(eq(users.email, norm))
@@ -583,6 +601,7 @@ async function issueSessionForEmail(
       authProvider,
       googleSub,
       facebookId,
+      linkedinId,
       createdAt: now(),
       lastLoginAt: null,
     } as any);
@@ -612,6 +631,7 @@ async function issueSessionForEmail(
 
     if (googleSub) userPatch.googleSub = googleSub;
     if (facebookId) userPatch.facebookId = facebookId;
+    if (linkedinId) userPatch.linkedinId = linkedinId;
 
     await tx.update(users).set(userPatch).where(eq(users.id, userId));
   });
@@ -875,6 +895,13 @@ const limiterGoogle = rateLimit({
 });
 
 const limiterFacebook = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const limiterLinkedin = rateLimit({
   windowMs: 60_000,
   max: 30,
   standardHeaders: true,
@@ -1214,6 +1241,13 @@ export function registerRoutes(app: Express): Server {
         hasAppSecret: Boolean(FACEBOOK_APP_SECRET),
       },
 
+      linkedin: {
+        configured: Boolean(LINKEDIN_CLIENT_ID && LINKEDIN_CLIENT_SECRET),
+        redirectUri: LINKEDIN_REDIRECT_URI,
+        hasClientId: Boolean(LINKEDIN_CLIENT_ID),
+        hasClientSecret: Boolean(LINKEDIN_CLIENT_SECRET),
+      },
+
       limits: {
         dailyLimitIp: DAILY_LIMIT_IP,
         dailyLimitSender: DAILY_LIMIT_SENDER,
@@ -1239,7 +1273,7 @@ export function registerRoutes(app: Express): Server {
           message: "preset-or-custom (max 280)",
           amount: `optional (allowed: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}; min $25 when present)`,
           sms: "optional",
-          auth: "google + facebook",
+          auth: "google + facebook + linkedin",
         },
       },
 
@@ -1907,6 +1941,164 @@ export function registerRoutes(app: Express): Server {
     return res.redirect(302, buildFacebookConsumeUrl(issued.sessionToken, email));
   });
 
+  /* -------------------- AUTH: LINKEDIN OIDC -------------------- */
+  app.get("/api/auth/linkedin", limiterLinkedin, async (req, res) => {
+    pruneOauthState();
+
+    if (!LINKEDIN_CLIENT_ID || !LINKEDIN_CLIENT_SECRET) {
+      return res
+        .status(503)
+        .json({ error: "LinkedIn auth not configured", code: "LINKEDIN_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+    const state = `li_${randomToken(16)}`;
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+
+    const url = new URL(LINKEDIN_AUTH_URL);
+    url.searchParams.set("client_id", LINKEDIN_CLIENT_ID);
+    url.searchParams.set("redirect_uri", LINKEDIN_REDIRECT_URI);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "openid profile email");
+    url.searchParams.set("state", state);
+
+    return res.redirect(302, url.toString());
+  });
+
+  app.get("/api/auth/linkedin/start", limiterLinkedin, async (req, res) => {
+    pruneOauthState();
+
+    if (!LINKEDIN_CLIENT_ID || !LINKEDIN_CLIENT_SECRET) {
+      return res
+        .status(503)
+        .json({ error: "LinkedIn auth not configured", code: "LINKEDIN_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+    const state = `li_${randomToken(16)}`;
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+
+    const url = new URL(LINKEDIN_AUTH_URL);
+    url.searchParams.set("client_id", LINKEDIN_CLIENT_ID);
+    url.searchParams.set("redirect_uri", LINKEDIN_REDIRECT_URI);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "openid profile email");
+    url.searchParams.set("state", state);
+
+    return res.redirect(302, url.toString());
+  });
+
+  app.get("/api/auth/linkedin/callback", limiterLinkedin, async (req, res) => {
+    pruneOauthState();
+
+    if (!LINKEDIN_CLIENT_ID || !LINKEDIN_CLIENT_SECRET) {
+      return res
+        .status(503)
+        .json({ error: "LinkedIn auth not configured", code: "LINKEDIN_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const code = String(req.query.code || "").trim();
+    const state = String(req.query.state || "").trim();
+    const error = String(req.query.error || "").trim();
+    const errorDescription = String(req.query.error_description || "").trim();
+
+    if (error) {
+      return res.status(400).json({
+        error: "LinkedIn auth failed",
+        code: "LINKEDIN_OAUTH_ERROR",
+        detail: { error, errorDescription },
+        version: VERSION,
+      });
+    }
+
+    if (!code || !state) {
+      return res.status(400).json({ error: "Invalid callback", code: "LINKEDIN_CALLBACK_INVALID", version: VERSION });
+    }
+
+    const saved = oauthStateStore.get(state);
+    oauthStateStore.delete(state);
+
+    if (!saved || saved.exp <= Date.now()) {
+      return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+    if (saved.ip && saved.ip !== ip) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+    if (saved.ua && saved.ua !== ua) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+
+    const body = new URLSearchParams();
+    body.set("grant_type", "authorization_code");
+    body.set("code", code);
+    body.set("client_id", LINKEDIN_CLIENT_ID);
+    body.set("client_secret", LINKEDIN_CLIENT_SECRET);
+    body.set("redirect_uri", LINKEDIN_REDIRECT_URI);
+
+    const tokenResp = await fetch(LINKEDIN_TOKEN_URL, { method: "POST", body });
+    const tokenJson: any = await tokenResp.json().catch(() => ({}));
+
+    const accessToken = String(tokenJson?.access_token || "").trim();
+    if (!accessToken) {
+      return res.status(400).json({
+        error: "Token exchange failed",
+        code: "LINKEDIN_TOKEN_EXCHANGE_FAILED",
+        detail: tokenJson,
+        version: VERSION,
+      });
+    }
+
+    const infoResp = await fetch(LINKEDIN_USERINFO_URL, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const infoJson: any = await infoResp.json().catch(() => ({}));
+
+    const email = normalizeEmail(String(infoJson?.email || ""));
+    const emailVerified = infoJson?.email_verified;
+    const linkedinId = String(infoJson?.sub || "").trim();
+
+    if (!email) {
+      return res.status(400).json({
+        error: "LinkedIn did not return email",
+        code: "LINKEDIN_NO_EMAIL",
+        detail: {
+          hasSub: Boolean(infoJson?.sub),
+          hasName: Boolean(infoJson?.name),
+        },
+        version: VERSION,
+      });
+    }
+
+    if (emailVerified === false) {
+      return res.status(400).json({ error: "Email not verified", code: "EMAIL_NOT_VERIFIED", version: VERSION });
+    }
+
+    const issued = await issueSessionForEmail(email, req, {
+      authProvider: "linkedin",
+      linkedinId: linkedinId || null,
+    });
+    if (!issued.ok) {
+      return res.status(400).json({
+        error: issued.error,
+        code: issued.code,
+        reason: (issued as any).reason,
+        version: VERSION,
+      });
+    }
+
+    logAuth("auth_linkedin_success", { emailDomain: extractDomain(email) });
+
+    return res.redirect(302, buildLinkedinConsumeUrl(issued.sessionToken, email));
+  });
+
   /* -------------------- AUTH: MAGIC LINK (DISABLED BY DEFAULT) -------------------- */
   app.post("/api/auth/request", limiterAuthRequest, async (req, res) => {
     if (!AUTH_MAGIC_LINK_ENABLED) {
@@ -2166,6 +2358,7 @@ export function registerRoutes(app: Express): Server {
         authProvider: users.authProvider,
         googleSub: users.googleSub,
         facebookId: users.facebookId,
+        linkedinId: users.linkedinId,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
       })
@@ -2200,6 +2393,7 @@ export function registerRoutes(app: Express): Server {
         authProvider: users.authProvider,
         googleSub: users.googleSub,
         facebookId: users.facebookId,
+        linkedinId: users.linkedinId,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
       })
