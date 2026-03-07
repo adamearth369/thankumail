@@ -168,32 +168,32 @@ export default function Login() {
                 href={googleAuthUrl}
                 label="Continue with Google"
                 icon={<GoogleIcon />}
-                className="bg-white text-[#1F1F1F] border-[#DADCE0] hover:bg-[#F8F9FA]"
-                iconWrapClassName="bg-white border-[#DADCE0]"
+                className="bg-white text-[#1F1F1F] border-[#E5E5E5] hover:bg-[#FAFAFA]"
+                iconWrapClassName="bg-white border-[#E5E5E5]"
               />
 
               <ProviderButton
                 href={microsoftAuthUrl}
                 label="Continue with Microsoft"
                 icon={<MicrosoftIcon />}
-                className="bg-white text-[#1F1F1F] border-[#DADCE0] hover:bg-[#F8F9FA]"
-                iconWrapClassName="bg-white border-[#DADCE0]"
+                className="bg-white text-[#1F1F1F] border-[#E5E5E5] hover:bg-[#FAFAFA]"
+                iconWrapClassName="bg-white border-[#E5E5E5]"
               />
 
               <ProviderButton
                 href={linkedinAuthUrl}
                 label="Continue with LinkedIn"
                 icon={<LinkedinIcon />}
-                className="bg-[#0A66C2] text-white border-[#0A66C2] hover:bg-[#004182]"
-                iconWrapClassName="bg-white/10 border-white/20 text-white"
+                className="bg-white text-[#1F1F1F] border-[#E5E5E5] hover:bg-[#FAFAFA]"
+                iconWrapClassName="bg-white border-[#E5E5E5]"
               />
 
               <ProviderButton
                 href={facebookAuthUrl}
                 label="Continue with Facebook"
                 icon={<FacebookIcon />}
-                className="bg-[#1877F2] text-white border-[#1877F2] hover:bg-[#166FE5]"
-                iconWrapClassName="bg-white/10 border-white/20 text-white"
+                className="bg-white text-[#1F1F1F] border-[#E5E5E5] hover:bg-[#FAFAFA]"
+                iconWrapClassName="bg-white border-[#E5E5E5]"
               />
             </div>
 
