@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/pages/Login.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React from "react";
 import { Link } from "wouter";
 
@@ -27,9 +24,15 @@ function buildFacebookAuthUrl(): string {
   return `${base}/api/auth/facebook`;
 }
 
+function buildLinkedinAuthUrl(): string {
+  const base = resolveApiBase();
+  return `${base}/api/auth/linkedin`;
+}
+
 export default function Login() {
   const googleAuthUrl = buildGoogleAuthUrl();
   const facebookAuthUrl = buildFacebookAuthUrl();
+  const linkedinAuthUrl = buildLinkedinAuthUrl();
 
   const box = "rounded-2xl border border-tm-charcoal/20 bg-white p-5 shadow-soft text-tm-charcoal";
 
@@ -44,8 +47,9 @@ export default function Login() {
         </div>
 
         <div className="mt-3 text-sm text-tm-charcoal/75">
-          Registered accounts use <span className="font-medium text-tm-charcoal">Google</span> or{" "}
-          <span className="font-medium text-tm-charcoal">Facebook</span>.
+          Registered accounts use <span className="font-medium text-tm-charcoal">Google</span>,{" "}
+          <span className="font-medium text-tm-charcoal">Facebook</span>, or{" "}
+          <span className="font-medium text-tm-charcoal">LinkedIn</span>.
         </div>
 
         <div className="mt-4 grid gap-3">
@@ -67,6 +71,16 @@ export default function Login() {
             )}
           >
             Continue with Facebook
+          </a>
+
+          <a
+            href={linkedinAuthUrl}
+            className={classNames(
+              "w-full inline-flex items-center justify-center rounded-2xl px-5 py-4 transition font-outfit text-lg tracking-tight border-2",
+              "bg-white text-tm-charcoal border-tm-charcoal/30 cursor-pointer shadow-soft hover:shadow-xl hover:bg-tm-cream hover:-translate-y-[1px] active:translate-y-0 active:opacity-90",
+            )}
+          >
+            Continue with LinkedIn
           </a>
         </div>
 
