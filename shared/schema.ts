@@ -21,13 +21,14 @@ export const users = pgTable("users", {
 
   /**
    * Provider identity
-   * - authProvider: "email" | "google" | "facebook" | "linkedin"
-   * - googleSub/facebookId/linkedinId: provider user ids when available
+   * - authProvider: "email" | "google" | "facebook" | "linkedin" | "microsoft"
+   * - googleSub/facebookId/linkedinId/microsoftId: provider user ids when available
    */
   authProvider: text("auth_provider").notNull().default("email"),
   googleSub: text("google_sub").unique(),
   facebookId: text("facebook_id").unique(),
   linkedinId: text("linkedin_id").unique(),
+  microsoftId: text("microsoft_id").unique(),
 
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),

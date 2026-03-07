@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-06_008";
+const VERSION = "routes_v2026-03-07_009";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -86,6 +86,20 @@ const LINKEDIN_REDIRECT_URI = `${API_URL}/api/auth/linkedin/callback`;
 const LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization";
 const LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken";
 const LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo";
+
+/* -------------------- MICROSOFT OIDC -------------------- */
+const MICROSOFT_CLIENT_ID = (process.env.MICROSOFT_CLIENT_ID || "").trim();
+const MICROSOFT_CLIENT_SECRET = (process.env.MICROSOFT_CLIENT_SECRET || "").trim();
+const MICROSOFT_TENANT_ID = (process.env.MICROSOFT_TENANT_ID || "common").trim() || "common";
+const MICROSOFT_REDIRECT_URI = `${API_URL}/api/auth/microsoft/callback`;
+
+const MICROSOFT_AUTH_URL = `https://login.microsoftonline.com/${encodeURIComponent(
+  MICROSOFT_TENANT_ID,
+)}/oauth2/v2.0/authorize`;
+const MICROSOFT_TOKEN_URL = `https://login.microsoftonline.com/${encodeURIComponent(
+  MICROSOFT_TENANT_ID,
+)}/oauth2/v2.0/token`;
+const MICROSOFT_USERINFO_URL = "https://graph.microsoft.com/oidc/userinfo";
 
 /* -------------------- OAUTH STATE STORE -------------------- */
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -300,6 +314,12 @@ function buildLinkedinConsumeUrl(sessionToken: string, email: string) {
   return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}&provider=linkedin`;
 }
 
+function buildMicrosoftConsumeUrl(sessionToken: string, email: string) {
+  const token = encodeURIComponent(sessionToken);
+  const e = encodeURIComponent(email || "");
+  return `${publicSiteBase()}/auth/google#token=${token}${e ? `&email=${e}` : ""}&provider=microsoft`;
+}
+
 function logAuth(event: string, fields: Record<string, any> = {}) {
   console.log(
     JSON.stringify({
@@ -332,13 +352,14 @@ function buildClaimUrl(publicId: string) {
   return `${base}/${publicId}`;
 }
 
-type AuthProvider = "google" | "facebook" | "linkedin" | "email";
+type AuthProvider = "google" | "facebook" | "linkedin" | "microsoft" | "email";
 
 function normalizeAuthProvider(v: unknown): AuthProvider {
   const raw = String(v || "").trim().toLowerCase();
   if (raw === "google") return "google";
   if (raw === "facebook") return "facebook";
   if (raw === "linkedin") return "linkedin";
+  if (raw === "microsoft") return "microsoft";
   return "email";
 }
 
@@ -347,6 +368,7 @@ function deriveAuthProvider(user: {
   googleSub?: string | null;
   facebookId?: string | null;
   linkedinId?: string | null;
+  microsoftId?: string | null;
 } | null): AuthProvider | null {
   if (!user) return null;
   const persisted = normalizeAuthProvider(user.authProvider);
@@ -354,6 +376,7 @@ function deriveAuthProvider(user: {
   if (String(user.googleSub || "").trim()) return "google";
   if (String(user.facebookId || "").trim()) return "facebook";
   if (String(user.linkedinId || "").trim()) return "linkedin";
+  if (String(user.microsoftId || "").trim()) return "microsoft";
   return "email";
 }
 
@@ -550,6 +573,7 @@ async function issueSessionForEmail(
     googleSub?: string | null;
     facebookId?: string | null;
     linkedinId?: string | null;
+    microsoftId?: string | null;
   },
 ) {
   const norm = normalizeEmail(email);
@@ -579,6 +603,7 @@ async function issueSessionForEmail(
   const googleSub = String(opts?.googleSub || "").trim() || null;
   const facebookId = String(opts?.facebookId || "").trim() || null;
   const linkedinId = String(opts?.linkedinId || "").trim() || null;
+  const microsoftId = String(opts?.microsoftId || "").trim() || null;
 
   const existing = await db
     .select({
@@ -587,6 +612,7 @@ async function issueSessionForEmail(
       googleSub: users.googleSub,
       facebookId: users.facebookId,
       linkedinId: users.linkedinId,
+      microsoftId: (users as any).microsoftId,
     })
     .from(users)
     .where(eq(users.email, norm))
@@ -602,6 +628,7 @@ async function issueSessionForEmail(
       googleSub,
       facebookId,
       linkedinId,
+      microsoftId,
       createdAt: now(),
       lastLoginAt: null,
     } as any);
@@ -632,6 +659,7 @@ async function issueSessionForEmail(
     if (googleSub) userPatch.googleSub = googleSub;
     if (facebookId) userPatch.facebookId = facebookId;
     if (linkedinId) userPatch.linkedinId = linkedinId;
+    if (microsoftId) userPatch.microsoftId = microsoftId;
 
     await tx.update(users).set(userPatch).where(eq(users.id, userId));
   });
@@ -902,6 +930,13 @@ const limiterFacebook = rateLimit({
 });
 
 const limiterLinkedin = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const limiterMicrosoft = rateLimit({
   windowMs: 60_000,
   max: 30,
   standardHeaders: true,
@@ -1248,6 +1283,14 @@ export function registerRoutes(app: Express): Server {
         hasClientSecret: Boolean(LINKEDIN_CLIENT_SECRET),
       },
 
+      microsoft: {
+        configured: Boolean(MICROSOFT_CLIENT_ID && MICROSOFT_CLIENT_SECRET && MICROSOFT_TENANT_ID),
+        redirectUri: MICROSOFT_REDIRECT_URI,
+        hasClientId: Boolean(MICROSOFT_CLIENT_ID),
+        hasClientSecret: Boolean(MICROSOFT_CLIENT_SECRET),
+        tenantId: MICROSOFT_TENANT_ID || null,
+      },
+
       limits: {
         dailyLimitIp: DAILY_LIMIT_IP,
         dailyLimitSender: DAILY_LIMIT_SENDER,
@@ -1273,7 +1316,7 @@ export function registerRoutes(app: Express): Server {
           message: "preset-or-custom (max 280)",
           amount: `optional (allowed: ${ALLOWED_AMOUNTS_DOLLARS.join(", ")}; min $25 when present)`,
           sms: "optional",
-          auth: "google + facebook + linkedin",
+          auth: "google + facebook + linkedin + microsoft",
         },
       },
 
@@ -2099,6 +2142,175 @@ export function registerRoutes(app: Express): Server {
     return res.redirect(302, buildLinkedinConsumeUrl(issued.sessionToken, email));
   });
 
+  /* -------------------- AUTH: MICROSOFT OIDC -------------------- */
+  app.get("/api/auth/microsoft", limiterMicrosoft, async (req, res) => {
+    pruneOauthState();
+
+    if (!MICROSOFT_CLIENT_ID || !MICROSOFT_CLIENT_SECRET || !MICROSOFT_TENANT_ID) {
+      return res
+        .status(503)
+        .json({ error: "Microsoft auth not configured", code: "MICROSOFT_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+    const state = `ms_${randomToken(16)}`;
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+
+    const url = new URL(MICROSOFT_AUTH_URL);
+    url.searchParams.set("client_id", MICROSOFT_CLIENT_ID);
+    url.searchParams.set("redirect_uri", MICROSOFT_REDIRECT_URI);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("response_mode", "query");
+    url.searchParams.set("scope", "openid profile email User.Read");
+    url.searchParams.set("state", state);
+    url.searchParams.set("prompt", "select_account");
+
+    return res.redirect(302, url.toString());
+  });
+
+  app.get("/api/auth/microsoft/start", limiterMicrosoft, async (req, res) => {
+    pruneOauthState();
+
+    if (!MICROSOFT_CLIENT_ID || !MICROSOFT_CLIENT_SECRET || !MICROSOFT_TENANT_ID) {
+      return res
+        .status(503)
+        .json({ error: "Microsoft auth not configured", code: "MICROSOFT_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+    const state = `ms_${randomToken(16)}`;
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+
+    const url = new URL(MICROSOFT_AUTH_URL);
+    url.searchParams.set("client_id", MICROSOFT_CLIENT_ID);
+    url.searchParams.set("redirect_uri", MICROSOFT_REDIRECT_URI);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("response_mode", "query");
+    url.searchParams.set("scope", "openid profile email User.Read");
+    url.searchParams.set("state", state);
+    url.searchParams.set("prompt", "select_account");
+
+    return res.redirect(302, url.toString());
+  });
+
+  app.get("/api/auth/microsoft/callback", limiterMicrosoft, async (req, res) => {
+    pruneOauthState();
+
+    if (!MICROSOFT_CLIENT_ID || !MICROSOFT_CLIENT_SECRET || !MICROSOFT_TENANT_ID) {
+      return res
+        .status(503)
+        .json({ error: "Microsoft auth not configured", code: "MICROSOFT_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const code = String(req.query.code || "").trim();
+    const state = String(req.query.state || "").trim();
+    const error = String(req.query.error || "").trim();
+    const errorDescription = String(req.query.error_description || "").trim();
+
+    if (error) {
+      return res.status(400).json({
+        error: "Microsoft auth failed",
+        code: "MICROSOFT_OAUTH_ERROR",
+        detail: { error, errorDescription },
+        version: VERSION,
+      });
+    }
+
+    if (!code || !state) {
+      return res.status(400).json({ error: "Invalid callback", code: "MICROSOFT_CALLBACK_INVALID", version: VERSION });
+    }
+
+    const saved = oauthStateStore.get(state);
+    oauthStateStore.delete(state);
+
+    if (!saved || saved.exp <= Date.now()) {
+      return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
+    }
+
+    const ip = getIp(req);
+    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+    if (saved.ip && saved.ip !== ip) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+    if (saved.ua && saved.ua !== ua) {
+      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
+    }
+
+    const body = new URLSearchParams();
+    body.set("client_id", MICROSOFT_CLIENT_ID);
+    body.set("client_secret", MICROSOFT_CLIENT_SECRET);
+    body.set("code", code);
+    body.set("redirect_uri", MICROSOFT_REDIRECT_URI);
+    body.set("grant_type", "authorization_code");
+    body.set("scope", "openid profile email User.Read");
+
+    const tokenResp = await fetch(MICROSOFT_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const tokenJson: any = await tokenResp.json().catch(() => ({}));
+
+    const accessToken = String(tokenJson?.access_token || "").trim();
+    if (!accessToken) {
+      return res.status(400).json({
+        error: "Token exchange failed",
+        code: "MICROSOFT_TOKEN_EXCHANGE_FAILED",
+        detail: tokenJson,
+        version: VERSION,
+      });
+    }
+
+    const infoResp = await fetch(MICROSOFT_USERINFO_URL, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const infoJson: any = await infoResp.json().catch(() => ({}));
+
+    const email = normalizeEmail(
+      String(infoJson?.email || infoJson?.preferred_username || infoJson?.upn || ""),
+    );
+    const microsoftId = String(infoJson?.sub || infoJson?.oid || "").trim();
+    const emailVerified = infoJson?.email_verified;
+
+    if (!email) {
+      return res.status(400).json({
+        error: "Microsoft did not return email",
+        code: "MICROSOFT_NO_EMAIL",
+        detail: {
+          hasSub: Boolean(infoJson?.sub),
+          hasPreferredUsername: Boolean(infoJson?.preferred_username),
+        },
+        version: VERSION,
+      });
+    }
+
+    if (emailVerified === false) {
+      return res.status(400).json({ error: "Email not verified", code: "EMAIL_NOT_VERIFIED", version: VERSION });
+    }
+
+    const issued = await issueSessionForEmail(email, req, {
+      authProvider: "microsoft",
+      microsoftId: microsoftId || null,
+    });
+    if (!issued.ok) {
+      return res.status(400).json({
+        error: issued.error,
+        code: issued.code,
+        reason: (issued as any).reason,
+        version: VERSION,
+      });
+    }
+
+    logAuth("auth_microsoft_success", { emailDomain: extractDomain(email) });
+
+    return res.redirect(302, buildMicrosoftConsumeUrl(issued.sessionToken, email));
+  });
+
   /* -------------------- AUTH: MAGIC LINK (DISABLED BY DEFAULT) -------------------- */
   app.post("/api/auth/request", limiterAuthRequest, async (req, res) => {
     if (!AUTH_MAGIC_LINK_ENABLED) {
@@ -2359,6 +2571,7 @@ export function registerRoutes(app: Express): Server {
         googleSub: users.googleSub,
         facebookId: users.facebookId,
         linkedinId: users.linkedinId,
+        microsoftId: (users as any).microsoftId,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
       })
@@ -2394,6 +2607,7 @@ export function registerRoutes(app: Express): Server {
         googleSub: users.googleSub,
         facebookId: users.facebookId,
         linkedinId: users.linkedinId,
+        microsoftId: (users as any).microsoftId,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
       })
