@@ -29,6 +29,11 @@ function buildLinkedinAuthUrl(): string {
   return `${base}/api/auth/linkedin`;
 }
 
+function buildMicrosoftAuthUrl(): string {
+  const base = resolveApiBase();
+  return `${base}/api/auth/microsoft`;
+}
+
 function GoogleIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 shrink-0">
@@ -74,6 +79,17 @@ function LinkedinIcon() {
   );
 }
 
+function MicrosoftIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 shrink-0">
+      <path fill="#F25022" d="M1 1h10.5v10.5H1z" />
+      <path fill="#7FBA00" d="M12.5 1H23v10.5H12.5z" />
+      <path fill="#00A4EF" d="M1 12.5h10.5V23H1z" />
+      <path fill="#FFB900" d="M12.5 12.5H23V23H12.5z" />
+    </svg>
+  );
+}
+
 type ProviderButtonProps = {
   href: string;
   label: string;
@@ -108,6 +124,7 @@ export default function Login() {
   const googleAuthUrl = buildGoogleAuthUrl();
   const facebookAuthUrl = buildFacebookAuthUrl();
   const linkedinAuthUrl = buildLinkedinAuthUrl();
+  const microsoftAuthUrl = buildMicrosoftAuthUrl();
 
   const [mounted, setMounted] = React.useState(false);
 
@@ -141,8 +158,9 @@ export default function Login() {
 
             <div className="mt-3 text-sm text-tm-charcoal/75">
               Registered accounts use <span className="font-medium text-tm-charcoal">Google</span>,{" "}
-              <span className="font-medium text-tm-charcoal">LinkedIn</span>, or{" "}
-              <span className="font-medium text-tm-charcoal">Facebook</span>.
+              <span className="font-medium text-tm-charcoal">LinkedIn</span>,{" "}
+              <span className="font-medium text-tm-charcoal">Facebook</span>, or{" "}
+              <span className="font-medium text-tm-charcoal">Microsoft</span>.
             </div>
 
             <div className="mt-4 grid gap-3">
@@ -150,6 +168,14 @@ export default function Login() {
                 href={googleAuthUrl}
                 label="Continue with Google"
                 icon={<GoogleIcon />}
+                className="bg-white text-[#1F1F1F] border-[#DADCE0] hover:bg-[#F8F9FA]"
+                iconWrapClassName="bg-white border-[#DADCE0]"
+              />
+
+              <ProviderButton
+                href={microsoftAuthUrl}
+                label="Continue with Microsoft"
+                icon={<MicrosoftIcon />}
                 className="bg-white text-[#1F1F1F] border-[#DADCE0] hover:bg-[#F8F9FA]"
                 iconWrapClassName="bg-white border-[#DADCE0]"
               />
