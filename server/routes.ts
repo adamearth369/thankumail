@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-08_012";
+const VERSION = "routes_v2026-03-08_013";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -670,9 +670,69 @@ async function issueSessionForEmail(
   const linkedinId = String(opts?.linkedinId || "").trim() || null;
   const microsoftId = String(opts?.microsoftId || "").trim() || null;
 
-  const existing = await db
+  const byProvider =
+    googleSub
+      ? await db
+          .select({
+            id: users.id,
+            email: users.email,
+            authProvider: users.authProvider,
+            googleSub: users.googleSub,
+            facebookId: users.facebookId,
+            linkedinId: users.linkedinId,
+            microsoftId: (users as any).microsoftId,
+          })
+          .from(users)
+          .where(eq(users.googleSub, googleSub))
+          .limit(1)
+      : facebookId
+        ? await db
+            .select({
+              id: users.id,
+              email: users.email,
+              authProvider: users.authProvider,
+              googleSub: users.googleSub,
+              facebookId: users.facebookId,
+              linkedinId: users.linkedinId,
+              microsoftId: (users as any).microsoftId,
+            })
+            .from(users)
+            .where(eq(users.facebookId, facebookId))
+            .limit(1)
+        : linkedinId
+          ? await db
+              .select({
+                id: users.id,
+                email: users.email,
+                authProvider: users.authProvider,
+                googleSub: users.googleSub,
+                facebookId: users.facebookId,
+                linkedinId: users.linkedinId,
+                microsoftId: (users as any).microsoftId,
+              })
+              .from(users)
+              .where(eq(users.linkedinId, linkedinId))
+              .limit(1)
+          : microsoftId
+            ? await db
+                .select({
+                  id: users.id,
+                  email: users.email,
+                  authProvider: users.authProvider,
+                  googleSub: users.googleSub,
+                  facebookId: users.facebookId,
+                  linkedinId: users.linkedinId,
+                  microsoftId: (users as any).microsoftId,
+                })
+                .from(users)
+                .where(eq((users as any).microsoftId, microsoftId))
+                .limit(1)
+            : [];
+
+  const byEmail = await db
     .select({
       id: users.id,
+      email: users.email,
       authProvider: users.authProvider,
       googleSub: users.googleSub,
       facebookId: users.facebookId,
@@ -683,7 +743,17 @@ async function issueSessionForEmail(
     .where(eq(users.email, norm))
     .limit(1);
 
-  let userId = String(existing?.[0]?.id || "");
+  const providerUser = byProvider?.[0];
+  const emailUser = byEmail?.[0];
+
+  let userId = "";
+
+  if (providerUser) {
+    userId = String(providerUser.id || "");
+  } else if (emailUser) {
+    userId = String(emailUser.id || "");
+  }
+
   if (!userId) {
     userId = crypto.randomBytes(16).toString("hex");
     await db.insert(users).values({
@@ -720,6 +790,21 @@ async function issueSessionForEmail(
       lastLoginAt: now(),
       authProvider,
     };
+
+    const currentEmail =
+      providerUser && String(providerUser.id || "") === userId
+        ? normalizeEmail(String(providerUser.email || ""))
+        : emailUser && String(emailUser.id || "") === userId
+          ? normalizeEmail(String(emailUser.email || ""))
+          : "";
+
+    const emailConflict =
+      Boolean(providerUser && emailUser) &&
+      String(providerUser.id || "") !== String(emailUser.id || "");
+
+    if (!currentEmail || currentEmail === norm || !emailConflict) {
+      userPatch.email = norm;
+    }
 
     if (googleSub) userPatch.googleSub = googleSub;
     if (facebookId) userPatch.facebookId = facebookId;
