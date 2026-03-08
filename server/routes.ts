@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-08_011";
+const VERSION = "routes_v2026-03-08_012";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -101,10 +101,25 @@ const MICROSOFT_TOKEN_URL = `https://login.microsoftonline.com/${encodeURICompon
 )}/oauth2/v2.0/token`;
 const MICROSOFT_USERINFO_URL = "https://graph.microsoft.com/oidc/userinfo";
 const MICROSOFT_GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=id,mail,userPrincipalName";
+const MICROSOFT_EXPECTED_ISSUER_PREFIX = "https://login.microsoftonline.com/";
+const MICROSOFT_ALLOWED_TENANT_IDS = new Set(
+  String(process.env.MICROSOFT_ALLOWED_TENANT_IDS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 
 /* -------------------- OAUTH STATE STORE -------------------- */
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const oauthStateStore = new Map<string, { exp: number; ip: string; ua: string }>();
+type OauthStateRecord = {
+  exp: number;
+  ip: string;
+  ua: string;
+  provider: "google" | "facebook" | "linkedin" | "microsoft";
+  codeVerifier?: string;
+  nonce?: string;
+};
+const oauthStateStore = new Map<string, OauthStateRecord>();
 function pruneOauthState() {
   const nowMs = Date.now();
   for (const [k, v] of oauthStateStore.entries()) {
@@ -215,6 +230,15 @@ function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString("hex");
 }
 
+function randomBase64Url(bytes = 32) {
+  return crypto
+    .randomBytes(bytes)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
 function moneyToCents(dollars: number) {
   const cents = Math.round((Number(dollars) || 0) * 100);
   return Number.isFinite(cents) ? cents : 0;
@@ -239,6 +263,42 @@ function isDisposableEmail(email: string) {
 
 function isE164(s: string) {
   return /^\+[1-9]\d{7,14}$/.test(String(s || "").trim());
+}
+
+function sha256Base64Url(input: string) {
+  return crypto
+    .createHash("sha256")
+    .update(input)
+    .digest("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function parseJwtPayload(token: string): Record<string, any> | null {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length < 2) return null;
+    const payload = parts[1]
+      .replace(/-/g, "+")
+      .replace(/_/g, "/")
+      .padEnd(Math.ceil(parts[1].length / 4) * 4, "=");
+    const json = Buffer.from(payload, "base64").toString("utf8");
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isMicrosoftTenantAllowed(tid: string) {
+  const tenant = String(tid || "").trim();
+  if (!tenant) return MICROSOFT_TENANT_ID === "common" || MICROSOFT_TENANT_ID === "organizations" || MICROSOFT_TENANT_ID === "consumers";
+  if (MICROSOFT_ALLOWED_TENANT_IDS.size > 0) return MICROSOFT_ALLOWED_TENANT_IDS.has(tenant);
+  if (MICROSOFT_TENANT_ID === "common" || MICROSOFT_TENANT_ID === "organizations" || MICROSOFT_TENANT_ID === "consumers") {
+    return true;
+  }
+  return tenant === MICROSOFT_TENANT_ID;
 }
 
 async function mxLooksValid(domain: string) {
@@ -1294,6 +1354,9 @@ export function registerRoutes(app: Express): Server {
         hasClientId: Boolean(MICROSOFT_CLIENT_ID),
         hasClientSecret: Boolean(MICROSOFT_CLIENT_SECRET),
         tenantId: MICROSOFT_TENANT_ID || null,
+        allowedTenantIdsConfigured: MICROSOFT_ALLOWED_TENANT_IDS.size > 0,
+        pkce: true,
+        nonce: true,
       },
 
       limits: {
@@ -1727,7 +1790,7 @@ export function registerRoutes(app: Express): Server {
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
     const state = `g_${randomToken(16)}`;
-    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua, provider: "google" });
 
     const url = new URL(GOOGLE_AUTH_URL);
     url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
@@ -1738,6 +1801,7 @@ export function registerRoutes(app: Express): Server {
     url.searchParams.set("access_type", "online");
     url.searchParams.set("prompt", "select_account");
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url.toString());
   });
 
@@ -1754,7 +1818,7 @@ export function registerRoutes(app: Express): Server {
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
     const state = `g_${randomToken(16)}`;
-    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua, provider: "google" });
 
     const url = new URL(GOOGLE_AUTH_URL);
     url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
@@ -1765,6 +1829,7 @@ export function registerRoutes(app: Express): Server {
     url.searchParams.set("access_type", "online");
     url.searchParams.set("prompt", "select_account");
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url.toString());
   });
 
@@ -1796,7 +1861,7 @@ export function registerRoutes(app: Express): Server {
     const saved = oauthStateStore.get(state);
     oauthStateStore.delete(state);
 
-    if (!saved || saved.exp <= Date.now()) {
+    if (!saved || saved.exp <= Date.now() || saved.provider !== "google") {
       return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
     }
 
@@ -1859,6 +1924,7 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, buildGoogleConsumeUrl(issued.sessionToken, email));
   });
 
@@ -1876,7 +1942,7 @@ export function registerRoutes(app: Express): Server {
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
     const state = `f_${randomToken(16)}`;
-    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua, provider: "facebook" });
 
     const url = new URL(FACEBOOK_AUTH_URL);
     url.searchParams.set("client_id", FACEBOOK_APP_ID);
@@ -1885,6 +1951,7 @@ export function registerRoutes(app: Express): Server {
     url.searchParams.set("response_type", "code");
     url.searchParams.set("scope", "email");
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url.toString());
   });
 
@@ -1920,7 +1987,7 @@ export function registerRoutes(app: Express): Server {
     const saved = oauthStateStore.get(state);
     oauthStateStore.delete(state);
 
-    if (!saved || saved.exp <= Date.now()) {
+    if (!saved || saved.exp <= Date.now() || saved.provider !== "facebook") {
       return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
     }
 
@@ -1986,6 +2053,7 @@ export function registerRoutes(app: Express): Server {
 
     logAuth("auth_facebook_success", { emailDomain: extractDomain(email) });
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, buildFacebookConsumeUrl(issued.sessionToken, email));
   });
 
@@ -2003,7 +2071,7 @@ export function registerRoutes(app: Express): Server {
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
     const state = `li_${randomToken(16)}`;
-    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua, provider: "linkedin" });
 
     const url = new URL(LINKEDIN_AUTH_URL);
     url.searchParams.set("client_id", LINKEDIN_CLIENT_ID);
@@ -2012,6 +2080,7 @@ export function registerRoutes(app: Express): Server {
     url.searchParams.set("scope", "openid profile email");
     url.searchParams.set("state", state);
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url.toString());
   });
 
@@ -2028,7 +2097,7 @@ export function registerRoutes(app: Express): Server {
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
     const state = `li_${randomToken(16)}`;
-    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua, provider: "linkedin" });
 
     const url = new URL(LINKEDIN_AUTH_URL);
     url.searchParams.set("client_id", LINKEDIN_CLIENT_ID);
@@ -2037,6 +2106,7 @@ export function registerRoutes(app: Express): Server {
     url.searchParams.set("scope", "openid profile email");
     url.searchParams.set("state", state);
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url.toString());
   });
 
@@ -2070,7 +2140,7 @@ export function registerRoutes(app: Express): Server {
     const saved = oauthStateStore.get(state);
     oauthStateStore.delete(state);
 
-    if (!saved || saved.exp <= Date.now()) {
+    if (!saved || saved.exp <= Date.now() || saved.provider !== "linkedin") {
       return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
     }
 
@@ -2144,6 +2214,7 @@ export function registerRoutes(app: Express): Server {
 
     logAuth("auth_linkedin_success", { emailDomain: extractDomain(email) });
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, buildLinkedinConsumeUrl(issued.sessionToken, email));
   });
 
@@ -2161,7 +2232,17 @@ export function registerRoutes(app: Express): Server {
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
     const state = `ms_${randomToken(16)}`;
-    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+    const codeVerifier = randomBase64Url(48);
+    const nonce = randomBase64Url(24);
+
+    oauthStateStore.set(state, {
+      exp: Date.now() + OAUTH_STATE_TTL_MS,
+      ip,
+      ua,
+      provider: "microsoft",
+      codeVerifier,
+      nonce,
+    });
 
     const url = new URL(MICROSOFT_AUTH_URL);
     url.searchParams.set("client_id", MICROSOFT_CLIENT_ID);
@@ -2171,7 +2252,11 @@ export function registerRoutes(app: Express): Server {
     url.searchParams.set("scope", "openid profile email User.Read");
     url.searchParams.set("state", state);
     url.searchParams.set("prompt", "select_account");
+    url.searchParams.set("nonce", nonce);
+    url.searchParams.set("code_challenge", sha256Base64Url(codeVerifier));
+    url.searchParams.set("code_challenge_method", "S256");
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url.toString());
   });
 
@@ -2188,7 +2273,17 @@ export function registerRoutes(app: Express): Server {
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
     const state = `ms_${randomToken(16)}`;
-    oauthStateStore.set(state, { exp: Date.now() + OAUTH_STATE_TTL_MS, ip, ua });
+    const codeVerifier = randomBase64Url(48);
+    const nonce = randomBase64Url(24);
+
+    oauthStateStore.set(state, {
+      exp: Date.now() + OAUTH_STATE_TTL_MS,
+      ip,
+      ua,
+      provider: "microsoft",
+      codeVerifier,
+      nonce,
+    });
 
     const url = new URL(MICROSOFT_AUTH_URL);
     url.searchParams.set("client_id", MICROSOFT_CLIENT_ID);
@@ -2198,7 +2293,11 @@ export function registerRoutes(app: Express): Server {
     url.searchParams.set("scope", "openid profile email User.Read");
     url.searchParams.set("state", state);
     url.searchParams.set("prompt", "select_account");
+    url.searchParams.set("nonce", nonce);
+    url.searchParams.set("code_challenge", sha256Base64Url(codeVerifier));
+    url.searchParams.set("code_challenge_method", "S256");
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url.toString());
   });
 
@@ -2232,7 +2331,7 @@ export function registerRoutes(app: Express): Server {
     const saved = oauthStateStore.get(state);
     oauthStateStore.delete(state);
 
-    if (!saved || saved.exp <= Date.now()) {
+    if (!saved || saved.exp <= Date.now() || saved.provider !== "microsoft") {
       return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
     }
 
@@ -2244,6 +2343,13 @@ export function registerRoutes(app: Express): Server {
     if (saved.ua && saved.ua !== ua) {
       return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
     }
+    if (!saved.codeVerifier || !saved.nonce) {
+      return res.status(400).json({
+        error: "Invalid state",
+        code: "OAUTH_STATE_INVALID",
+        version: VERSION,
+      });
+    }
 
     const body = new URLSearchParams();
     body.set("client_id", MICROSOFT_CLIENT_ID);
@@ -2252,6 +2358,7 @@ export function registerRoutes(app: Express): Server {
     body.set("redirect_uri", MICROSOFT_REDIRECT_URI);
     body.set("grant_type", "authorization_code");
     body.set("scope", "openid profile email User.Read");
+    body.set("code_verifier", saved.codeVerifier);
 
     const tokenResp = await fetch(MICROSOFT_TOKEN_URL, {
       method: "POST",
@@ -2261,6 +2368,9 @@ export function registerRoutes(app: Express): Server {
     const tokenJson: any = await tokenResp.json().catch(() => ({}));
 
     const accessToken = String(tokenJson?.access_token || "").trim();
+    const idToken = String(tokenJson?.id_token || "").trim();
+    const tokenType = String(tokenJson?.token_type || "").trim().toLowerCase();
+
     if (!accessToken) {
       return res.status(400).json({
         error: "Token exchange failed",
@@ -2270,6 +2380,71 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
+    if (tokenType && tokenType !== "bearer") {
+      return res.status(400).json({
+        error: "Invalid token type",
+        code: "MICROSOFT_TOKEN_TYPE_INVALID",
+        version: VERSION,
+      });
+    }
+
+    const idTokenClaims = idToken ? parseJwtPayload(idToken) : null;
+    if (idToken && !idTokenClaims) {
+      return res.status(400).json({
+        error: "Invalid ID token",
+        code: "MICROSOFT_ID_TOKEN_INVALID",
+        version: VERSION,
+      });
+    }
+
+    if (idTokenClaims) {
+      const aud = String(idTokenClaims.aud || "").trim();
+      const iss = String(idTokenClaims.iss || "").trim();
+      const nonce = String(idTokenClaims.nonce || "").trim();
+      const tid = String(idTokenClaims.tid || "").trim();
+      const exp = Number(idTokenClaims.exp || 0);
+
+      if (aud && aud !== MICROSOFT_CLIENT_ID) {
+        return res.status(400).json({
+          error: "Invalid ID token audience",
+          code: "MICROSOFT_ID_TOKEN_AUD_INVALID",
+          version: VERSION,
+        });
+      }
+
+      if (iss && !iss.startsWith(MICROSOFT_EXPECTED_ISSUER_PREFIX)) {
+        return res.status(400).json({
+          error: "Invalid ID token issuer",
+          code: "MICROSOFT_ID_TOKEN_ISS_INVALID",
+          version: VERSION,
+        });
+      }
+
+      if (nonce !== saved.nonce) {
+        return res.status(400).json({
+          error: "Invalid nonce",
+          code: "MICROSOFT_NONCE_INVALID",
+          version: VERSION,
+        });
+      }
+
+      if (exp && Date.now() >= exp * 1000) {
+        return res.status(400).json({
+          error: "Expired ID token",
+          code: "MICROSOFT_ID_TOKEN_EXPIRED",
+          version: VERSION,
+        });
+      }
+
+      if (!isMicrosoftTenantAllowed(tid)) {
+        return res.status(400).json({
+          error: "Tenant not allowed",
+          code: "MICROSOFT_TENANT_NOT_ALLOWED",
+          version: VERSION,
+        });
+      }
+    }
+
     const infoResp = await fetch(MICROSOFT_USERINFO_URL, {
       method: "GET",
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -2277,20 +2452,43 @@ export function registerRoutes(app: Express): Server {
     const infoJson: any = await infoResp.json().catch(() => ({}));
 
     let email = normalizeEmail(
-      String(infoJson?.email || infoJson?.preferred_username || infoJson?.upn || ""),
+      String(
+        infoJson?.email ||
+          infoJson?.preferred_username ||
+          infoJson?.upn ||
+          idTokenClaims?.email ||
+          idTokenClaims?.preferred_username ||
+          idTokenClaims?.upn ||
+          "",
+      ),
     );
-    let microsoftId = String(infoJson?.sub || infoJson?.oid || "").trim();
+
+    let microsoftId = String(
+      infoJson?.sub || infoJson?.oid || idTokenClaims?.oid || idTokenClaims?.sub || "",
+    ).trim();
+
     const emailVerified = infoJson?.email_verified;
+    const tenantIdFromClaims = String(infoJson?.tid || idTokenClaims?.tid || "").trim();
+
+    if (tenantIdFromClaims && !isMicrosoftTenantAllowed(tenantIdFromClaims)) {
+      return res.status(400).json({
+        error: "Tenant not allowed",
+        code: "MICROSOFT_TENANT_NOT_ALLOWED",
+        version: VERSION,
+      });
+    }
 
     let graphMeJson: any = null;
-    if (!email) {
+    if (!email || !microsoftId) {
       const graphMeResp = await fetch(MICROSOFT_GRAPH_ME_URL, {
         method: "GET",
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       graphMeJson = await graphMeResp.json().catch(() => ({}));
 
-      email = normalizeEmail(String(graphMeJson?.mail || graphMeJson?.userPrincipalName || ""));
+      if (!email) {
+        email = normalizeEmail(String(graphMeJson?.mail || graphMeJson?.userPrincipalName || ""));
+      }
 
       if (!microsoftId) {
         microsoftId = String(graphMeJson?.id || "").trim();
@@ -2302,8 +2500,8 @@ export function registerRoutes(app: Express): Server {
         error: "Microsoft did not return email",
         code: "MICROSOFT_NO_EMAIL",
         detail: {
-          hasSub: Boolean(infoJson?.sub),
-          hasPreferredUsername: Boolean(infoJson?.preferred_username),
+          hasSub: Boolean(infoJson?.sub || idTokenClaims?.sub),
+          hasPreferredUsername: Boolean(infoJson?.preferred_username || idTokenClaims?.preferred_username),
           hasGraphMail: Boolean(graphMeJson?.mail),
           hasGraphUserPrincipalName: Boolean(graphMeJson?.userPrincipalName),
         },
@@ -2328,8 +2526,12 @@ export function registerRoutes(app: Express): Server {
       });
     }
 
-    logAuth("auth_microsoft_success", { emailDomain: extractDomain(email) });
+    logAuth("auth_microsoft_success", {
+      emailDomain: extractDomain(email),
+      tenantRestricted: MICROSOFT_ALLOWED_TENANT_IDS.size > 0 || !["common", "organizations", "consumers"].includes(MICROSOFT_TENANT_ID),
+    });
 
+    res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, buildMicrosoftConsumeUrl(issued.sessionToken, email));
   });
 
