@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-07_009";
+const VERSION = "routes_v2026-03-08_010";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -100,6 +100,7 @@ const MICROSOFT_TOKEN_URL = `https://login.microsoftonline.com/${encodeURICompon
   MICROSOFT_TENANT_ID,
 )}/oauth2/v2.0/token`;
 const MICROSOFT_USERINFO_URL = "https://graph.microsoft.com/oidc/userinfo";
+const MICROSOFT_GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=id,mail,userPrincipalName";
 
 /* -------------------- OAUTH STATE STORE -------------------- */
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -2271,11 +2272,28 @@ export function registerRoutes(app: Express): Server {
     });
     const infoJson: any = await infoResp.json().catch(() => ({}));
 
-    const email = normalizeEmail(
+    let email = normalizeEmail(
       String(infoJson?.email || infoJson?.preferred_username || infoJson?.upn || ""),
     );
-    const microsoftId = String(infoJson?.sub || infoJson?.oid || "").trim();
+    let microsoftId = String(infoJson?.sub || infoJson?.oid || "").trim();
     const emailVerified = infoJson?.email_verified;
+
+    let graphMeJson: any = null;
+    if (!email) {
+      const graphMeResp = await fetch(MICROSOFT_GRAPH_ME_URL, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      graphMeJson = await graphMeResp.json().catch(() => ({}));
+
+      email = normalizeEmail(
+        String(graphMeJson?.mail || graphMeJson?.userPrincipalName || ""),
+      );
+
+      if (!microsoftId) {
+        microsoftId = String(graphMeJson?.id || "").trim();
+      }
+    }
 
     if (!email) {
       return res.status(400).json({
@@ -2284,6 +2302,8 @@ export function registerRoutes(app: Express): Server {
         detail: {
           hasSub: Boolean(infoJson?.sub),
           hasPreferredUsername: Boolean(infoJson?.preferred_username),
+          hasGraphMail: Boolean(graphMeJson?.mail),
+          hasGraphUserPrincipalName: Boolean(graphMeJson?.userPrincipalName),
         },
         version: VERSION,
       });
