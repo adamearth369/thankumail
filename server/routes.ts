@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-08_010";
+const VERSION = "routes_v2026-03-08_011";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -590,17 +590,21 @@ async function issueSessionForEmail(
       error: "Email provider not supported",
     };
   }
-  const mx = await mxLooksValid(domain);
-  if (!mx.ok) {
-    return {
-      ok: false as const,
-      code: "MX_INVALID" as const,
-      error: "Email domain not deliverable",
-      reason: mx.reason,
-    };
-  }
 
   const authProvider = normalizeAuthProvider(opts?.authProvider);
+
+  if (authProvider === "email") {
+    const mx = await mxLooksValid(domain);
+    if (!mx.ok) {
+      return {
+        ok: false as const,
+        code: "MX_INVALID" as const,
+        error: "Email domain not deliverable",
+        reason: mx.reason,
+      };
+    }
+  }
+
   const googleSub = String(opts?.googleSub || "").trim() || null;
   const facebookId = String(opts?.facebookId || "").trim() || null;
   const linkedinId = String(opts?.linkedinId || "").trim() || null;
@@ -2286,9 +2290,7 @@ export function registerRoutes(app: Express): Server {
       });
       graphMeJson = await graphMeResp.json().catch(() => ({}));
 
-      email = normalizeEmail(
-        String(graphMeJson?.mail || graphMeJson?.userPrincipalName || ""),
-      );
+      email = normalizeEmail(String(graphMeJson?.mail || graphMeJson?.userPrincipalName || ""));
 
       if (!microsoftId) {
         microsoftId = String(graphMeJson?.id || "").trim();
