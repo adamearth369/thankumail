@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-08_013";
+const VERSION = "routes_v2026-03-08_014";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -293,9 +293,18 @@ function parseJwtPayload(token: string): Record<string, any> | null {
 
 function isMicrosoftTenantAllowed(tid: string) {
   const tenant = String(tid || "").trim();
-  if (!tenant) return MICROSOFT_TENANT_ID === "common" || MICROSOFT_TENANT_ID === "organizations" || MICROSOFT_TENANT_ID === "consumers";
+  if (!tenant)
+    return (
+      MICROSOFT_TENANT_ID === "common" ||
+      MICROSOFT_TENANT_ID === "organizations" ||
+      MICROSOFT_TENANT_ID === "consumers"
+    );
   if (MICROSOFT_ALLOWED_TENANT_IDS.size > 0) return MICROSOFT_ALLOWED_TENANT_IDS.has(tenant);
-  if (MICROSOFT_TENANT_ID === "common" || MICROSOFT_TENANT_ID === "organizations" || MICROSOFT_TENANT_ID === "consumers") {
+  if (
+    MICROSOFT_TENANT_ID === "common" ||
+    MICROSOFT_TENANT_ID === "organizations" ||
+    MICROSOFT_TENANT_ID === "consumers"
+  ) {
     return true;
   }
   return tenant === MICROSOFT_TENANT_ID;
@@ -880,7 +889,8 @@ async function deliverGiftIfEligible(publicId: string, reason: string) {
       )
       .returning({ id: gifts.id });
 
-    if (!updated?.length) return { ok: false as const, code: "IN_PROGRESS_OR_ALREADY_ATTEMPTED" as const };
+    if (!updated?.length)
+      return { ok: false as const, code: "IN_PROGRESS_OR_ALREADY_ATTEMPTED" as const };
 
     return {
       ok: true as const,
@@ -1192,7 +1202,10 @@ async function handleCreateCheckoutSession(req: Request, res: any) {
     params.set("line_items[0][price_data][currency]", STRIPE_CURRENCY);
     params.set("line_items[0][price_data][unit_amount]", String(amountCents));
     params.set("line_items[0][price_data][product_data][name]", "ThankuMail Gift");
-    params.set("line_items[0][price_data][product_data][description]", "A ThankuMail gift certificate payment");
+    params.set(
+      "line_items[0][price_data][product_data][description]",
+      "A ThankuMail gift certificate payment",
+    );
 
     params.set("metadata[userId]", a.userId);
     if (publicId) params.set("metadata[publicId]", publicId);
@@ -1306,7 +1319,8 @@ async function handleStripeWebhook(req: Request, res: any) {
           const g = row?.[0];
           if (!g) return;
 
-          const alreadyPaid = Boolean(g.paidAt) || String(g.paymentStatus || "").toLowerCase() === "paid";
+          const alreadyPaid =
+            Boolean(g.paidAt) || String(g.paymentStatus || "").toLowerCase() === "paid";
           if (alreadyPaid) {
             await tx
               .update(gifts)
@@ -1320,7 +1334,9 @@ async function handleStripeWebhook(req: Request, res: any) {
           }
 
           const setAmount =
-            g.amount == null && amountCents != null && Number.isFinite(amountCents) ? amountCents : undefined;
+            g.amount == null && amountCents != null && Number.isFinite(amountCents)
+              ? amountCents
+              : undefined;
 
           await tx
             .update(gifts)
@@ -2586,7 +2602,9 @@ export function registerRoutes(app: Express): Server {
         code: "MICROSOFT_NO_EMAIL",
         detail: {
           hasSub: Boolean(infoJson?.sub || idTokenClaims?.sub),
-          hasPreferredUsername: Boolean(infoJson?.preferred_username || idTokenClaims?.preferred_username),
+          hasPreferredUsername: Boolean(
+            infoJson?.preferred_username || idTokenClaims?.preferred_username,
+          ),
           hasGraphMail: Boolean(graphMeJson?.mail),
           hasGraphUserPrincipalName: Boolean(graphMeJson?.userPrincipalName),
         },
@@ -2613,7 +2631,9 @@ export function registerRoutes(app: Express): Server {
 
     logAuth("auth_microsoft_success", {
       emailDomain: extractDomain(email),
-      tenantRestricted: MICROSOFT_ALLOWED_TENANT_IDS.size > 0 || !["common", "organizations", "consumers"].includes(MICROSOFT_TENANT_ID),
+      tenantRestricted:
+        MICROSOFT_ALLOWED_TENANT_IDS.size > 0 ||
+        !["common", "organizations", "consumers"].includes(MICROSOFT_TENANT_ID),
     });
 
     res.setHeader("Cache-Control", "no-store");
@@ -2938,8 +2958,52 @@ export function registerRoutes(app: Express): Server {
     });
   });
 
+  app.get("/api/me/gifts", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+      if (!a.isAuthed) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const rows = await db
+        .select({
+          publicId: gifts.publicId,
+          recipientEmail: gifts.recipientEmail,
+          recipientPhone: gifts.recipientPhone,
+          deliveryMethod: gifts.deliveryMethod,
+          messageMode: gifts.messageMode,
+          presetMessageId: gifts.presetMessageId,
+          message: gifts.message,
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
+          isClaimed: gifts.isClaimed,
+          createdAt: gifts.createdAt,
+          deliveredAt: (gifts as any).deliveredAt,
+          deliveredEmailAt: (gifts as any).deliveredEmailAt,
+          deliveredSmsAt: (gifts as any).deliveredSmsAt,
+          claimedAt: gifts.claimedAt,
+        })
+        .from(gifts)
+        .where(eq(gifts.senderUserId, a.userId))
+        .orderBy(desc(gifts.createdAt), desc(gifts.id));
+
+      return res.json({
+        ok: true,
+        gifts: rows,
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Failed to fetch gifts",
+        code: "ME_GIFTS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
   /* -------------------- GIFTS: CREATE -------------------- */
-  app.post("/api/gifts", limiterCreateGift, async (req, res) => {
+    app.post("/api/gifts", limiterCreateGift, async (req, res) => {
     try {
       const ip = getIp(req);
 
