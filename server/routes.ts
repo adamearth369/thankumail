@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-08_014";
+const VERSION = "routes_v2026-03-08_015";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -2318,8 +2318,7 @@ export function registerRoutes(app: Express): Server {
     res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, buildLinkedinConsumeUrl(issued.sessionToken, email));
   });
-
-  /* -------------------- AUTH: MICROSOFT OIDC -------------------- */
+    /* -------------------- AUTH: MICROSOFT OIDC -------------------- */
   app.get("/api/auth/microsoft", limiterMicrosoft, async (req, res) => {
     pruneOauthState();
 
@@ -3002,8 +3001,50 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  app.get("/api/me/stats", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+      if (!a.isAuthed) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const rows = await db
+        .select({
+          sentCount: sql<number>`count(*)`,
+          claimedCount: sql<number>`coalesce(sum(case when ${gifts.isClaimed} = true or ${gifts.claimedAt} is not null then 1 else 0 end), 0)`,
+          pendingCount: sql<number>`coalesce(sum(case when (${gifts.isClaimed} = false or ${gifts.isClaimed} is null) and ${gifts.claimedAt} is null then 1 else 0 end), 0)`,
+          totalValueSent: sql<number>`coalesce(sum(${gifts.amount}), 0)`,
+        })
+        .from(gifts)
+        .where(eq(gifts.senderUserId, a.userId));
+
+      const stats = rows?.[0] || {
+        sentCount: 0,
+        claimedCount: 0,
+        pendingCount: 0,
+        totalValueSent: 0,
+      };
+
+      return res.json({
+        ok: true,
+        sentCount: Number(stats.sentCount || 0),
+        claimedCount: Number(stats.claimedCount || 0),
+        pendingCount: Number(stats.pendingCount || 0),
+        totalValueSent: Number(stats.totalValueSent || 0),
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Failed to fetch stats",
+        code: "ME_STATS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
   /* -------------------- GIFTS: CREATE -------------------- */
-    app.post("/api/gifts", limiterCreateGift, async (req, res) => {
+  app.post("/api/gifts", limiterCreateGift, async (req, res) => {
     try {
       const ip = getIp(req);
 
@@ -3496,8 +3537,7 @@ export function registerRoutes(app: Express): Server {
         reminderCount: any;
         lastReminderSentAt: any;
       }> = [];
-
-      if (targetPublicId) {
+            if (targetPublicId) {
         const one = await db
           .select({
             id: gifts.id,
