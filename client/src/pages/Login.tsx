@@ -197,6 +197,21 @@ export default function Login() {
               />
             </div>
 
+            <div className="mt-4 rounded-2xl border border-tm-charcoal/10 bg-tm-cream/60 px-4 py-3">
+              <div className="text-sm font-medium text-tm-charcoal">Already signed in?</div>
+              <div className="mt-1 text-sm text-tm-charcoal/70">
+                Go straight to your dashboard to view sent thankumails and status.
+              </div>
+              <div className="mt-3">
+                <Link
+                  href="/dashboard"
+                  className="inline-flex rounded-xl border border-tm-charcoal/20 bg-white px-4 py-2 text-sm font-medium text-tm-charcoal hover:bg-tm-cream"
+                >
+                  Open dashboard
+                </Link>
+              </div>
+            </div>
+
             <div className="mt-3 text-xs text-tm-charcoal/60">
               This keeps the flow fast and helps protect the system from abuse.
             </div>
