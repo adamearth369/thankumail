@@ -20,12 +20,12 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-08_015";
+const VERSION = "routes_v2026-03-10_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
 const ROUTES_MARKER =
-  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1";
+  "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -2981,6 +2981,9 @@ export function registerRoutes(app: Express): Server {
           deliveredEmailAt: (gifts as any).deliveredEmailAt,
           deliveredSmsAt: (gifts as any).deliveredSmsAt,
           claimedAt: gifts.claimedAt,
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+          returnedToSenderAt: gifts.returnedToSenderAt,
         })
         .from(gifts)
         .where(eq(gifts.senderUserId, a.userId))
@@ -2996,6 +2999,232 @@ export function registerRoutes(app: Express): Server {
         error: "Failed to fetch gifts",
         code: "ME_GIFTS_FAILED",
         detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
+  app.get("/api/me/gifts/:publicId", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+      if (!a.isAuthed) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      const publicId = String(req.params.publicId || "").trim();
+      if (!publicId) {
+        return res.status(400).json({ error: "Missing publicId", code: "MISSING_PUBLIC_ID", version: VERSION });
+      }
+
+      const rows = await db
+        .select({
+          publicId: gifts.publicId,
+          senderUserId: gifts.senderUserId,
+          senderEmail: gifts.senderEmail,
+          recipientEmail: gifts.recipientEmail,
+          recipientPhone: gifts.recipientPhone,
+          deliveryMethod: gifts.deliveryMethod,
+          messageMode: gifts.messageMode,
+          presetMessageId: gifts.presetMessageId,
+          message: gifts.message,
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
+          stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
+          stripePaymentIntentId: gifts.stripePaymentIntentId,
+          paidAt: gifts.paidAt,
+          isClaimed: gifts.isClaimed,
+          claimedAt: gifts.claimedAt,
+          createdAt: gifts.createdAt,
+          deliveredAt: (gifts as any).deliveredAt,
+          deliveredEmailAt: (gifts as any).deliveredEmailAt,
+          deliveredSmsAt: (gifts as any).deliveredSmsAt,
+          deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
+          deliveryError: (gifts as any).deliveryError,
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+          returnedToSenderAt: gifts.returnedToSenderAt,
+        })
+        .from(gifts)
+        .where(and(eq(gifts.publicId, publicId), eq(gifts.senderUserId, a.userId)))
+        .limit(1);
+
+      const gift = rows?.[0];
+      if (!gift) {
+        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
+      }
+
+      const canSendReminder =
+        REMINDER_SENDING_ENABLED &&
+        Boolean(String(gift.recipientEmail || "").trim()) &&
+        !Boolean(gift.isClaimed || gift.claimedAt) &&
+        !Boolean(gift.returnedToSenderAt) &&
+        Number(gift.reminderCount ?? 0) < REMINDER_MAX &&
+        (!gift.lastReminderSentAt ||
+          new Date(gift.lastReminderSentAt).getTime() < Date.now() - REMINDER_GAP_MS);
+
+      return res.json({
+        ok: true,
+        gift: {
+          ...gift,
+          canSendReminder,
+        },
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Failed to fetch gift",
+        code: "ME_GIFT_DETAIL_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
+  app.post("/api/me/gifts/:publicId/remind", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+      if (!a.isAuthed) {
+        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      }
+
+      if (!REMINDER_SENDING_ENABLED) {
+        return res.status(403).json({
+          error: "Reminder sending disabled",
+          code: "REMINDERS_DISABLED",
+          version: VERSION,
+        });
+      }
+
+      const publicId = String(req.params.publicId || "").trim();
+      if (!publicId) {
+        return res.status(400).json({ error: "Missing publicId", code: "MISSING_PUBLIC_ID", version: VERSION });
+      }
+
+      const row = await db
+        .select({
+          id: gifts.id,
+          publicId: gifts.publicId,
+          senderUserId: gifts.senderUserId,
+          recipientEmail: gifts.recipientEmail,
+          senderEmail: gifts.senderEmail,
+          amount: gifts.amount,
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+          isClaimed: gifts.isClaimed,
+          claimedAt: gifts.claimedAt,
+          returnedToSenderAt: gifts.returnedToSenderAt,
+        })
+        .from(gifts)
+        .where(and(eq(gifts.publicId, publicId), eq(gifts.senderUserId, a.userId)))
+        .limit(1);
+
+      const gift = row?.[0];
+      if (!gift) {
+        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
+      }
+
+      const to = String(gift.recipientEmail || "").trim();
+      if (!to) {
+        return res.status(400).json({
+          error: "Gift has no recipient email",
+          code: "NO_RECIPIENT_EMAIL",
+          version: VERSION,
+        });
+      }
+
+      if (gift.isClaimed || gift.claimedAt) {
+        return res.status(409).json({
+          error: "Gift already claimed",
+          code: "ALREADY_CLAIMED",
+          version: VERSION,
+        });
+      }
+
+      if (gift.returnedToSenderAt) {
+        return res.status(409).json({
+          error: "Gift already returned",
+          code: "ALREADY_RETURNED",
+          version: VERSION,
+        });
+      }
+
+      const currentReminderCount = Number(gift.reminderCount ?? 0);
+      if (currentReminderCount >= REMINDER_MAX) {
+        return res.status(409).json({
+          error: "Reminder limit reached",
+          code: "REMINDER_LIMIT_REACHED",
+          version: VERSION,
+        });
+      }
+
+      if (gift.lastReminderSentAt) {
+        const lastMs = new Date(gift.lastReminderSentAt).getTime();
+        const nextAllowedAt = lastMs + REMINDER_GAP_MS;
+        if (Number.isFinite(lastMs) && Date.now() < nextAllowedAt) {
+          return res.status(429).json({
+            error: "Reminder sent too recently",
+            code: "REMINDER_TOO_SOON",
+            retryAfterSec: Math.max(1, Math.ceil((nextAllowedAt - Date.now()) / 1000)),
+            version: VERSION,
+          });
+        }
+      }
+
+      const claimUrl = buildClaimUrl(publicId);
+
+      await sendReminderEmail({
+        to,
+        publicId,
+        claimUrl,
+        amountCents: gift.amount ?? null,
+        senderEmail: gift.senderEmail || undefined,
+      } as any);
+
+      const sentAt = now();
+
+      const updated = await db
+        .update(gifts)
+        .set({
+          reminderCount: sql<number>`coalesce(${gifts.reminderCount}, 0) + 1`,
+          lastReminderSentAt: sentAt,
+        })
+        .where(
+          and(
+            eq(gifts.id, gift.id as any),
+            eq(gifts.publicId, publicId),
+            eq(gifts.senderUserId, a.userId),
+            eq(gifts.isClaimed, false),
+            isNull(gifts.claimedAt),
+            isNull(gifts.returnedToSenderAt),
+            lt(sql<number>`coalesce(${gifts.reminderCount}, 0)`, REMINDER_MAX),
+          ),
+        )
+        .returning({
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+        });
+
+      if (!updated?.length) {
+        return res.status(409).json({
+          error: "Reminder state changed",
+          code: "REMINDER_STATE_CHANGED",
+          version: VERSION,
+        });
+      }
+
+      const updatedReminderCount = Number(updated[0].reminderCount ?? currentReminderCount + 1);
+
+      return res.json({
+        ok: true,
+        publicId: gift.publicId,
+        reminderCount: updatedReminderCount,
+        lastReminderSentAt: sentAt.toISOString(),
+        version: VERSION,
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        error: error?.message || "Failed to send reminder",
+        code: "ME_REMIND_FAILED",
         version: VERSION,
       });
     }
