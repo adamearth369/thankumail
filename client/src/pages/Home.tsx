@@ -39,7 +39,7 @@ export default function Home() {
 
   return (
     <div
-      className="min-h-screen bg-cover bg-center bg-no-repeat text-tm-charcoal"
+      className="-mt-[57px] min-h-screen pt-[57px] bg-cover bg-center bg-no-repeat text-tm-charcoal"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
       <div className="min-h-screen bg-black/30">
