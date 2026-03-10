@@ -160,7 +160,7 @@ function SiteHeader() {
   }, []);
 
   return (
-    <div className="sticky top-0 z-50 border-b border-white/10 bg-gradient-to-b from-black/20 via-black/10 to-transparent backdrop-blur-sm">
+    <div className="sticky top-0 z-50 border-b border-white/10 bg-gradient-to-b from-black/30 via-black/15 to-transparent shadow-sm backdrop-blur-sm">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
         <Link
           href="/"
