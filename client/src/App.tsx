@@ -160,9 +160,12 @@ function SiteHeader() {
   }, []);
 
   return (
-    <div className="sticky top-0 z-50 border-b border-white/10 bg-transparent backdrop-blur-sm">
+    <div className="sticky top-0 z-50 border-b border-white/10 bg-gradient-to-b from-black/20 via-black/10 to-transparent backdrop-blur-sm">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-        <Link href="/" className="text-sm font-medium text-white/90 hover:text-white">
+        <Link
+          href="/"
+          className="rounded-xl px-3 py-2 text-sm font-medium text-white/90 transition hover:bg-white/10 hover:text-white"
+        >
           Home
         </Link>
 
@@ -170,14 +173,14 @@ function SiteHeader() {
           {hasSession ? (
             <Link
               href="/dashboard"
-              className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15"
+              className="rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-white/18"
             >
               Dashboard
             </Link>
           ) : (
             <Link
               href="/login"
-              className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15"
+              className="rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-white/18"
             >
               Sign in
             </Link>
