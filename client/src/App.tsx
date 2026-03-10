@@ -8,6 +8,7 @@ import NotFound from "./pages/not-found";
 import Login from "./pages/Login";
 import AuthGoogle from "./pages/AuthGoogle";
 import AuthFacebook from "./pages/AuthFacebook";
+import Dashboard from "./pages/Dashboard";
 
 type VersionInfo = {
   commit: string;
@@ -187,10 +188,10 @@ export default function App() {
         <Route path="/" component={Home} />
         <Route path="/claim/:publicId" component={Claim} />
         <Route path="/login" component={Login} />
+        <Route path="/dashboard" component={Dashboard} />
         <Route path="/auth/google" component={AuthGoogle} />
         <Route path="/auth/facebook" component={AuthFacebook} />
 
-        {/* Stripe return URLs */}
         <Route path="/pay/success" component={PaySuccess} />
         <Route path="/pay/cancel" component={PayCancel} />
 

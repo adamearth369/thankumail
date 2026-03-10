@@ -102,7 +102,7 @@ function getRecipientLabel(g: GiftRow) {
   return "—";
 }
 
-function getGiftStatus(g: GiftRow) {
+function getOverallStatus(g: GiftRow) {
   const claimed = Boolean(g.isClaimed || g.claimedAt);
   const paymentStatus = String(g.paymentStatus || "").trim().toLowerCase();
   const delivered = Boolean(g.deliveredAt || g.deliveredEmailAt || g.deliveredSmsAt);
@@ -146,6 +146,72 @@ function getGiftStatus(g: GiftRow) {
     label: "Pending",
     className: "bg-tm-cream text-tm-charcoal border-tm-charcoal/15",
   };
+}
+
+function getDeliveryStatus(g: GiftRow) {
+  const paymentStatus = String(g.paymentStatus || "").trim().toLowerCase();
+  const deliveredAt = g.deliveredAt || g.deliveredEmailAt || g.deliveredSmsAt;
+  const method = String(g.deliveryMethod || "").trim().toLowerCase();
+
+  if (paymentStatus === "requires_payment" || paymentStatus === "created") {
+    return {
+      label: "Waiting for payment",
+      date: null as string | null,
+      className: "bg-amber-100 text-amber-800 border-amber-200",
+    };
+  }
+
+  if (deliveredAt) {
+    return {
+      label: method === "sms" ? "SMS delivered" : method === "email" ? "Email delivered" : "Delivered",
+      date: String(deliveredAt),
+      className: "bg-blue-100 text-blue-800 border-blue-200",
+    };
+  }
+
+  if (paymentStatus === "paid") {
+    return {
+      label: "Ready to deliver",
+      date: null as string | null,
+      className: "bg-sky-100 text-sky-800 border-sky-200",
+    };
+  }
+
+  return {
+    label: "Not delivered",
+    date: null as string | null,
+    className: "bg-tm-cream text-tm-charcoal border-tm-charcoal/15",
+  };
+}
+
+function getClaimStatus(g: GiftRow) {
+  const claimed = Boolean(g.isClaimed || g.claimedAt);
+
+  if (claimed) {
+    return {
+      label: "Claimed",
+      date: String(g.claimedAt || ""),
+      className: "bg-green-100 text-green-800 border-green-200",
+    };
+  }
+
+  return {
+    label: "Unclaimed",
+    date: null as string | null,
+    className: "bg-tm-cream text-tm-charcoal border-tm-charcoal/15",
+  };
+}
+
+function getMessagePreview(g: GiftRow) {
+  const text = String(g.message || "").trim();
+  if (!text) {
+    if (g.messageMode === "preset" && g.presetMessageId != null) {
+      return `Preset message #${g.presetMessageId}`;
+    }
+    return "—";
+  }
+  if (text.length <= 80) return text;
+  return `${text.slice(0, 80)}…`;
 }
 
 export default function Dashboard() {
@@ -248,7 +314,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-[70vh] bg-tm-cream px-4 py-10">
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-6xl">
           <div className="rounded-2xl border border-tm-charcoal/10 bg-white p-6 shadow-soft">
             <div className="text-lg font-outfit font-semibold text-tm-charcoal">Loading dashboard…</div>
           </div>
@@ -286,7 +352,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-[70vh] bg-tm-cream px-4 py-10">
-      <div className="mx-auto max-w-5xl">
+      <div className="mx-auto max-w-6xl">
         <div className="rounded-2xl border border-tm-charcoal/10 bg-white p-6 shadow-soft">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -347,7 +413,7 @@ export default function Dashboard() {
             <div className="border-b border-tm-charcoal/10 px-5 py-4">
               <div className="text-xl font-outfit font-semibold text-tm-charcoal">Recent ThankuMails</div>
               <div className="mt-1 text-sm text-tm-charcoal/70">
-                Latest sent gifts and messages
+                Delivery and claim visibility for your latest sends
               </div>
             </div>
 
@@ -364,37 +430,81 @@ export default function Dashboard() {
                         Recipient
                       </th>
                       <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-tm-charcoal/55">
-                        Status
+                        Message
+                      </th>
+                      <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-tm-charcoal/55">
+                        Overall
+                      </th>
+                      <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-tm-charcoal/55">
+                        Delivery
+                      </th>
+                      <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-tm-charcoal/55">
+                        Claim
                       </th>
                       <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-tm-charcoal/55">
                         Amount
                       </th>
                       <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-tm-charcoal/55">
-                        Date
+                        Sent
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {gifts.map((g) => {
-                      const status = getGiftStatus(g);
+                    {gifts.map((g, index) => {
+                      const overall = getOverallStatus(g);
+                      const delivery = getDeliveryStatus(g);
+                      const claim = getClaimStatus(g);
+                      const rowKey = String(g.publicId || `gift-${index}`);
+
                       return (
-                        <tr key={String(g.publicId || Math.random())} className="border-b border-tm-charcoal/8 last:border-b-0">
+                        <tr key={rowKey} className="border-b border-tm-charcoal/8 last:border-b-0 align-top">
                           <td className="px-5 py-4 text-sm text-tm-charcoal">
                             <div>{getRecipientLabel(g)}</div>
                             <div className="mt-1 text-xs text-tm-charcoal/55">
                               {String(g.deliveryMethod || "").trim() || "—"}
                             </div>
                           </td>
+
+                          <td className="px-5 py-4 text-sm text-tm-charcoal">
+                            <div className="max-w-[240px]">
+                              {getMessagePreview(g)}
+                            </div>
+                          </td>
+
                           <td className="px-5 py-4 text-sm">
                             <span
-                              className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${status.className}`}
+                              className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${overall.className}`}
                             >
-                              {status.label}
+                              {overall.label}
                             </span>
                           </td>
+
+                          <td className="px-5 py-4 text-sm text-tm-charcoal">
+                            <span
+                              className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${delivery.className}`}
+                            >
+                              {delivery.label}
+                            </span>
+                            <div className="mt-1 text-xs text-tm-charcoal/55">
+                              {delivery.date ? formatDate(delivery.date) : "—"}
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4 text-sm text-tm-charcoal">
+                            <span
+                              className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${claim.className}`}
+                            >
+                              {claim.label}
+                            </span>
+                            <div className="mt-1 text-xs text-tm-charcoal/55">
+                              {claim.date ? formatDate(claim.date) : "—"}
+                            </div>
+                          </td>
+
                           <td className="px-5 py-4 text-sm text-tm-charcoal">
                             {g.amount != null ? formatMoney(Number(g.amount || 0)) : "—"}
                           </td>
+
                           <td className="px-5 py-4 text-sm text-tm-charcoal">
                             {formatDate(g.createdAt)}
                           </td>
