@@ -127,6 +127,67 @@ function PayCancel() {
   );
 }
 
+function SiteHeader() {
+  const [hasSession, setHasSession] = useState<boolean>(() => Boolean(safeGetLS("tm_session_token")));
+
+  useEffect(() => {
+    const sync = () => {
+      canonicalizeSessionToken();
+      setHasSession(Boolean(safeGetLS("tm_session_token")));
+    };
+
+    sync();
+
+    const id = window.setInterval(sync, 1000);
+
+    const onStorage = (e: StorageEvent) => {
+      if (
+        e.key === "tm_session_token" ||
+        e.key === "tmSessionToken" ||
+        e.key === "sessionToken" ||
+        e.key === "tm_token" ||
+        e.key === "token"
+      ) {
+        sync();
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  return (
+    <div className="sticky top-0 z-50 border-b border-white/10 bg-tm-charcoal/85 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+        <Link href="/" className="text-sm font-medium text-white/90 hover:text-white">
+          Home
+        </Link>
+
+        <div className="flex items-center gap-2">
+          {hasSession ? (
+            <Link
+              href="/dashboard"
+              className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15"
+            >
+              Dashboard
+            </Link>
+          ) : (
+            <Link
+              href="/login"
+              className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15"
+            >
+              Sign in
+            </Link>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [apiCommit, setApiCommit] = useState<string>(() => safeGetLS("tm_api_commit"));
@@ -184,6 +245,8 @@ export default function App() {
 
   return (
     <>
+      <SiteHeader />
+
       <Switch>
         <Route path="/" component={Home} />
         <Route path="/claim/:publicId" component={Claim} />
