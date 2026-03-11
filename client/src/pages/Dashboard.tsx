@@ -416,7 +416,10 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-[70vh] bg-tm-cream px-4 py-10">
+      <div
+        className="min-h-[70vh] bg-cover bg-center bg-no-repeat px-4 py-10"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+      >
         <div className="mx-auto max-w-6xl">
           <div className="rounded-2xl border border-tm-charcoal/10 bg-white p-6 shadow-soft">
             <div className="text-lg font-outfit font-semibold text-tm-charcoal">Loading dashboard…</div>
@@ -428,7 +431,10 @@ export default function Dashboard() {
 
   if (unauthorized) {
     return (
-      <div className="min-h-[70vh] bg-tm-cream px-4 py-10">
+      <div
+        className="min-h-[70vh] bg-cover bg-center bg-no-repeat px-4 py-10"
+        style={{ backgroundImage: "url('/images/hero-background.png')" }}
+      >
         <div className="mx-auto max-w-3xl rounded-2xl border border-tm-charcoal/10 bg-white p-6 shadow-soft">
           <div className="text-2xl font-outfit font-semibold text-tm-charcoal">Please sign in</div>
           <div className="mt-2 text-sm text-tm-charcoal/75">Your session is missing or expired.</div>
@@ -457,7 +463,10 @@ export default function Dashboard() {
   const claimLink = buildClaimLink(selectedGift?.publicId);
 
   return (
-    <div className="min-h-[70vh] bg-tm-cream px-4 py-10">
+    <div
+      className="min-h-[70vh] bg-cover bg-center bg-no-repeat px-4 py-10"
+      style={{ backgroundImage: "url('/images/hero-background.png')" }}
+    >
       <div className="mx-auto max-w-6xl">
         <div className="rounded-2xl border border-tm-charcoal/10 bg-white p-6 shadow-soft">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -513,9 +522,7 @@ export default function Dashboard() {
             <div className="rounded-2xl border border-tm-charcoal/10 bg-white">
               <div className="border-b border-tm-charcoal/10 px-5 py-4">
                 <div className="text-xl font-outfit font-semibold text-tm-charcoal">Recent ThankuMails</div>
-                <div className="mt-1 text-sm text-tm-charcoal/70">
-                  Select a row to view detail
-                </div>
+                <div className="mt-1 text-sm text-tm-charcoal/70">Select a row to view detail</div>
               </div>
 
               {gifts.length === 0 ? (
@@ -631,9 +638,7 @@ export default function Dashboard() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-xl font-outfit font-semibold text-tm-charcoal">Gift Detail</div>
-                  <div className="mt-1 text-sm text-tm-charcoal/70">
-                    Review status
-                  </div>
+                  <div className="mt-1 text-sm text-tm-charcoal/70">Review status</div>
                 </div>
 
                 {selectedGift?.publicId ? (
