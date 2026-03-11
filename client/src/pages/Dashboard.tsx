@@ -566,7 +566,14 @@ export default function Dashboard() {
                             ].join(" ")}
                           >
                             <td className="px-5 py-4 text-sm text-tm-charcoal">
-                              <div>{getRecipientLabel(g)}</div>
+                              <div className="flex items-center gap-2">
+                                <span>{getRecipientLabel(g)}</span>
+                                <span
+                                  className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${overall.className}`}
+                                >
+                                  {overall.label}
+                                </span>
+                              </div>
                               <div className="mt-1 text-xs text-tm-charcoal/55">
                                 {String(g.deliveryMethod || "").trim() || "—"}
                               </div>
