@@ -65,16 +65,6 @@ type GiftDetailResponse = {
   code?: string;
 };
 
-type RemindResponse = {
-  ok?: boolean;
-  publicId?: string;
-  reminderCount?: number;
-  lastReminderSentAt?: string;
-  version?: string;
-  error?: string;
-  code?: string;
-};
-
 function safeGetLS(key: string) {
   try {
     return String(localStorage.getItem(key) || "").trim();
@@ -250,13 +240,6 @@ function getMessagePreview(g: GiftRow) {
   return `${text.slice(0, 80)}…`;
 }
 
-function canSendReminder(g: GiftRow) {
-  const claimed = Boolean(g.isClaimed || g.claimedAt);
-  const hasRecipientEmail = Boolean(String(g.recipientEmail || "").trim());
-  const returnedToSender = Boolean(g.returnedToSenderAt);
-  return !claimed && !returnedToSender && hasRecipientEmail;
-}
-
 function buildClaimLink(publicId?: string | null) {
   const pid = String(publicId || "").trim();
   if (!pid) return "";
@@ -279,9 +262,6 @@ export default function Dashboard() {
   const [selectedGift, setSelectedGift] = useState<GiftRow | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
-  const [remindLoading, setRemindLoading] = useState(false);
-  const [remindMessage, setRemindMessage] = useState("");
-  const [remindError, setRemindError] = useState("");
   const [copyMessage, setCopyMessage] = useState("");
   const [copyError, setCopyError] = useState("");
 
@@ -389,8 +369,6 @@ export default function Dashboard() {
         setSelectedGift(null);
         setDetailError("");
         setDetailLoading(false);
-        setRemindMessage("");
-        setRemindError("");
         setCopyMessage("");
         setCopyError("");
         return;
@@ -399,8 +377,6 @@ export default function Dashboard() {
       try {
         setDetailLoading(true);
         setDetailError("");
-        setRemindMessage("");
-        setRemindError("");
         setCopyMessage("");
         setCopyError("");
 
@@ -443,62 +419,6 @@ export default function Dashboard() {
       cancelled = true;
     };
   }, [apiBase, selectedPublicId]);
-
-  function updateGiftInList(updatedGift: GiftRow) {
-    const pid = String(updatedGift.publicId || "").trim();
-    if (!pid) return;
-    setGifts((prev) =>
-      prev.map((g) => (String(g.publicId || "").trim() === pid ? { ...g, ...updatedGift } : g)),
-    );
-  }
-
-  async function handleSendReminder() {
-    const token = safeGetLS("tm_session_token");
-    const publicId = String(selectedPublicId || "").trim();
-
-    if (!token || !publicId) return;
-
-    try {
-      setRemindLoading(true);
-      setRemindError("");
-      setRemindMessage("");
-
-      const res = await fetch(`${apiBase}/api/me/gifts/${encodeURIComponent(publicId)}/remind`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      if (res.status === 401) {
-        safeRemoveLS("tm_session_token");
-        setUnauthorized(true);
-        setRemindLoading(false);
-        return;
-      }
-
-      const json = (await res.json().catch(() => ({}))) as RemindResponse;
-
-      if (!res.ok) {
-        throw new Error(String(json?.error || json?.code || "Failed to send reminder"));
-      }
-
-      const updatedGift: GiftRow = {
-        ...(selectedGift || {}),
-        publicId,
-        reminderCount: Number(json?.reminderCount || 0),
-        lastReminderSentAt: String(json?.lastReminderSentAt || ""),
-      };
-
-      setSelectedGift(updatedGift);
-      updateGiftInList(updatedGift);
-      setRemindMessage("Reminder sent.");
-      setRemindLoading(false);
-    } catch (err: any) {
-      setRemindError(String(err?.message || err || "Failed to send reminder"));
-      setRemindLoading(false);
-    }
-  }
 
   async function handleCopyClaimLink() {
     const claimLink = buildClaimLink(selectedGift?.publicId);
@@ -630,7 +550,7 @@ export default function Dashboard() {
               <div className="border-b border-tm-charcoal/10 px-5 py-4">
                 <div className="text-xl font-outfit font-semibold text-tm-charcoal">Recent ThankuMails</div>
                 <div className="mt-1 text-sm text-tm-charcoal/70">
-                  Select a row to view detail, copy claim link, and send a reminder
+                  Select a row to view detail and copy claim link
                 </div>
               </div>
 
@@ -741,7 +661,7 @@ export default function Dashboard() {
                 <div>
                   <div className="text-xl font-outfit font-semibold text-tm-charcoal">Gift Detail</div>
                   <div className="mt-1 text-sm text-tm-charcoal/70">
-                    Review status, copy claim link, and send a reminder
+                    Review status and copy claim link
                   </div>
                 </div>
 
@@ -896,34 +816,7 @@ export default function Dashboard() {
                           Reminder count: {Number(selectedGift.reminderCount || 0)}
                         </div>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={handleSendReminder}
-                        disabled={remindLoading || !canSendReminder(selectedGift)}
-                        className="rounded-xl bg-tm-charcoal px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {remindLoading ? "Sending…" : "Send Reminder"}
-                      </button>
                     </div>
-
-                    {!canSendReminder(selectedGift) ? (
-                      <div className="mt-3 text-xs text-tm-charcoal/60">
-                        Reminder is only available for unclaimed gifts with recipient email.
-                      </div>
-                    ) : null}
-
-                    {remindMessage ? (
-                      <div className="mt-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                        {remindMessage}
-                      </div>
-                    ) : null}
-
-                    {remindError ? (
-                      <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                        {remindError}
-                      </div>
-                    ) : null}
                   </div>
                 </>
               ) : null}
