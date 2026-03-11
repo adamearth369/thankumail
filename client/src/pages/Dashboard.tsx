@@ -417,7 +417,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div
-        className="min-h-[70vh] bg-cover bg-center bg-no-repeat px-4 py-10"
+        className="min-h-screen bg-cover bg-center bg-no-repeat px-4 py-10"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
         <div className="mx-auto max-w-6xl">
@@ -432,7 +432,7 @@ export default function Dashboard() {
   if (unauthorized) {
     return (
       <div
-        className="min-h-[70vh] bg-cover bg-center bg-no-repeat px-4 py-10"
+        className="min-h-screen bg-cover bg-center bg-no-repeat px-4 py-10"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
         <div className="mx-auto max-w-3xl rounded-2xl border border-tm-charcoal/10 bg-white p-6 shadow-soft">
@@ -464,7 +464,7 @@ export default function Dashboard() {
 
   return (
     <div
-      className="min-h-[70vh] bg-cover bg-center bg-no-repeat px-4 py-10"
+      className="min-h-screen bg-cover bg-center bg-no-repeat px-4 py-10"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
       <div className="mx-auto max-w-6xl">
