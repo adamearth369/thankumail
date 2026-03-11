@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/pages/Claim.tsx
-// ACTION: Full file replacement (paste exactly)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
