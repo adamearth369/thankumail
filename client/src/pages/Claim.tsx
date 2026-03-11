@@ -665,7 +665,7 @@ export default function Claim() {
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
         <div className="min-h-screen bg-black/40" style={shellStyle}>
-          <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+          <div className="mx-auto max-w-5xl px-4 pt-24 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
               <div className="text-sm text-slate-500 mb-2" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
                 thankümail
@@ -688,7 +688,7 @@ export default function Claim() {
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
         <div className="min-h-screen bg-black/40" style={shellStyle}>
-          <div className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+          <div className="mx-auto max-w-5xl px-4 pt-24 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 p-6 text-slate-900">
               <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankümail</div>
               <div className="text-sm text-red-700">{error || invalidLinkMessage()}</div>
@@ -711,7 +711,7 @@ export default function Claim() {
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
         <div className="min-h-screen bg-black/40" style={shellStyle}>
-          <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+          <main className="mx-auto max-w-5xl px-4 pt-24 pb-16">
             <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
               <div className="text-sm text-slate-500" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
                 thankümail
@@ -770,7 +770,7 @@ export default function Claim() {
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
       <div className="min-h-screen bg-black/40" style={shellStyle}>
-        <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+        <main className="mx-auto max-w-5xl px-4 pt-24 pb-16">
           <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
             <div className="text-sm text-slate-500" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
               thankümail
