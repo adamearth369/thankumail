@@ -38,8 +38,11 @@ export default function Home() {
   const loggedIn = Boolean(sessionToken);
 
   return (
-    <div className="-mt-[57px] min-h-screen pt-[57px] bg-tm-cream text-tm-charcoal">
-      <div className="min-h-screen">
+    <div
+      className="-mt-[57px] min-h-screen pt-[57px] bg-cover bg-center bg-no-repeat text-tm-charcoal"
+      style={{ backgroundImage: "url('/images/hero-background.png')" }}
+    >
+      <div className="min-h-screen bg-black/30">
         <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
           <div
             className={[
