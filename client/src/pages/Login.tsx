@@ -141,7 +141,7 @@ export default function Login() {
       className="min-h-screen bg-cover bg-center bg-no-repeat text-tm-charcoal"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
-      <div className="min-h-screen bg-black/30 flex items-center justify-center px-4">
+      <div className="min-h-screen bg-black/30 flex items-center justify-center px-4 pt-24 pb-10">
         <div
           className={[
             "transition-all duration-700 ease-out",
