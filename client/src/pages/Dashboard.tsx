@@ -257,6 +257,12 @@ function canSendReminder(g: GiftRow) {
   return !claimed && !returnedToSender && hasRecipientEmail;
 }
 
+function buildClaimLink(publicId?: string | null) {
+  const pid = String(publicId || "").trim();
+  if (!pid) return "";
+  return `https://thankumail.com/claim/${pid}`;
+}
+
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [unauthorized, setUnauthorized] = useState(false);
@@ -276,6 +282,8 @@ export default function Dashboard() {
   const [remindLoading, setRemindLoading] = useState(false);
   const [remindMessage, setRemindMessage] = useState("");
   const [remindError, setRemindError] = useState("");
+  const [copyMessage, setCopyMessage] = useState("");
+  const [copyError, setCopyError] = useState("");
 
   const apiBase = useMemo(() => resolveApiBase(), []);
 
@@ -383,6 +391,8 @@ export default function Dashboard() {
         setDetailLoading(false);
         setRemindMessage("");
         setRemindError("");
+        setCopyMessage("");
+        setCopyError("");
         return;
       }
 
@@ -391,6 +401,8 @@ export default function Dashboard() {
         setDetailError("");
         setRemindMessage("");
         setRemindError("");
+        setCopyMessage("");
+        setCopyError("");
 
         const res = await fetch(`${apiBase}/api/me/gifts/${encodeURIComponent(publicId)}`, {
           headers: {
@@ -488,6 +500,36 @@ export default function Dashboard() {
     }
   }
 
+  async function handleCopyClaimLink() {
+    const claimLink = buildClaimLink(selectedGift?.publicId);
+
+    if (!claimLink) {
+      setCopyError("Claim link unavailable.");
+      setCopyMessage("");
+      return;
+    }
+
+    try {
+      setCopyError("");
+      setCopyMessage("");
+
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(claimLink);
+      } else {
+        const input = document.createElement("input");
+        input.value = claimLink;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
+
+      setCopyMessage("Claim link copied.");
+    } catch (err: any) {
+      setCopyError(String(err?.message || err || "Failed to copy claim link"));
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-[70vh] bg-tm-cream px-4 py-10">
@@ -528,6 +570,7 @@ export default function Dashboard() {
   const detailOverall = selectedGift ? getOverallStatus(selectedGift) : null;
   const detailDelivery = selectedGift ? getDeliveryStatus(selectedGift) : null;
   const detailClaim = selectedGift ? getClaimStatus(selectedGift) : null;
+  const claimLink = buildClaimLink(selectedGift?.publicId);
 
   return (
     <div className="min-h-[70vh] bg-tm-cream px-4 py-10">
@@ -587,7 +630,7 @@ export default function Dashboard() {
               <div className="border-b border-tm-charcoal/10 px-5 py-4">
                 <div className="text-xl font-outfit font-semibold text-tm-charcoal">Recent ThankuMails</div>
                 <div className="mt-1 text-sm text-tm-charcoal/70">
-                  Select a row to view detail and send a reminder
+                  Select a row to view detail, copy claim link, and send a reminder
                 </div>
               </div>
 
@@ -698,7 +741,7 @@ export default function Dashboard() {
                 <div>
                   <div className="text-xl font-outfit font-semibold text-tm-charcoal">Gift Detail</div>
                   <div className="mt-1 text-sm text-tm-charcoal/70">
-                    Review status and send a reminder
+                    Review status, copy claim link, and send a reminder
                   </div>
                 </div>
 
@@ -815,6 +858,34 @@ export default function Dashboard() {
                         <span>—</span>
                       )}
                     </div>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-tm-charcoal/10 bg-white p-4">
+                    <div className="text-xs uppercase tracking-wide text-tm-charcoal/55">Claim Link</div>
+                    <div className="mt-2 break-all text-sm text-tm-charcoal">{claimLink || "—"}</div>
+
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleCopyClaimLink}
+                        disabled={!claimLink}
+                        className="rounded-xl border border-tm-charcoal/20 bg-white px-4 py-2 text-sm font-medium text-tm-charcoal disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Copy Claim Link
+                      </button>
+                    </div>
+
+                    {copyMessage ? (
+                      <div className="mt-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                        {copyMessage}
+                      </div>
+                    ) : null}
+
+                    {copyError ? (
+                      <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                        {copyError}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="mt-5 rounded-2xl border border-tm-charcoal/10 bg-tm-cream/45 p-4">
