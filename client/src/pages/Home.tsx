@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Home.tsx
+// ACTION: Full file replacement
+
 import React, { useEffect, useMemo, useState } from "react";
 import CreateGiftForm from "../components/CreateGiftForm";
 
@@ -42,7 +45,7 @@ export default function Home() {
       className="min-h-screen bg-cover bg-center bg-no-repeat text-tm-charcoal"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
-      <div className="min-h-screen bg-black/30">
+      <div className="min-h-screen bg-black/35">
         <main className="mx-auto max-w-5xl px-4 pt-24 pb-16">
           <div
             className={[
@@ -98,8 +101,20 @@ export default function Home() {
             <CreateGiftForm />
           </div>
 
-          <footer className="mt-10 text-center text-sm text-white/80">
-            Designed to feel calm, honest, and human.
+          <footer className="mt-12 text-center text-xs sm:text-sm text-white/80">
+            <div className="flex flex-wrap justify-center gap-4">
+              <a href="/terms" className="hover:text-white underline underline-offset-4">
+                Terms of Service
+              </a>
+              <span className="opacity-60">•</span>
+              <a href="/privacy" className="hover:text-white underline underline-offset-4">
+                Privacy Policy
+              </a>
+            </div>
+
+            <div className="mt-2 text-white/60 text-[11px]">
+              © {new Date().getFullYear()} thankümail
+            </div>
           </footer>
         </main>
       </div>
