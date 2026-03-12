@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/pages/Claim.tsx
+// ACTION: Full file replacement
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -108,7 +111,6 @@ function fireConfettiBurst() {
 }
 
 function unwrapGiftPayload(j: any) {
-  // API returns either gift object, or { ok:true, gift:{...}, version:"..." }
   return j?.gift && typeof j.gift === "object" ? j.gift : j;
 }
 
@@ -135,10 +137,10 @@ export default function Claim() {
   const [error, setError] = useState("");
   const [ok, setOk] = useState(false);
   const [alreadyClaimed, setAlreadyClaimed] = useState(false);
+  const [messageVisible, setMessageVisible] = useState(false);
 
   const invalidRef = useRef<boolean>(false);
 
-  // Captcha state (ONLY relevant for amount claims)
   const [turnstileBooting, setTurnstileBooting] = useState<boolean>(false);
   const [captchaReady, setCaptchaReady] = useState<boolean>(false);
   const tokenRef = useRef<string>("");
@@ -177,10 +179,7 @@ export default function Claim() {
   }, [hasAmount, retryAfterSec]);
 
   const needsClaimFlow = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
-
-  // ✅ Turnstile ONLY for amount claims
   const shouldShowCaptcha = hasAmount && turnstileConfigured && needsClaimFlow;
-
   const canAttemptClaim = !!gift && !alreadyClaimed && !ok && !invalidRef.current;
 
   function lockInvalidLink() {
@@ -190,8 +189,19 @@ export default function Claim() {
     setOk(false);
     setRetryAfterSec(null);
     setClaiming(false);
+    setMessageVisible(false);
     setError(invalidLinkMessage());
   }
+
+  useEffect(() => {
+    if (!gift) {
+      setMessageVisible(false);
+      return;
+    }
+    setMessageVisible(false);
+    const t = window.setTimeout(() => setMessageVisible(true), 140);
+    return () => window.clearTimeout(t);
+  }, [gift, ok, alreadyClaimed]);
 
   useEffect(() => {
     if (!ok) return;
@@ -205,8 +215,8 @@ export default function Claim() {
       setLoading(true);
       invalidRef.current = false;
       confettiFiredRef.current = false;
-
       setOk(false);
+      setMessageVisible(false);
 
       try {
         const r = await fetch(`${API_BASE}/api/gifts/${publicId}`, { method: "GET" });
@@ -303,7 +313,6 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }
 
-  // ✅ Ensure guest claims NEVER retain captcha state
   useEffect(() => {
     if (hasAmount) return;
     renderedRef.current = false;
@@ -332,7 +341,6 @@ export default function Claim() {
     setCaptchaBlocked(false);
   }, [shouldShowCaptcha]);
 
-  // ✅ Only load Turnstile script for amount claims
   useEffect(() => {
     if (!shouldShowCaptcha) return;
 
@@ -658,13 +666,26 @@ export default function Claim() {
     textRendering: "optimizeLegibility",
   };
 
+  const messageCardClass = cn(
+    "relative overflow-hidden rounded-2xl border p-6 md:p-7",
+    "border-white/60 bg-white/92 backdrop-blur-sm shadow-[0_16px_50px_rgba(15,23,42,0.12)]"
+  );
+
+  const glowClass = "absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.72),transparent_62%)]";
+
+  const messageTextClass = cn(
+    "whitespace-pre-wrap text-[19px] leading-8 md:text-[22px] md:leading-9 text-slate-900 tracking-[-0.01em]",
+    "transition-all duration-700 ease-out",
+    messageVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3"
+  );
+
   if (loading) {
     return (
       <div
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
-        <div className="min-h-screen bg-black/40" style={shellStyle}>
+        <div className="min-h-screen bg-black/35" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-24 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
               <div className="text-sm text-slate-500 mb-2" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
@@ -687,7 +708,7 @@ export default function Claim() {
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
-        <div className="min-h-screen bg-black/40" style={shellStyle}>
+        <div className="min-h-screen bg-black/35" style={shellStyle}>
           <div className="mx-auto max-w-5xl px-4 pt-24 pb-16">
             <div className="w-full max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 p-6 text-slate-900">
               <div className="text-sm text-red-800 font-medium mb-1">Couldn’t open this thankümail</div>
@@ -710,9 +731,10 @@ export default function Claim() {
         className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: "url('/images/hero-background.png')" }}
       >
-        <div className="min-h-screen bg-black/40" style={shellStyle}>
+        <div className="min-h-screen bg-black/35" style={shellStyle}>
           <main className="mx-auto max-w-5xl px-4 pt-24 pb-16">
-            <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
+            <div className="relative w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
+              <div className="absolute -inset-3 -z-10 rounded-[28px] bg-white/20 blur-2xl" />
               <div className="text-sm text-slate-500" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
                 thankümail
               </div>
@@ -728,10 +750,13 @@ export default function Claim() {
                 {hasAmount ? "The note was the heart of it. The gift will finalize shortly." : "The note was the heart of it."}
               </p>
 
-              <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
-                <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Message</div>
-                <div className="text-[17px] md:text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">
-                  {messageText}
+              <div className="mt-6">
+                <div className={messageCardClass}>
+                  <div className={glowClass} />
+                  <div className="relative">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500 mb-3">Message</div>
+                    <div className={messageTextClass}>{messageText}</div>
+                  </div>
                 </div>
               </div>
 
@@ -769,9 +794,10 @@ export default function Claim() {
       className="min-h-screen text-white bg-cover bg-center bg-no-repeat"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
-      <div className="min-h-screen bg-black/40" style={shellStyle}>
+      <div className="min-h-screen bg-black/35" style={shellStyle}>
         <main className="mx-auto max-w-5xl px-4 pt-24 pb-16">
-          <div className="w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
+          <div className="relative w-full max-w-xl mx-auto rounded-2xl bg-white/95 backdrop-blur shadow-soft border border-white/20 p-6 text-slate-900">
+            <div className="absolute -inset-3 -z-10 rounded-[28px] bg-white/20 blur-2xl" />
             <div className="text-sm text-slate-500" style={{ fontFamily: FONT_WORDMARK, fontWeight: 600 }}>
               thankümail
             </div>
@@ -797,10 +823,13 @@ export default function Claim() {
               </div>
             ) : null}
 
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
-              <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Message</div>
-              <div className="text-[17px] md:text-lg leading-relaxed text-slate-900 whitespace-pre-wrap">
-                {messageText}
+            <div className="mt-6">
+              <div className={messageCardClass}>
+                <div className={glowClass} />
+                <div className="relative">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500 mb-3">Message</div>
+                  <div className={messageTextClass}>{messageText}</div>
+                </div>
               </div>
             </div>
 
