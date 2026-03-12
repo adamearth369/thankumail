@@ -39,11 +39,11 @@ export default function Home() {
 
   return (
     <div
-      className="-mt-[57px] min-h-screen pt-[57px] bg-cover bg-center bg-no-repeat text-tm-charcoal"
+      className="min-h-screen bg-cover bg-center bg-no-repeat text-tm-charcoal"
       style={{ backgroundImage: "url('/images/hero-background.png')" }}
     >
       <div className="min-h-screen bg-black/30">
-        <main className="mx-auto max-w-5xl px-4 pt-10 pb-16">
+        <main className="mx-auto max-w-5xl px-4 pt-24 pb-16">
           <div
             className={[
               "flex flex-col items-center text-center transition-all duration-700 ease-out",
