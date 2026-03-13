@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/App.tsx
-// ACTION: Full file replacement
-
 import { Switch, Route, Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
@@ -15,6 +12,8 @@ import Dashboard from "./pages/Dashboard";
 import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
 
+const API_BASE = "https://api.thankumail.com";
+
 type VersionInfo = {
   commit: string;
   builtAt: string;
@@ -28,39 +27,26 @@ function safeGetLS(key: string) {
   }
 }
 
-function safeRemoveLS(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {}
-}
-
-function canonicalizeSessionToken() {
-  const canonical = safeGetLS("tm_session_token");
-  const legacyKeys = ["tmSessionToken", "sessionToken", "tm_token", "token"];
-
-  if (canonical) {
-    for (const k of legacyKeys) safeRemoveLS(k);
-    return;
-  }
-
-  for (const k of legacyKeys) {
-    const v = safeGetLS(k);
-    if (v) {
-      try {
-        localStorage.setItem("tm_session_token", v);
-      } catch {}
-      for (const kk of legacyKeys) safeRemoveLS(kk);
-      return;
-    }
-  }
-}
-
 function getQueryParam(name: string) {
   try {
     const u = new URL(window.location.href);
     return String(u.searchParams.get(name) || "").trim();
   } catch {
     return "";
+  }
+}
+
+async function fetchAuthState(): Promise<boolean> {
+  try {
+    const r = await fetch(`${API_BASE}/api/auth/me`, {
+      method: "GET",
+      credentials: "include",
+    });
+
+    const j: any = await r.json().catch(() => ({}));
+    return Boolean(r.ok && j?.ok);
+  } catch {
+    return false;
   }
 }
 
@@ -133,34 +119,27 @@ function PayCancel() {
 }
 
 function SiteHeader() {
-  const [hasSession, setHasSession] = useState<boolean>(() => Boolean(safeGetLS("tm_session_token")));
+  const [hasSession, setHasSession] = useState(false);
 
   useEffect(() => {
-    const sync = () => {
-      canonicalizeSessionToken();
-      setHasSession(Boolean(safeGetLS("tm_session_token")));
+    let alive = true;
+
+    const sync = async () => {
+      const authed = await fetchAuthState();
+      if (alive) setHasSession(authed);
     };
 
     sync();
 
-    const id = window.setInterval(sync, 1000);
-
-    const onStorage = (e: StorageEvent) => {
-      if (
-        e.key === "tm_session_token" ||
-        e.key === "tmSessionToken" ||
-        e.key === "sessionToken" ||
-        e.key === "tm_token" ||
-        e.key === "token"
-      ) {
-        sync();
-      }
+    const onFocus = () => {
+      void sync();
     };
 
-    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+
     return () => {
-      window.clearInterval(id);
-      window.removeEventListener("storage", onStorage);
+      alive = false;
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 
@@ -202,10 +181,6 @@ export default function App() {
   const [apiVersion, setApiVersion] = useState<string>(() => safeGetLS("tm_api_version"));
 
   useEffect(() => {
-    canonicalizeSessionToken();
-  }, []);
-
-  useEffect(() => {
     fetch("/version.json")
       .then((r) => r.json())
       .then(setVersion)
@@ -214,12 +189,12 @@ export default function App() {
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      canonicalizeSessionToken();
       const c = safeGetLS("tm_api_commit");
       const v = safeGetLS("tm_api_version");
       setApiCommit((prev) => (prev !== c ? c : prev));
       setApiVersion((prev) => (prev !== v ? v : prev));
     }, 1000);
+
     return () => window.clearInterval(id);
   }, []);
 
@@ -227,16 +202,8 @@ export default function App() {
     const onStorage = (e: StorageEvent) => {
       if (e.key === "tm_api_commit") setApiCommit(safeGetLS("tm_api_commit"));
       if (e.key === "tm_api_version") setApiVersion(safeGetLS("tm_api_version"));
-      if (
-        e.key === "tm_session_token" ||
-        e.key === "tmSessionToken" ||
-        e.key === "sessionToken" ||
-        e.key === "tm_token" ||
-        e.key === "token"
-      ) {
-        canonicalizeSessionToken();
-      }
     };
+
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
@@ -263,6 +230,7 @@ export default function App() {
         <Route path="/terms" component={Terms} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/auth/google" component={AuthGoogle} />
+        <Route path="/auth/google/success" component={AuthGoogle} />
         <Route path="/auth/facebook" component={AuthFacebook} />
 
         <Route path="/pay/success" component={PaySuccess} />
