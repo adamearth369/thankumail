@@ -607,12 +607,47 @@ async function countDailyBySenderEmail(senderEmail: string) {
 }
 
 /* -------------------- AUTH -------------------- */
-type Authed = { isAuthed: true; userId: string; sessionToken: string } | { isAuthed: false };
+type Authed =
+  | { isAuthed: true; userId: string; sessionToken: string; source: "cookie" | "bearer" }
+  | { isAuthed: false };
+
+const AUTH_COOKIE_NAME = "tm_session";
+const AUTH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: "lax" as const,
+  path: "/",
+};
+
+function readSessionTokenFromCookie(req: Request) {
+  return String((req as any)?.cookies?.[AUTH_COOKIE_NAME] || "").trim();
+}
+
+function setAuthCookie(res: any, sessionToken: string, expiresAt: Date) {
+  res.cookie(AUTH_COOKIE_NAME, sessionToken, {
+    ...AUTH_COOKIE_OPTIONS,
+    expires: expiresAt,
+  });
+}
+
+function clearAuthCookie(res: any) {
+  res.clearCookie(AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS);
+}
 
 async function getAuth(req: Request): Promise<Authed> {
-  const auth = String(req.headers.authorization || "");
-  if (!auth.toLowerCase().startsWith("bearer ")) return { isAuthed: false };
-  const sessionToken = auth.slice("bearer ".length).trim();
+  const cookieToken = readSessionTokenFromCookie(req);
+
+  let sessionToken = cookieToken;
+  let source: "cookie" | "bearer" = "cookie";
+
+  if (!sessionToken) {
+    const auth = String(req.headers.authorization || "");
+    if (auth.toLowerCase().startsWith("bearer ")) {
+      sessionToken = auth.slice("bearer ".length).trim();
+      source = "bearer";
+    }
+  }
+
   if (!sessionToken) return { isAuthed: false };
 
   const sessionHash = sha256Hex(sessionToken);
@@ -632,7 +667,7 @@ async function getAuth(req: Request): Promise<Authed> {
   if (s.revokedAt) return { isAuthed: false };
   if (s.expiresAt && new Date(s.expiresAt).getTime() <= Date.now()) return { isAuthed: false };
 
-  return { isAuthed: true, userId: String(s.userId), sessionToken };
+  return { isAuthed: true, userId: String(s.userId), sessionToken, source };
 }
 
 async function issueSessionForEmail(
@@ -1523,11 +1558,19 @@ export function registerRoutes(app: Express): Server {
   /* -------------------- AUTH: LOGOUT (REVOKE CURRENT SESSION) -------------------- */
   app.post("/api/auth/logout", async (req, res) => {
     const a = await getAuth(req);
+
+    clearAuthCookie(res);
+
     if (!a.isAuthed) {
-      return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
+      return res.status(401).json({
+        error: "Unauthorized",
+        code: "UNAUTHORIZED",
+        version: VERSION,
+      });
     }
 
     const r = await revokeSessionToken(a.sessionToken);
+
     return res.json({
       ok: true,
       revoked: r.ok,
@@ -1935,99 +1978,135 @@ export function registerRoutes(app: Express): Server {
   });
 
   app.get("/api/auth/google/callback", limiterGoogle, async (req, res) => {
-    pruneOauthState();
+  pruneOauthState();
 
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res
-        .status(503)
-        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
-    }
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res
+      .status(503)
+      .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
+  }
 
-    const code = String(req.query.code || "");
-    const state = String(req.query.state || "");
-    const err = String(req.query.error || "");
+  const code = String(req.query.code || "");
+  const state = String(req.query.state || "");
+  const err = String(req.query.error || "");
 
-    if (err) {
-      return res.status(400).json({
-        error: "Google auth failed",
-        code: "GOOGLE_OAUTH_ERROR",
-        detail: err,
-        version: VERSION,
-      });
-    }
-    if (!code || !state) {
-      return res.status(400).json({ error: "Invalid callback", code: "GOOGLE_CALLBACK_INVALID", version: VERSION });
-    }
-
-    const saved = oauthStateStore.get(state);
-    oauthStateStore.delete(state);
-
-    if (!saved || saved.exp <= Date.now() || saved.provider !== "google") {
-      return res.status(400).json({ error: "Invalid state", code: "OAUTH_STATE_INVALID", version: VERSION });
-    }
-
-    const ip = getIp(req);
-    const ua = String(req.headers["user-agent"] || "").slice(0, 200);
-    if (saved.ip && saved.ip !== ip) {
-      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
-    }
-    if (saved.ua && saved.ua !== ua) {
-      return res.status(400).json({ error: "State mismatch", code: "OAUTH_STATE_MISMATCH", version: VERSION });
-    }
-
-    const body = new URLSearchParams();
-    body.set("code", code);
-    body.set("client_id", GOOGLE_CLIENT_ID);
-    body.set("client_secret", GOOGLE_CLIENT_SECRET);
-    body.set("redirect_uri", GOOGLE_REDIRECT_URI);
-    body.set("grant_type", "authorization_code");
-
-    const tokenResp = await fetch(GOOGLE_TOKEN_URL, { method: "POST", body });
-    const tokenJson: any = await tokenResp.json().catch(() => ({}));
-
-    const accessToken = String(tokenJson?.access_token || "");
-    if (!accessToken) {
-      return res.status(400).json({
-        error: "Token exchange failed",
-        code: "GOOGLE_TOKEN_EXCHANGE_FAILED",
-        detail: tokenJson,
-        version: VERSION,
-      });
-    }
-
-    const infoResp = await fetch(GOOGLE_USERINFO_URL, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}` },
+  if (err) {
+    return res.status(400).json({
+      error: "Google auth failed",
+      code: "GOOGLE_OAUTH_ERROR",
+      detail: err,
+      version: VERSION,
     });
-    const infoJson: any = await infoResp.json().catch(() => ({}));
+  }
 
-    const email = normalizeEmail(String(infoJson?.email || ""));
-    const emailVerified = infoJson?.email_verified;
-    const googleSub = String(infoJson?.sub || "").trim();
-
-    if (!email) {
-      return res.status(400).json({ error: "Google did not return email", code: "GOOGLE_NO_EMAIL", version: VERSION });
-    }
-    if (emailVerified === false) {
-      return res.status(400).json({ error: "Email not verified", code: "EMAIL_NOT_VERIFIED", version: VERSION });
-    }
-
-    const issued = await issueSessionForEmail(email, req, {
-      authProvider: "google",
-      googleSub: googleSub || null,
+  if (!code || !state) {
+    return res.status(400).json({
+      error: "Invalid callback",
+      code: "GOOGLE_CALLBACK_INVALID",
+      version: VERSION,
     });
-    if (!issued.ok) {
-      return res.status(400).json({
-        error: issued.error,
-        code: issued.code,
-        reason: (issued as any).reason,
-        version: VERSION,
-      });
-    }
+  }
 
-    res.setHeader("Cache-Control", "no-store");
-    return res.redirect(302, buildGoogleConsumeUrl(issued.sessionToken, email));
+  const saved = oauthStateStore.get(state);
+  oauthStateStore.delete(state);
+
+  if (!saved || saved.exp <= Date.now() || saved.provider !== "google") {
+    return res.status(400).json({
+      error: "Invalid state",
+      code: "OAUTH_STATE_INVALID",
+      version: VERSION,
+    });
+  }
+
+  const ip = getIp(req);
+  const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+  if (saved.ip && saved.ip !== ip) {
+    return res.status(400).json({
+      error: "State mismatch",
+      code: "OAUTH_STATE_MISMATCH",
+      version: VERSION,
+    });
+  }
+
+  if (saved.ua && saved.ua !== ua) {
+    return res.status(400).json({
+      error: "State mismatch",
+      code: "OAUTH_STATE_MISMATCH",
+      version: VERSION,
+    });
+  }
+
+  const body = new URLSearchParams();
+  body.set("code", code);
+  body.set("client_id", GOOGLE_CLIENT_ID);
+  body.set("client_secret", GOOGLE_CLIENT_SECRET);
+  body.set("redirect_uri", GOOGLE_REDIRECT_URI);
+  body.set("grant_type", "authorization_code");
+
+  const tokenResp = await fetch(GOOGLE_TOKEN_URL, { method: "POST", body });
+  const tokenJson: any = await tokenResp.json().catch(() => ({}));
+
+  const accessToken = String(tokenJson?.access_token || "");
+
+  if (!accessToken) {
+    return res.status(400).json({
+      error: "Token exchange failed",
+      code: "GOOGLE_TOKEN_EXCHANGE_FAILED",
+      detail: tokenJson,
+      version: VERSION,
+    });
+  }
+
+  const infoResp = await fetch(GOOGLE_USERINFO_URL, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
   });
+
+  const infoJson: any = await infoResp.json().catch(() => ({}));
+
+  const email = normalizeEmail(String(infoJson?.email || ""));
+  const emailVerified = infoJson?.email_verified;
+  const googleSub = String(infoJson?.sub || "").trim();
+
+  if (!email) {
+    return res.status(400).json({
+      error: "Google did not return email",
+      code: "GOOGLE_NO_EMAIL",
+      version: VERSION,
+    });
+  }
+
+  if (emailVerified === false) {
+    return res.status(400).json({
+      error: "Email not verified",
+      code: "EMAIL_NOT_VERIFIED",
+      version: VERSION,
+    });
+  }
+
+  const issued = await issueSessionForEmail(email, req, {
+    authProvider: "google",
+    googleSub: googleSub || null,
+  });
+
+  if (!issued.ok) {
+    return res.status(400).json({
+      error: issued.error,
+      code: issued.code,
+      reason: (issued as any).reason,
+      version: VERSION,
+    });
+  }
+
+  /* SET SECURE COOKIE */
+  setAuthCookie(res, issued.sessionToken, issued.expiresAt);
+
+  res.setHeader("Cache-Control", "no-store");
+
+  /* redirect without exposing token */
+  return res.redirect(302, `${FRONTEND_URL}/auth/google/success`);
+});
 
   /* -------------------- AUTH: FACEBOOK OAUTH -------------------- */
   app.get("/api/auth/facebook", limiterFacebook, async (req, res) => {
