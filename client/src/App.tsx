@@ -1,3 +1,6 @@
+// WHERE TO PASTE: client/src/App.tsx
+// ACTION: Full file replacement
+
 import { Switch, Route, Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
@@ -9,6 +12,7 @@ import Login from "./pages/Login";
 import AuthGoogle from "./pages/AuthGoogle";
 import AuthFacebook from "./pages/AuthFacebook";
 import Dashboard from "./pages/Dashboard";
+import Terms from "./pages/Terms";
 
 type VersionInfo = {
   commit: string;
@@ -255,6 +259,7 @@ export default function App() {
         <Route path="/claim/:publicId" component={Claim} />
         <Route path="/login" component={Login} />
         <Route path="/dashboard" component={Dashboard} />
+        <Route path="/terms" component={Terms} />
         <Route path="/auth/google" component={AuthGoogle} />
         <Route path="/auth/facebook" component={AuthFacebook} />
 
