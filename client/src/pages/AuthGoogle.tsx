@@ -1,63 +1,33 @@
 import React, { useEffect } from "react";
 
 const API_BASE = "https://api.thankumail.com";
-const STORAGE_KEY = "tm_session_token";
-
-function getTokenFromHash(): string {
-  const raw = String(window.location.hash || "");
-  const hash = raw.startsWith("#") ? raw.slice(1) : raw;
-  const params = new URLSearchParams(hash);
-  return String(params.get("token") || "").trim();
-}
-
-function clearSession() {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {}
-}
-
-function setToken(token: string) {
-  try {
-    localStorage.setItem(STORAGE_KEY, token);
-  } catch {}
-}
-
-function stripHash() {
-  try {
-    window.history.replaceState({}, document.title, "/auth/google");
-  } catch {}
-}
 
 export default function AuthGoogle() {
   useEffect(() => {
     async function run() {
-      const token = getTokenFromHash();
-
-      // If user directly visits /auth/google without token, start OAuth
-      if (!token) {
-        window.location.href = `${API_BASE}/api/auth/google`;
-        return;
-      }
-
       try {
-        setToken(token);
+        const path = window.location.pathname;
 
-        const r = await fetch(`${API_BASE}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        if (path === "/auth/google/success") {
+          const r = await fetch(`${API_BASE}/api/auth/me`, {
+            method: "GET",
+            credentials: "include",
+          });
 
-        const j: any = await r.json().catch(() => ({}));
+          const j: any = await r.json().catch(() => ({}));
 
-        if (!r.ok || !j?.ok) {
-          clearSession();
+          if (r.ok && j?.ok) {
+            window.location.replace("/");
+            return;
+          }
+
+          window.location.replace("/login");
+          return;
         }
 
-        stripHash();
-        window.location.replace("/");
+        window.location.href = `${API_BASE}/api/auth/google`;
       } catch {
-        clearSession();
-        stripHash();
-        window.location.replace("/");
+        window.location.replace("/login");
       }
     }
 
