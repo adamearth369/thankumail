@@ -1,20 +1,25 @@
-// WHERE TO PASTE: client/src/pages/Home.tsx
-// ACTION: Full file replacement
-
 import React, { useEffect, useMemo, useState } from "react";
 import CreateGiftForm from "../components/CreateGiftForm";
 
-function safeGetSession() {
+const API_BASE = "https://api.thankumail.com";
+
+async function fetchAuthState(): Promise<boolean> {
   try {
-    return String(localStorage.getItem("tm_session_token") || "").trim();
+    const r = await fetch(`${API_BASE}/api/auth/me`, {
+      method: "GET",
+      credentials: "include",
+    });
+
+    const j: any = await r.json().catch(() => ({}));
+    return Boolean(r.ok && j?.ok);
   } catch {
-    return "";
+    return false;
   }
 }
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
-  const [sessionToken, setSessionToken] = useState<string>(() => safeGetSession());
+  const [loggedIn, setLoggedIn] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 30);
@@ -22,23 +27,39 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const id = window.setInterval(() => {
-      const v = safeGetSession();
-      setSessionToken((prev) => (prev !== v ? v : prev));
-    }, 1000);
-    return () => window.clearInterval(id);
+    let alive = true;
+
+    const sync = async () => {
+      const authed = await fetchAuthState();
+      if (alive) setLoggedIn(authed);
+    };
+
+    sync();
+
+    const onFocus = () => {
+      void sync();
+    };
+
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   const wordmark = useMemo(() => "thankümail", []);
 
-  function handleSignOut() {
+  async function handleSignOut() {
     try {
-      localStorage.removeItem("tm_session_token");
+      await fetch(`${API_BASE}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
     } catch {}
+
     window.location.href = "/";
   }
-
-  const loggedIn = Boolean(sessionToken);
 
   return (
     <div
