@@ -73,12 +73,6 @@ function safeGetLS(key: string) {
   }
 }
 
-function safeRemoveLS(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {}
-}
-
 function resolveApiBase(): string {
   try {
     const v = (import.meta as any)?.env?.VITE_API_BASE_URL;
@@ -269,32 +263,27 @@ export default function Dashboard() {
     let cancelled = false;
 
     async function run() {
-      const token = safeGetLS("tm_session_token");
-      if (!token) {
-        if (!cancelled) {
-          setUnauthorized(true);
-          setLoading(false);
-        }
-        return;
-      }
-
       try {
         setLoading(true);
         setUnauthorized(false);
         setError("");
 
-        const headers = {
-          Authorization: `Bearer ${token}`,
-        };
-
         const [meRes, statsRes, giftsRes] = await Promise.all([
-          fetch(`${apiBase}/api/me`, { headers }),
-          fetch(`${apiBase}/api/me/stats`, { headers }),
-          fetch(`${apiBase}/api/me/gifts`, { headers }),
+          fetch(`${apiBase}/api/me`, {
+            method: "GET",
+            credentials: "include",
+          }),
+          fetch(`${apiBase}/api/me/stats`, {
+            method: "GET",
+            credentials: "include",
+          }),
+          fetch(`${apiBase}/api/me/gifts`, {
+            method: "GET",
+            credentials: "include",
+          }),
         ]);
 
         if (meRes.status === 401 || statsRes.status === 401 || giftsRes.status === 401) {
-          safeRemoveLS("tm_session_token");
           if (!cancelled) {
             setUnauthorized(true);
             setLoading(false);
@@ -360,10 +349,9 @@ export default function Dashboard() {
     let cancelled = false;
 
     async function loadDetail() {
-      const token = safeGetLS("tm_session_token");
       const publicId = String(selectedPublicId || "").trim();
 
-      if (!token || !publicId) {
+      if (!publicId) {
         setSelectedGift(null);
         setDetailError("");
         setDetailLoading(false);
@@ -375,13 +363,11 @@ export default function Dashboard() {
         setDetailError("");
 
         const res = await fetch(`${apiBase}/api/me/gifts/${encodeURIComponent(publicId)}`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+          method: "GET",
+          credentials: "include",
         });
 
         if (res.status === 401) {
-          safeRemoveLS("tm_session_token");
           if (!cancelled) {
             setUnauthorized(true);
             setDetailLoading(false);
