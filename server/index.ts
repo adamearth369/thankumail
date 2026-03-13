@@ -1,16 +1,20 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
+import cookieParser from "cookie-parser";
 import path from "path";
 import fs from "fs";
 import { registerRoutes } from "./routes";
 
 /* -------------------- VERSION -------------------- */
-const INDEX_VERSION = "api_index_v2026-02-24_002";
+const INDEX_VERSION = "api_index_v2026-03-13_001";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- APP -------------------- */
 const app: Express = express();
 
 app.set("trust proxy", 1);
+
+/* -------------------- COOKIE PARSER -------------------- */
+app.use(cookieParser());
 
 /* -------------------- COMMIT HEADER -------------------- */
 app.use((_req, res, next) => {
@@ -20,7 +24,10 @@ app.use((_req, res, next) => {
 });
 
 /* -------------------- CORS -------------------- */
-const ALLOWED_ORIGINS = new Set<string>(["https://thankumail.com", "https://www.thankumail.com"]);
+const ALLOWED_ORIGINS = new Set<string>([
+  "https://thankumail.com",
+  "https://www.thankumail.com",
+]);
 
 function setCors(req: Request, res: Response) {
   const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
@@ -33,8 +40,15 @@ function setCors(req: Request, res: Response) {
       "Access-Control-Allow-Headers",
       "Content-Type, Authorization, x-user-id, x-admin-token"
     );
+
+    /* allow cookies */
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+
     res.setHeader("Access-Control-Max-Age", "600");
-    res.setHeader("Access-Control-Expose-Headers", "x-commit, x-api-version, X-Commit, X-Api-Version");
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      "x-commit, x-api-version, X-Commit, X-Api-Version"
+    );
   }
 }
 
@@ -45,15 +59,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 /* -------------------- BODY PARSING (STRIPE RAW SAFE) -------------------- */
-/**
- * Stripe webhook MUST receive raw bytes body for signature verification.
- * We detect BOTH canonical + alias webhook URLs:
- * - /api/stripe/webhook
- * - /api/webhooks/stripe
- */
 function isStripeWebhook(req: Request) {
   const url = String(req.originalUrl || req.url || "");
   const pathOnly = (url.split("?")[0] || "").trim();
+
   return (
     pathOnly === "/api/stripe/webhook" ||
     pathOnly === "/api/stripe/webhook/" ||
@@ -68,7 +77,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
       type: "application/json",
       limit: "2mb",
       verify: (r: any, _res, buf) => {
-        r.rawBody = buf; // Buffer
+        r.rawBody = buf;
       },
     })(req, res, next);
   }
@@ -76,7 +85,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   return express.json({
     limit: "1mb",
     verify: (r: any, _res, buf) => {
-      r.rawBody = buf; // Buffer
+      r.rawBody = buf;
     },
   })(req, res, next);
 });
@@ -108,18 +117,27 @@ if (fs.existsSync(publicDir)) {
 app.get("*", (req: Request, res: Response, next: NextFunction) => {
   if (req.path.startsWith("/api/")) return next();
   if (req.path === "/health") return next();
-  if (fs.existsSync(indexHtml)) return res.sendFile(indexHtml);
+
+  if (fs.existsSync(indexHtml)) {
+    return res.sendFile(indexHtml);
+  }
+
   return res.status(404).send("Not found");
 });
 
 /* -------------------- ERROR HANDLER -------------------- */
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error("unhandled_error", err?.stack || err);
-  res.status(500).json({ ok: false, error: "Server error", indexVersion: INDEX_VERSION });
+  res.status(500).json({
+    ok: false,
+    error: "Server error",
+    indexVersion: INDEX_VERSION,
+  });
 });
 
 /* -------------------- LISTEN -------------------- */
 const PORT = Number(process.env.PORT || 10000);
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`listening on ${PORT} (${INDEX_VERSION})`);
 });
