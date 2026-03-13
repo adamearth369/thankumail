@@ -23,8 +23,6 @@ type CreateGiftOk = {
   messageMode?: "preset" | "custom";
   presetMessageId?: number | null;
   amount?: number | null;
-
-  // paywall
   paymentRequired?: boolean;
   paymentStatus?: string | null;
 };
@@ -62,13 +60,8 @@ declare global {
 
 const API_BASE = "https://api.thankumail.com";
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
-
-// Cloudflare Turnstile "Always Pass" test sitekey (safe for client-side fallback)
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
-const SESSION_KEY = "tm_session_token";
-
-// IMPORTANT: backend expects presetMessageId in [1..7]
 const PRESET_MESSAGES: Array<{ id: number; text: string }> = [
   { id: 1, text: "I just wanted you to know how much you are appreciated. Thank you for being you." },
   { id: 2, text: "Your support made a bigger difference than you realize. I’m truly grateful." },
@@ -145,20 +138,6 @@ function centsToLabel(cents: number | null | undefined) {
   return `$${dollars}`;
 }
 
-function getSessionToken() {
-  try {
-    return String(localStorage.getItem(SESSION_KEY) || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-function removeSessionToken() {
-  try {
-    localStorage.removeItem(SESSION_KEY);
-  } catch {}
-}
-
 function rememberBackendIdentityFromHeaders(headers: Headers) {
   try {
     const xCommit = headers.get("x-commit") || headers.get("X-Commit") || "";
@@ -169,24 +148,18 @@ function rememberBackendIdentityFromHeaders(headers: Headers) {
 }
 
 async function logoutServerSideIfPossible() {
-  const st = getSessionToken();
-  if (!st) return;
   try {
     const r = await fetch(`${API_BASE}/api/auth/logout`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${st}` },
+      credentials: "include",
     });
     rememberBackendIdentityFromHeaders(r.headers);
-  } catch {
-    // ignore network issues; client still clears token
-  }
+  } catch {}
 }
 
 export default function CreateGiftForm() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [senderEmail, setSenderEmail] = useState("");
-
-  const [sessionToken, setSessionToken] = useState<string>(() => getSessionToken());
 
   const [authChecked, setAuthChecked] = useState<boolean>(false);
   const [authOk, setAuthOk] = useState<boolean>(false);
@@ -231,35 +204,18 @@ export default function CreateGiftForm() {
   }, []);
 
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === SESSION_KEY) setSessionToken(getSessionToken());
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  useEffect(() => {
     let cancelled = false;
     const seq = ++authReqSeqRef.current;
 
     async function checkMe() {
-      const st = String(sessionToken || "").trim();
       setAuthChecked(false);
       setAuthOk(false);
       setAuthEmail("");
 
-      if (!st) {
-        setAuthChecked(true);
-        return;
-      }
-
       try {
         const resp = await fetch(`${API_BASE}/api/auth/me`, {
           method: "GET",
-          headers: {
-            Authorization: `Bearer ${st}`,
-            "Content-Type": "application/json",
-          },
+          credentials: "include",
         });
 
         rememberBackendIdentityFromHeaders(resp.headers);
@@ -280,8 +236,6 @@ export default function CreateGiftForm() {
           return;
         }
 
-        removeSessionToken();
-        setSessionToken("");
         setAuthOk(false);
         setAuthEmail("");
         setAuthChecked(true);
@@ -298,7 +252,7 @@ export default function CreateGiftForm() {
     return () => {
       cancelled = true;
     };
-  }, [sessionToken]);
+  }, []);
 
   useEffect(() => {
     if (!isRegistered) {
@@ -327,7 +281,6 @@ export default function CreateGiftForm() {
     const re = recipientEmail.trim();
     const se = senderEmail.trim();
     const msgOk = isRegistered ? (messageMode === "preset" ? presetOk : customOk) : presetOk;
-
     const senderOk = isRegistered ? true : isEmail(se);
 
     return (
@@ -538,15 +491,14 @@ export default function CreateGiftForm() {
     return () => {
       destroyWidget();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnstileReady, TURNSTILE_SITE_KEY]);
 
-  async function createCheckoutSession(publicId: string, cents: number, authToken: string) {
+  async function createCheckoutSession(publicId: string, cents: number) {
     const r = await fetch(`${API_BASE}/api/stripe/checkout/session`, {
       method: "POST",
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${authToken}`,
       },
       body: JSON.stringify({
         amount: cents,
@@ -632,16 +584,12 @@ export default function CreateGiftForm() {
 
     const presetMessageId = PRESET_MESSAGES[presetIdx]?.id ?? 2;
 
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const st = authOk ? getSessionToken() : "";
-    if (st) headers["Authorization"] = `Bearer ${st}`;
-
     const payload: any = {
       recipientEmail: re,
       turnstileToken: token,
     };
 
-    if (!st) {
+    if (!isRegistered) {
       payload.senderEmail = se;
       payload.messageMode = "preset";
       payload.presetMessageId = presetMessageId;
@@ -660,7 +608,10 @@ export default function CreateGiftForm() {
     try {
       const resp = await fetch(`${API_BASE}/api/gifts`, {
         method: "POST",
-        headers,
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify(payload),
       });
 
@@ -677,8 +628,8 @@ export default function CreateGiftForm() {
         const lock: "server" | "turnstile" = isTurnstileErrorCode(code) ? "turnstile" : "server";
 
         if (resp.status === 401 || resp.status === 403) {
-          removeSessionToken();
-          setSessionToken("");
+          setAuthOk(false);
+          setAuthEmail("");
         }
 
         setErrorWithLock(err.error || "Request failed", lock);
@@ -701,17 +652,10 @@ export default function CreateGiftForm() {
       const ok = data as CreateGiftOk;
 
       if (isRegistered && amountCents !== null && ok.paymentRequired) {
-        const authToken = getSessionToken();
-        if (!authToken) {
-          setSubmitting(false);
-          setErrorWithLock("Session expired. Please sign in again.", "server");
-          return;
-        }
-
         setRedirectingToPayment(true);
 
         try {
-          const checkout = await createCheckoutSession(ok.publicId, amountCents, authToken);
+          const checkout = await createCheckoutSession(ok.publicId, amountCents);
           if (checkout?.url) {
             window.location.assign(checkout.url);
             return;
@@ -777,8 +721,6 @@ export default function CreateGiftForm() {
     setResult(null);
 
     await logoutServerSideIfPossible();
-    removeSessionToken();
-    setSessionToken("");
     setAuthOk(false);
     setAuthEmail("");
     setMessageMode("preset");
