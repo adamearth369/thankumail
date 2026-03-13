@@ -13,6 +13,7 @@ import AuthGoogle from "./pages/AuthGoogle";
 import AuthFacebook from "./pages/AuthFacebook";
 import Dashboard from "./pages/Dashboard";
 import Terms from "./pages/Terms";
+import Privacy from "./pages/Privacy";
 
 type VersionInfo = {
   commit: string;
@@ -260,6 +261,7 @@ export default function App() {
         <Route path="/login" component={Login} />
         <Route path="/dashboard" component={Dashboard} />
         <Route path="/terms" component={Terms} />
+        <Route path="/privacy" component={Privacy} />
         <Route path="/auth/google" component={AuthGoogle} />
         <Route path="/auth/facebook" component={AuthFacebook} />
 
