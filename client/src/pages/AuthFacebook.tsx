@@ -1,40 +1,31 @@
 import React, { useEffect } from "react";
-import { useLocation } from "wouter";
 
-const STORAGE_KEY = "tm_session_token";
-
-function getTokenFromHash(): string {
-  const raw = String(window.location.hash || "");
-  const hash = raw.startsWith("#") ? raw.slice(1) : raw;
-  const params = new URLSearchParams(hash);
-  return String(params.get("token") || "").trim();
-}
+const API_BASE = "https://api.thankumail.com";
 
 export default function AuthFacebook() {
-  const [, setLocation] = useLocation();
-
   useEffect(() => {
-    const token = getTokenFromHash();
+    async function run() {
+      try {
+        const r = await fetch(`${API_BASE}/api/auth/me`, {
+          method: "GET",
+          credentials: "include",
+        });
 
-    if (!token) {
-      setLocation("/login");
-      return;
+        const j: any = await r.json().catch(() => ({}));
+
+        if (r.ok && j?.ok) {
+          window.location.replace("/");
+          return;
+        }
+
+        window.location.replace("/login");
+      } catch {
+        window.location.replace("/login");
+      }
     }
 
-    try {
-      localStorage.setItem(STORAGE_KEY, token);
-    } catch {}
-
-    // Optional: quick verification (non-blocking)
-    fetch("https://api.thankumail.com/api/auth/me", {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(() => {})
-      .catch(() => {});
-
-    setLocation("/");
-  }, [setLocation]);
+    run();
+  }, []);
 
   return (
     <div className="min-h-[60vh] flex items-center justify-center px-4">
