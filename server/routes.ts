@@ -3783,9 +3783,14 @@ export function registerRoutes(app: Express): Server {
   app.post("/api/gifts/:publicId/claim", async (req, res) => {
     try {
       const publicId = String(req.params.publicId || "").trim();
-      if (!publicId) {
-        return res.status(400).json({ error: "Missing id", code: "MISSING_ID", version: VERSION });
-      }
+
+if (!/^[a-f0-9]{32}$/i.test(publicId)) {
+  return res.status(404).json({
+    error: "Not found",
+    code: "NOT_FOUND",
+    version: VERSION,
+  });
+}
 
       const row = await db
         .select({
