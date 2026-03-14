@@ -20,11 +20,11 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-14_002";
+const VERSION = "routes_v2026-03-14_003";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1";
+const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -1328,6 +1328,7 @@ async function handleStripeWebhook(req: Request, res: any) {
 
       if (publicId) {
         const amountCents = amountTotal != null ? Number(amountTotal) : null;
+        let shouldDeliver = false;
 
         await db.transaction(async (tx) => {
           const row = await tx
@@ -1347,6 +1348,7 @@ async function handleStripeWebhook(req: Request, res: any) {
 
           const alreadyPaid =
             Boolean(g.paidAt) || String(g.paymentStatus || "").toLowerCase() === "paid";
+
           if (alreadyPaid) {
             await tx
               .update(gifts)
@@ -1356,12 +1358,51 @@ async function handleStripeWebhook(req: Request, res: any) {
                 paymentStatus: "paid",
               })
               .where(eq(gifts.id, g.id));
+
+            shouldDeliver = true;
+            return;
+          }
+
+          const existingAmountCents =
+            g.amount == null || g.amount === undefined ? null : Number(g.amount);
+
+          const normalizedAmountCents =
+            amountCents != null && Number.isFinite(amountCents) ? Number(amountCents) : null;
+
+          if (
+            stripeIsPaid(paymentStatus) &&
+            existingAmountCents != null &&
+            normalizedAmountCents != null &&
+            existingAmountCents !== normalizedAmountCents
+          ) {
+            await tx
+              .update(gifts)
+              .set({
+                stripeCheckoutSessionId: sessionId || null,
+                stripePaymentIntentId: paymentIntentId || null,
+                paymentStatus: "amount_mismatch",
+              })
+              .where(eq(gifts.id, g.id));
+
+            console.log(
+              JSON.stringify({
+                ts: new Date().toISOString(),
+                event: "stripe_checkout_amount_mismatch",
+                publicId,
+                sessionId,
+                expectedAmount: existingAmountCents,
+                actualAmount: normalizedAmountCents,
+                version: VERSION,
+              }),
+            );
+
+            shouldDeliver = false;
             return;
           }
 
           const setAmount =
-            g.amount == null && amountCents != null && Number.isFinite(amountCents)
-              ? amountCents
+            existingAmountCents == null && normalizedAmountCents != null
+              ? normalizedAmountCents
               : undefined;
 
           await tx
@@ -1374,9 +1415,11 @@ async function handleStripeWebhook(req: Request, res: any) {
               amount: setAmount as any,
             })
             .where(eq(gifts.id, g.id));
+
+          shouldDeliver = stripeIsPaid(paymentStatus);
         });
 
-        if (stripeIsPaid(paymentStatus)) {
+        if (shouldDeliver) {
           try {
             await deliverGiftIfEligible(publicId, "stripe_webhook_paid");
           } catch (e: any) {
