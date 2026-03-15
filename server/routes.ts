@@ -20,11 +20,11 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-15_009";
+const VERSION = "routes_v2026-03-15_010";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1";
+const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -1973,10 +1973,8 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
     pruneOauthState();
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res
-        .status(503)
-        .json({ error: "Google auth not configured", code: "GOOGLE_NOT_CONFIGURED", version: VERSION });
-    }
+  return oauthError(res, 503, "GOOGLE_NOT_CONFIGURED");
+}
 
     const ip = getIp(req);
     const ua = String(req.headers["user-agent"] || "").slice(0, 200);
@@ -2039,22 +2037,17 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   const err = String(req.query.error || "");
 
   if (err) {
-    return res.status(400).json({
-      error: "Google auth failed",
-      code: "GOOGLE_OAUTH_ERROR",
-      detail: err,
-      version: VERSION,
-    });
-  }
+  return oauthError(res, 400, "GOOGLE_OAUTH_ERROR", { error: err });
+}
 
   if (!code || !state) {
-  return oauthError(res, 400, "MICROSOFT_CALLBACK_INVALID");
+  return oauthError(res, 400, "GOOGLE_CALLBACK_INVALID");
 }
 
   const saved = oauthStateStore.get(state);
   oauthStateStore.delete(state);
 
-  if (!saved || saved.exp <= Date.now() || saved.provider !== "microsoft") {
+  if (!saved || saved.exp <= Date.now() || saved.provider !== "google") {
   return oauthError(res, 400, "OAUTH_STATE_INVALID");
 }
 
@@ -2082,13 +2075,8 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   const accessToken = String(tokenJson?.access_token || "");
 
   if (!accessToken) {
-    return res.status(400).json({
-      error: "Token exchange failed",
-      code: "GOOGLE_TOKEN_EXCHANGE_FAILED",
-      detail: tokenJson,
-      version: VERSION,
-    });
-  }
+  return oauthError(res, 400, "GOOGLE_TOKEN_EXCHANGE_FAILED", tokenJson);
+}
 
   const infoResp = await fetch(GOOGLE_USERINFO_URL, {
     method: "GET",
@@ -2102,20 +2090,12 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   const googleSub = String(infoJson?.sub || "").trim();
 
   if (!email) {
-    return res.status(400).json({
-      error: "Google did not return email",
-      code: "GOOGLE_NO_EMAIL",
-      version: VERSION,
-    });
-  }
+  return oauthError(res, 400, "GOOGLE_NO_EMAIL");
+}
 
   if (emailVerified === false) {
-    return res.status(400).json({
-      error: "Email not verified",
-      code: "EMAIL_NOT_VERIFIED",
-      version: VERSION,
-    });
-  }
+  return oauthError(res, 400, "EMAIL_NOT_VERIFIED");
+}
 
   const issued = await issueSessionForEmail(email, req, {
     authProvider: "google",
@@ -2123,13 +2103,10 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   });
 
   if (!issued.ok) {
-    return res.status(400).json({
-      error: issued.error,
-      code: issued.code,
-      reason: (issued as any).reason,
-      version: VERSION,
-    });
-  }
+  return oauthError(res, 400, String(issued.code || "AUTH_SESSION_ISSUE_FAILED"), {
+    reason: (issued as any).reason,
+  });
+}
 
   /* SET SECURE COOKIE */
   setAuthCookie(res, issued.sessionToken, issued.expiresAt);
