@@ -20,11 +20,11 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-15_007";
+const VERSION = "routes_v2026-03-15_008";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1";
+const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -2435,10 +2435,22 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   app.get("/api/auth/microsoft", limiterMicrosoft, async (req, res) => {
     pruneOauthState();
 
-    if (!MICROSOFT_CLIENT_ID || !MICROSOFT_CLIENT_SECRET || !MICROSOFT_TENANT_ID) {
+        if (!MICROSOFT_CLIENT_ID || !MICROSOFT_CLIENT_SECRET || !MICROSOFT_TENANT_ID) {
       return res
         .status(503)
         .json({ error: "Microsoft auth not configured", code: "MICROSOFT_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const microsoftTenantRestricted =
+      MICROSOFT_ALLOWED_TENANT_IDS.size > 0 ||
+      !["common", "organizations", "consumers"].includes(String(MICROSOFT_TENANT_ID || "").trim().toLowerCase());
+
+    if (!microsoftTenantRestricted) {
+      return res.status(503).json({
+        error: "Microsoft tenant restriction not configured",
+        code: "MICROSOFT_TENANT_RESTRICTION_REQUIRED",
+        version: VERSION,
+      });
     }
 
     const ip = getIp(req);
@@ -2476,10 +2488,23 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   app.get("/api/auth/microsoft/start", limiterMicrosoft, async (req, res) => {
     pruneOauthState();
 
-    if (!MICROSOFT_CLIENT_ID || !MICROSOFT_CLIENT_SECRET || !MICROSOFT_TENANT_ID) {
+        if (!MICROSOFT_CLIENT_ID || !MICROSOFT_CLIENT_SECRET || !MICROSOFT_TENANT_ID) {
       return res
         .status(503)
         .json({ error: "Microsoft auth not configured", code: "MICROSOFT_NOT_CONFIGURED", version: VERSION });
+    }
+
+    const normalizedMicrosoftTenantId = String(MICROSOFT_TENANT_ID || "").trim().toLowerCase();
+    const microsoftTenantRestricted =
+      MICROSOFT_ALLOWED_TENANT_IDS.size > 0 ||
+      !["common", "organizations", "consumers"].includes(normalizedMicrosoftTenantId);
+
+    if (!microsoftTenantRestricted) {
+      return res.status(503).json({
+        error: "Microsoft tenant restriction not configured",
+        code: "MICROSOFT_TENANT_RESTRICTION_REQUIRED",
+        version: VERSION,
+      });
     }
 
     const ip = getIp(req);
@@ -2625,12 +2650,23 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
         });
       }
 
-      if (iss && !iss.startsWith(MICROSOFT_EXPECTED_ISSUER_PREFIX)) {
+            if (iss && !iss.startsWith(MICROSOFT_EXPECTED_ISSUER_PREFIX)) {
         return res.status(400).json({
           error: "Invalid ID token issuer",
           code: "MICROSOFT_ID_TOKEN_ISS_INVALID",
           version: VERSION,
         });
+      }
+
+      if (tid && iss) {
+        const expectedIss = `https://login.microsoftonline.com/${tid}/v2.0`;
+        if (iss !== expectedIss) {
+          return res.status(400).json({
+            error: "Invalid ID token issuer",
+            code: "MICROSOFT_ID_TOKEN_ISS_TENANT_MISMATCH",
+            version: VERSION,
+          });
+        }
       }
 
       if (nonce !== saved.nonce) {
@@ -2645,6 +2681,14 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
         return res.status(400).json({
           error: "Expired ID token",
           code: "MICROSOFT_ID_TOKEN_EXPIRED",
+          version: VERSION,
+        });
+      }
+
+            if (!tid) {
+        return res.status(400).json({
+          error: "Missing tenant claim",
+          code: "MICROSOFT_TENANT_MISSING",
           version: VERSION,
         });
       }
@@ -2691,13 +2735,22 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
       });
     }
 
-    let graphMeJson: any = null;
+        let graphMeJson: any = null;
     if (!email || !microsoftId) {
       const graphMeResp = await fetch(MICROSOFT_GRAPH_ME_URL, {
         method: "GET",
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       graphMeJson = await graphMeResp.json().catch(() => ({}));
+
+      const graphTenantId = String(graphMeJson?.tenantId || graphMeJson?.tid || "").trim();
+      if (graphTenantId && !isMicrosoftTenantAllowed(graphTenantId)) {
+        return res.status(400).json({
+          error: "Tenant not allowed",
+          code: "MICROSOFT_TENANT_NOT_ALLOWED",
+          version: VERSION,
+        });
+      }
 
       if (!email) {
         email = normalizeEmail(String(graphMeJson?.mail || graphMeJson?.userPrincipalName || ""));
