@@ -221,6 +221,10 @@ function getIp(req: Request) {
   return (xf.split(",")[0] || "").trim() || req.socket.remoteAddress || "";
 }
 
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function sha256Hex(input: string) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
@@ -3777,20 +3781,26 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
 
   /* -------------------- CLAIM -------------------- */
   app.post("/api/gifts/:publicId/claim", limiterClaim, async (req, res) => {
+    const claimStartedAt = Date.now();
+    const CLAIM_TIMING_FLOOR_MS = 350;
+
     try {
       const publicId = String(req.params.publicId || "").trim();
 
-if (!/^[a-f0-9]{32}$/i.test(publicId)) {
-  return res.status(404).json({
-    error: "Not found",
-    code: "NOT_FOUND",
-    version: VERSION,
-  });
-}
+      if (!/^[a-f0-9]{32}$/i.test(publicId)) {
+        await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
+        return res.status(404).json({
+          error: "Not found",
+          code: "NOT_FOUND",
+          version: VERSION,
+        });
+      }
 
       const row = await db
         .select({
           id: gifts.id,
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
           createdAt: gifts.createdAt,
           claimedAt: gifts.claimedAt,
           isClaimed: gifts.isClaimed,
@@ -3801,16 +3811,40 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
 
       const g = row?.[0];
       if (!g) {
-        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
+        await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
+        return res.status(404).json({
+          error: "Not found",
+          code: "NOT_FOUND",
+          version: VERSION,
+        });
       }
+
       if (g.isClaimed || g.claimedAt) {
-        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION });
+        await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
+        return res.status(409).json({
+          error: "Already claimed",
+          code: "ALREADY_CLAIMED",
+          version: VERSION,
+        });
+      }
+
+      const amountCents = Number(g.amount || 0);
+
+      if (amountCents > 0 && String(g.paymentStatus || "").toLowerCase() !== "paid") {
+        await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
+        return res.status(409).json({
+          error: "Gift not paid",
+          code: "GIFT_NOT_PAID",
+          version: VERSION,
+        });
       }
 
       const createdAtMs = g.createdAt ? new Date(g.createdAt).getTime() : 0;
       const minDelayMs = MIN_CLAIM_DELAY_SEC * 1000;
+
       if (createdAtMs && Date.now() - createdAtMs < minDelayMs) {
         const waitMs = minDelayMs - (Date.now() - createdAtMs);
+        await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
         return res.status(429).json({
           error: "Please wait a moment before claiming",
           code: "CLAIM_TOO_SOON",
@@ -3818,20 +3852,23 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
           version: VERSION,
         });
       }
-      if (amountCents > 0 && shouldRequireTurnstile()) {
-  const turnstileToken = String((req.body as any)?.turnstileToken || "").trim();
-  const remoteip = getIp(req);
 
-  const ts = await verifyTurnstile(turnstileToken, remoteip);
-  if (!ts.ok) {
-    return res.status(400).json({
-      error: "Verification failed",
-      code: "TURNSTILE_FAILED",
-      detail: ts.codes,
-      version: VERSION,
-    });
-  }
-} 
+      if (amountCents > 0 && shouldRequireTurnstile()) {
+        const turnstileToken = String((req.body as any)?.turnstileToken || "").trim();
+        const remoteip = getIp(req);
+
+        const ts = await verifyTurnstile(turnstileToken, remoteip);
+        if (!ts.ok) {
+          await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
+          return res.status(400).json({
+            error: "Verification failed",
+            code: "TURNSTILE_FAILED",
+            detail: ts.codes,
+            version: VERSION,
+          });
+        }
+      }
+
       const updated = await db
         .update(gifts)
         .set({ isClaimed: true, claimedAt: now() })
@@ -3839,11 +3876,18 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
         .returning({ id: gifts.id });
 
       if (!updated?.length) {
-        return res.status(409).json({ error: "Already claimed", code: "ALREADY_CLAIMED", version: VERSION });
+        await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
+        return res.status(409).json({
+          error: "Already claimed",
+          code: "ALREADY_CLAIMED",
+          version: VERSION,
+        });
       }
 
+      await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
       return res.json({ ok: true, claimed: true, version: VERSION });
     } catch (err: any) {
+      await sleep(Math.max(0, CLAIM_TIMING_FLOOR_MS - (Date.now() - claimStartedAt)));
       return res.status(500).json({
         error: "Claim failed",
         code: "CLAIM_FAILED",
