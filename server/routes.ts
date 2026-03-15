@@ -369,6 +369,20 @@ function buildAuthConsumeUrl(token: string) {
   return `${publicSiteBase()}/auth/consume?token=${encodeURIComponent(token)}`;
 }
 
+function oauthError(res: any, status: number, code: string, detail: any = undefined) {
+  const payload: any = {
+    error: "Authentication failed",
+    code,
+    version: VERSION,
+  };
+
+  if (process.env.NODE_ENV !== "production" && detail) {
+    payload.detail = detail;
+  }
+
+  return res.status(status).json(payload);
+}
+
 function logAuth(event: string, fields: Record<string, any> = {}) {
   console.log(
     JSON.stringify({
