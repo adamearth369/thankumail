@@ -20,11 +20,11 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-15_013";
+const VERSION = "routes_v2026-03-15_014";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1";
+const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1_auth_request_error_normalize_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -2681,11 +2681,11 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   });
 
   /* -------------------- AUTH: MAGIC LINK (DISABLED BY DEFAULT) -------------------- */
-  app.post("/api/auth/request", limiterAuthRequest, async (req, res) => {
+    app.post("/api/auth/request", limiterAuthRequest, async (req, res) => {
     if (!AUTH_MAGIC_LINK_ENABLED) {
       return res.status(403).json({
-        error: "Magic link login is disabled",
-        code: "MAGIC_LINK_DISABLED",
+        error: "Not available",
+        code: "AUTH_REQUEST_UNAVAILABLE",
         version: VERSION,
       });
     }
@@ -2697,7 +2697,6 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
         return res.status(400).json({
           error: "Invalid request",
           code: "INVALID_REQUEST",
-          issues: parsed.error.issues,
           version: VERSION,
         });
       }
@@ -2708,40 +2707,33 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
 
       if (!domain) {
         return res.status(400).json({
-          error: "Invalid email",
-          field: "email",
-          code: "INVALID_EMAIL",
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
           version: VERSION,
         });
       }
 
-      if (shouldRequireTurnstile()) {
-        if (!turnstileToken) {
-          return res.status(400).json({
-            error: "Missing CAPTCHA token",
-            field: "turnstileToken",
-            code: "TURNSTILE_REQUIRED",
-            version: VERSION,
-          });
-        }
+      if (shouldRequireTurnstile() && !turnstileToken) {
+        return res.status(400).json({
+          error: "Verification failed",
+          code: "VERIFICATION_FAILED",
+          version: VERSION,
+        });
       }
 
       const v = await verifyTurnstile(turnstileToken, ip);
       if (!v.ok) {
         return res.status(400).json({
-          error: "Missing or invalid CAPTCHA token",
-          field: "turnstileToken",
-          code: "TURNSTILE_FAILED",
-          codes: v.codes,
+          error: "Verification failed",
+          code: "VERIFICATION_FAILED",
           version: VERSION,
         });
       }
 
       if (isDisposableEmail(email)) {
         return res.status(400).json({
-          error: "Email provider not supported",
-          field: "email",
-          code: "DISPOSABLE_EMAIL_BLOCKED",
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
           version: VERSION,
         });
       }
@@ -2749,10 +2741,8 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
       const mx = await mxLooksValid(domain);
       if (!mx.ok) {
         return res.status(400).json({
-          error: "Email domain not deliverable",
-          field: "email",
-          code: "MX_INVALID",
-          reason: mx.reason,
+          error: "Invalid request",
+          code: "INVALID_REQUEST",
           version: VERSION,
         });
       }
@@ -2774,22 +2764,19 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
 
       const loginUrl = buildAuthConsumeUrl(rawToken);
 
-      let emailSent = false;
-      let emailError: string | null = null;
       try {
         logAuth("auth_magiclink_email_send_start", { toDomain: domain });
         const r = await sendAuthMagicLinkEmail({ to: email, loginUrl });
-        emailSent = Boolean(r.ok);
-        if (!r.ok) emailError = String(r.error || "unknown");
         logAuth("auth_magiclink_email_send_result", {
           toDomain: domain,
-          ok: emailSent,
-          error: emailError || undefined,
+          ok: Boolean(r.ok),
+          error: r.ok ? undefined : String(r.error || "unknown"),
         });
       } catch (e: any) {
-        emailSent = false;
-        emailError = String(e?.message || e);
-        logAuth("auth_magiclink_email_send_crash", { toDomain: domain, error: emailError });
+        logAuth("auth_magiclink_email_send_crash", {
+          toDomain: domain,
+          error: String(e?.message || e),
+        });
       }
 
       if (AUTH_RETURN_TOKEN) {
@@ -2798,8 +2785,6 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
           token: rawToken,
           loginUrl,
           expiresAt: expiresAt.toISOString(),
-          emailSent,
-          emailError: emailError || undefined,
           version: VERSION,
         });
       }
@@ -2809,505 +2794,12 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
         sent: true,
         loginUrl,
         expiresAt: expiresAt.toISOString(),
-        emailSent,
-        emailError: emailError || undefined,
         version: VERSION,
       });
-    } catch (err: any) {
+    } catch {
       return res.status(500).json({
-        error: "Auth request failed",
+        error: "Request failed",
         code: "AUTH_REQUEST_FAILED",
-        detail: String(err?.message || err),
-        version: VERSION,
-      });
-    }
-  });
-
-  app.post("/api/auth/consume", limiterAuthConsume, async (req, res) => {
-    if (!AUTH_MAGIC_LINK_ENABLED) {
-      return res.status(403).json({
-        error: "Magic link login is disabled",
-        code: "MAGIC_LINK_DISABLED",
-        version: VERSION,
-      });
-    }
-
-    try {
-      const parsed = zAuthConsume.safeParse(req.body || {});
-      if (!parsed.success) {
-        return res.status(400).json({
-          error: "Invalid request",
-          code: "INVALID_REQUEST",
-          issues: parsed.error.issues,
-          version: VERSION,
-        });
-      }
-
-      const tokenHash = sha256Hex(parsed.data.token);
-
-      const consumed = await db.transaction(async (tx) => {
-        const updated = await tx
-          .update(authMagicLinks)
-          .set({ consumedAt: now() })
-          .where(
-            and(
-              eq(authMagicLinks.tokenHash, tokenHash),
-              isNull(authMagicLinks.consumedAt),
-              gtTime(authMagicLinks.expiresAt, new Date()),
-            ),
-          )
-          .returning({
-            id: authMagicLinks.id,
-            email: authMagicLinks.email,
-            expiresAt: authMagicLinks.expiresAt,
-          });
-
-        if (updated?.length) {
-          return { ok: true as const, email: String(updated[0].email || "").trim().toLowerCase() };
-        }
-
-        const row = await tx
-          .select({
-            consumedAt: authMagicLinks.consumedAt,
-            expiresAt: authMagicLinks.expiresAt,
-          })
-          .from(authMagicLinks)
-          .where(eq(authMagicLinks.tokenHash, tokenHash))
-          .limit(1);
-
-        const link = row?.[0];
-        if (!link) return { ok: false as const, code: "MAGIC_LINK_INVALID" as const };
-        if (link.consumedAt) return { ok: false as const, code: "MAGIC_LINK_USED" as const };
-        if (link.expiresAt && new Date(link.expiresAt).getTime() <= Date.now())
-          return { ok: false as const, code: "MAGIC_LINK_EXPIRED" as const };
-
-        return { ok: false as const, code: "MAGIC_LINK_INVALID" as const };
-      });
-
-      if (!consumed.ok) {
-        const msg =
-          consumed.code === "MAGIC_LINK_USED"
-            ? "Link already used"
-            : consumed.code === "MAGIC_LINK_EXPIRED"
-              ? "Link expired"
-              : "Invalid or expired link";
-
-        return res.status(400).json({
-          error: msg,
-          code: consumed.code,
-          version: VERSION,
-        });
-      }
-
-      const email = normalizeEmail(consumed.email);
-      const issued = await issueSessionForEmail(email, req, { authProvider: "email" });
-      if (!issued.ok) {
-        return res.status(400).json({
-          error: issued.error,
-          code: issued.code,
-          reason: (issued as any).reason,
-          version: VERSION,
-        });
-      }
-
-      return res.json({
-        ok: true,
-        sessionToken: issued.sessionToken,
-        expiresAt: issued.expiresAt.toISOString(),
-        version: VERSION,
-      });
-    } catch (err: any) {
-      return res.status(500).json({
-        error: "Auth consume failed",
-        code: "AUTH_CONSUME_FAILED",
-        detail: String(err?.message || err),
-        version: VERSION,
-      });
-    }
-  });
-
-  app.get("/api/auth/me", async (req, res) => {
-    const a = await getAuth(req);
-    if (!a.isAuthed) {
-      return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
-    }
-
-    const row = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        authProvider: users.authProvider,
-        googleSub: users.googleSub,
-        facebookId: users.facebookId,
-        linkedinId: users.linkedinId,
-        microsoftId: (users as any).microsoftId,
-        createdAt: users.createdAt,
-        lastLoginAt: users.lastLoginAt,
-      })
-      .from(users)
-      .where(eq(users.id, a.userId))
-      .limit(1);
-
-    const user = row?.[0] || null;
-
-    return res.json({
-      ok: true,
-      user: user
-        ? {
-            ...user,
-            authProvider: deriveAuthProvider(user),
-          }
-        : null,
-      version: VERSION,
-    });
-  });
-
-  app.get("/api/me", async (req, res) => {
-    const a = await getAuth(req);
-    if (!a.isAuthed) {
-      return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
-    }
-
-    const row = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        authProvider: users.authProvider,
-        googleSub: users.googleSub,
-        facebookId: users.facebookId,
-        linkedinId: users.linkedinId,
-        microsoftId: (users as any).microsoftId,
-        createdAt: users.createdAt,
-        lastLoginAt: users.lastLoginAt,
-      })
-      .from(users)
-      .where(eq(users.id, a.userId))
-      .limit(1);
-
-    const user = row?.[0] || null;
-
-    return res.json({
-      ok: true,
-      user: user
-        ? {
-            ...user,
-            authProvider: deriveAuthProvider(user),
-          }
-        : null,
-      version: VERSION,
-    });
-  });
-
-  app.get("/api/me/gifts", async (req, res) => {
-    try {
-      const a = await getAuth(req);
-      if (!a.isAuthed) {
-        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
-      }
-
-      const rows = await db
-        .select({
-          publicId: gifts.publicId,
-          recipientEmail: gifts.recipientEmail,
-          recipientPhone: gifts.recipientPhone,
-          deliveryMethod: gifts.deliveryMethod,
-          messageMode: gifts.messageMode,
-          presetMessageId: gifts.presetMessageId,
-          message: gifts.message,
-          amount: gifts.amount,
-          paymentStatus: gifts.paymentStatus,
-          isClaimed: gifts.isClaimed,
-          createdAt: gifts.createdAt,
-          deliveredAt: (gifts as any).deliveredAt,
-          deliveredEmailAt: (gifts as any).deliveredEmailAt,
-          deliveredSmsAt: (gifts as any).deliveredSmsAt,
-          claimedAt: gifts.claimedAt,
-          reminderCount: gifts.reminderCount,
-          lastReminderSentAt: gifts.lastReminderSentAt,
-          returnedToSenderAt: gifts.returnedToSenderAt,
-        })
-        .from(gifts)
-        .where(eq(gifts.senderUserId, a.userId))
-        .orderBy(desc(gifts.createdAt), desc(gifts.id));
-
-      return res.json({
-        ok: true,
-        gifts: rows,
-        version: VERSION,
-      });
-    } catch (err: any) {
-      return res.status(500).json({
-        error: "Failed to fetch gifts",
-        code: "ME_GIFTS_FAILED",
-        detail: String(err?.message || err),
-        version: VERSION,
-      });
-    }
-  });
-
-  app.get("/api/me/gifts/:publicId", async (req, res) => {
-    try {
-      const a = await getAuth(req);
-      if (!a.isAuthed) {
-        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
-      }
-
-      const publicId = String(req.params.publicId || "").trim();
-if (!/^[a-f0-9]{32}$/i.test(publicId)) {
-  return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
-}
-
-      const rows = await db
-        .select({
-          publicId: gifts.publicId,
-          senderUserId: gifts.senderUserId,
-          senderEmail: gifts.senderEmail,
-          recipientEmail: gifts.recipientEmail,
-          recipientPhone: gifts.recipientPhone,
-          deliveryMethod: gifts.deliveryMethod,
-          messageMode: gifts.messageMode,
-          presetMessageId: gifts.presetMessageId,
-          message: gifts.message,
-          amount: gifts.amount,
-          paymentStatus: gifts.paymentStatus,
-          stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
-          stripePaymentIntentId: gifts.stripePaymentIntentId,
-          paidAt: gifts.paidAt,
-          isClaimed: gifts.isClaimed,
-          claimedAt: gifts.claimedAt,
-          createdAt: gifts.createdAt,
-          deliveredAt: (gifts as any).deliveredAt,
-          deliveredEmailAt: (gifts as any).deliveredEmailAt,
-          deliveredSmsAt: (gifts as any).deliveredSmsAt,
-          deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
-          deliveryError: (gifts as any).deliveryError,
-          reminderCount: gifts.reminderCount,
-          lastReminderSentAt: gifts.lastReminderSentAt,
-          returnedToSenderAt: gifts.returnedToSenderAt,
-        })
-        .from(gifts)
-        .where(and(eq(gifts.publicId, publicId), eq(gifts.senderUserId, a.userId)))
-        .limit(1);
-
-      const gift = rows?.[0];
-      if (!gift) {
-        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
-      }
-
-      const canSendReminder =
-        REMINDER_SENDING_ENABLED &&
-        Boolean(String(gift.recipientEmail || "").trim()) &&
-        !Boolean(gift.isClaimed || gift.claimedAt) &&
-        !Boolean(gift.returnedToSenderAt) &&
-        Number(gift.reminderCount ?? 0) < REMINDER_MAX &&
-        (!gift.lastReminderSentAt ||
-          new Date(gift.lastReminderSentAt).getTime() < Date.now() - REMINDER_GAP_MS);
-
-      return res.json({
-        ok: true,
-        gift: {
-          ...gift,
-          canSendReminder,
-        },
-        version: VERSION,
-      });
-    } catch (err: any) {
-      return res.status(500).json({
-        error: "Failed to fetch gift",
-        code: "ME_GIFT_DETAIL_FAILED",
-        detail: String(err?.message || err),
-        version: VERSION,
-      });
-    }
-  });
-
-  app.post("/api/me/gifts/:publicId/remind", async (req, res) => {
-    try {
-      const a = await getAuth(req);
-      if (!a.isAuthed) {
-        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
-      }
-
-      if (!REMINDER_SENDING_ENABLED) {
-        return res.status(403).json({
-          error: "Reminder sending disabled",
-          code: "REMINDERS_DISABLED",
-          version: VERSION,
-        });
-      }
-
-      const publicId = String(req.params.publicId || "").trim();
-      if (!publicId) {
-        return res.status(400).json({ error: "Missing publicId", code: "MISSING_PUBLIC_ID", version: VERSION });
-      }
-
-      const row = await db
-        .select({
-          id: gifts.id,
-          publicId: gifts.publicId,
-          senderUserId: gifts.senderUserId,
-          recipientEmail: gifts.recipientEmail,
-          senderEmail: gifts.senderEmail,
-          amount: gifts.amount,
-          reminderCount: gifts.reminderCount,
-          lastReminderSentAt: gifts.lastReminderSentAt,
-          isClaimed: gifts.isClaimed,
-          claimedAt: gifts.claimedAt,
-          returnedToSenderAt: gifts.returnedToSenderAt,
-        })
-        .from(gifts)
-        .where(and(eq(gifts.publicId, publicId), eq(gifts.senderUserId, a.userId)))
-        .limit(1);
-
-      const gift = row?.[0];
-      if (!gift) {
-        return res.status(404).json({ error: "Not found", code: "NOT_FOUND", version: VERSION });
-      }
-
-      const to = String(gift.recipientEmail || "").trim();
-      if (!to) {
-        return res.status(400).json({
-          error: "Gift has no recipient email",
-          code: "NO_RECIPIENT_EMAIL",
-          version: VERSION,
-        });
-      }
-
-      if (gift.isClaimed || gift.claimedAt) {
-        return res.status(409).json({
-          error: "Gift already claimed",
-          code: "ALREADY_CLAIMED",
-          version: VERSION,
-        });
-      }
-
-      if (gift.returnedToSenderAt) {
-        return res.status(409).json({
-          error: "Gift already returned",
-          code: "ALREADY_RETURNED",
-          version: VERSION,
-        });
-      }
-
-      const currentReminderCount = Number(gift.reminderCount ?? 0);
-      if (currentReminderCount >= REMINDER_MAX) {
-        return res.status(409).json({
-          error: "Reminder limit reached",
-          code: "REMINDER_LIMIT_REACHED",
-          version: VERSION,
-        });
-      }
-
-      if (gift.lastReminderSentAt) {
-        const lastMs = new Date(gift.lastReminderSentAt).getTime();
-        const nextAllowedAt = lastMs + REMINDER_GAP_MS;
-        if (Number.isFinite(lastMs) && Date.now() < nextAllowedAt) {
-          return res.status(429).json({
-            error: "Reminder sent too recently",
-            code: "REMINDER_TOO_SOON",
-            retryAfterSec: Math.max(1, Math.ceil((nextAllowedAt - Date.now()) / 1000)),
-            version: VERSION,
-          });
-        }
-      }
-
-      const claimUrl = buildClaimUrl(publicId);
-
-      await sendReminderEmail({
-        to,
-        publicId,
-        claimUrl,
-        amountCents: gift.amount ?? null,
-        senderEmail: gift.senderEmail || undefined,
-      } as any);
-
-      const sentAt = now();
-
-      const updated = await db
-        .update(gifts)
-        .set({
-          reminderCount: sql<number>`coalesce(${gifts.reminderCount}, 0) + 1`,
-          lastReminderSentAt: sentAt,
-        })
-        .where(
-          and(
-            eq(gifts.id, gift.id as any),
-            eq(gifts.publicId, publicId),
-            eq(gifts.senderUserId, a.userId),
-            eq(gifts.isClaimed, false),
-            isNull(gifts.claimedAt),
-            isNull(gifts.returnedToSenderAt),
-            lt(sql<number>`coalesce(${gifts.reminderCount}, 0)`, REMINDER_MAX),
-          ),
-        )
-        .returning({
-          reminderCount: gifts.reminderCount,
-          lastReminderSentAt: gifts.lastReminderSentAt,
-        });
-
-      if (!updated?.length) {
-        return res.status(409).json({
-          error: "Reminder state changed",
-          code: "REMINDER_STATE_CHANGED",
-          version: VERSION,
-        });
-      }
-
-      const updatedReminderCount = Number(updated[0].reminderCount ?? currentReminderCount + 1);
-
-      return res.json({
-        ok: true,
-        publicId: gift.publicId,
-        reminderCount: updatedReminderCount,
-        lastReminderSentAt: sentAt.toISOString(),
-        version: VERSION,
-      });
-    } catch (error: any) {
-      return res.status(500).json({
-        error: error?.message || "Failed to send reminder",
-        code: "ME_REMIND_FAILED",
-        version: VERSION,
-      });
-    }
-  });
-
-  app.get("/api/me/stats", async (req, res) => {
-    try {
-      const a = await getAuth(req);
-      if (!a.isAuthed) {
-        return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", version: VERSION });
-      }
-
-      const rows = await db
-        .select({
-          sentCount: sql<number>`count(*)`,
-          claimedCount: sql<number>`coalesce(sum(case when ${gifts.isClaimed} = true or ${gifts.claimedAt} is not null then 1 else 0 end), 0)`,
-          pendingCount: sql<number>`coalesce(sum(case when (${gifts.isClaimed} = false or ${gifts.isClaimed} is null) and ${gifts.claimedAt} is null then 1 else 0 end), 0)`,
-          totalValueSent: sql<number>`coalesce(sum(${gifts.amount}), 0)`,
-        })
-        .from(gifts)
-        .where(eq(gifts.senderUserId, a.userId));
-
-      const stats = rows?.[0] || {
-        sentCount: 0,
-        claimedCount: 0,
-        pendingCount: 0,
-        totalValueSent: 0,
-      };
-
-      return res.json({
-        ok: true,
-        sentCount: Number(stats.sentCount || 0),
-        claimedCount: Number(stats.claimedCount || 0),
-        pendingCount: Number(stats.pendingCount || 0),
-        totalValueSent: Number(stats.totalValueSent || 0),
-        version: VERSION,
-      });
-    } catch (err: any) {
-      return res.status(500).json({
-        error: "Failed to fetch stats",
-        code: "ME_STATS_FAILED",
-        detail: String(err?.message || err),
         version: VERSION,
       });
     }
