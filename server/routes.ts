@@ -1610,8 +1610,8 @@ export function registerRoutes(app: Express): Server {
 
     if (!a.isAuthed) {
   return res.status(401).json({
-    error: "Authentication required",
-    code: "AUTH_REQUIRED",
+    error: "Unauthorized",
+    code: "UNAUTHORIZED",
     version: VERSION,
   });
 }
