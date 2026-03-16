@@ -453,12 +453,16 @@ export async function sendAuthMagicLinkEmail(
     note: "If you didn’t request this, you can ignore this email.",
   });
 
-  const r = await sendBrevoEmail({
+    const r = await sendBrevoEmail({
     to: args.to,
     subject,
     textContent,
     htmlContent,
-    headers: { "X-thankümail-Kind": "auth_magic_link" },
+    headers: {
+      "X-thankümail-PublicId": args.publicId,
+      "X-thankümail-Kind": "gift",
+      "idempotencyKey": `gift-email:${args.publicId}`,
+    },
   });
 
   return r.ok ? { ok: true } : { ok: false, error: r.error };
