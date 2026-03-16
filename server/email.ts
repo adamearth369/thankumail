@@ -32,7 +32,7 @@ type SendAuthMagicLinkEmailArgs = {
   loginUrl: string; // absolute URL
 };
 
-const EMAIL_VERSION = "email_v2026-02-19_001";
+const EMAIL_VERSION = "email_v2026-03-16_001";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
