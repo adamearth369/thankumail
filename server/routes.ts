@@ -1301,6 +1301,32 @@ async function handleStripeWebhook(req: Request, res: any) {
     const event = JSON.parse(rawBody.toString("utf8") || "{}");
     const type = String(event?.type || "");
     const obj = event?.data?.object || null;
+    const stripeEventId = String(event?.id || "").trim();
+
+if (!stripeEventId) {
+  return res.status(400).send("Missing stripe event id");
+}
+
+try {
+  await db.insert(stripeWebhookEvents).values({
+    stripeEventId,
+    stripeType: type || "unknown",
+  });
+} catch (err: any) {
+  // unique constraint → event already processed
+  if (String(err?.code || "") === "23505") {
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: "stripe_webhook_replay_blocked",
+        stripeEventId,
+        version: VERSION,
+      }),
+    );
+    return res.status(200).send("duplicate");
+  }
+  throw err;
+}
 
     console.log(
       JSON.stringify({
