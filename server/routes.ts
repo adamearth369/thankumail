@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { db } from "./db";
-import { gifts, users, authMagicLinks, authSessions } from "@shared/schema";
+import { gifts, users, authMagicLinks, authSessions, stripeWebhookEvents } from "@shared/schema";
 import {
   sendGiftEmail,
   sendReminderEmail,
