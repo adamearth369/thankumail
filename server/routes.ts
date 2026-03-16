@@ -351,9 +351,6 @@ function isAdmin(req: Request) {
   const x = String(req.headers["x-admin-token"] || "").trim();
   return Boolean(x && x === ADMIN_TOKEN);
 }
-  const x = String(req.headers["x-admin-token"] || "").trim();
-  return Boolean(x && x === ADMIN_TOKEN);
-}
 
 function shouldRequireTurnstile() {
   return Boolean(TURNSTILE_SECRET_KEY) && !TURNSTILE_BYPASS;
