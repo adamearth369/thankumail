@@ -594,252 +594,64 @@ async function countDailyBySenderEmail(senderEmail: string) {
   return Number(rows?.[0]?.c || 0);
 }
 
-/* -------------------- AUTH -------------------- */
-type Authed =
-  | { isAuthed: true; userId: string; sessionToken: string; source: "cookie" }
-  | { isAuthed: false };
+  /* -------------------- AUTH: ME -------------------- */
+  app.get("/api/auth/me", async (req, res) => {
+    try {
+      const a = await getAuth(req);
 
-const AUTH_COOKIE_NAME = "tm_session";
-const AUTH_COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: true,
-  sameSite: "lax" as const,
-  path: "/",
-};
+      if (!a.isAuthed) {
+        return res.status(401).json({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED",
+          version: VERSION,
+        });
+      }
 
-function readSessionTokenFromCookie(req: Request) {
-  return String((req as any)?.cookies?.[AUTH_COOKIE_NAME] || "").trim();
-}
+      const rows = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          authProvider: users.authProvider,
+          googleSub: users.googleSub,
+          facebookId: users.facebookId,
+          linkedinId: users.linkedinId,
+          microsoftId: (users as any).microsoftId,
+          createdAt: users.createdAt,
+          lastLoginAt: users.lastLoginAt,
+        })
+        .from(users)
+        .where(eq(users.id, a.userId))
+        .limit(1);
 
-function setAuthCookie(res: any, sessionToken: string, expiresAt: Date) {
-  res.cookie(AUTH_COOKIE_NAME, sessionToken, {
-    ...AUTH_COOKIE_OPTIONS,
-    expires: expiresAt,
-  });
-}
+      const user = rows?.[0];
+      if (!user) {
+        return res.status(401).json({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED",
+          version: VERSION,
+        });
+      }
 
-function clearAuthCookie(res: any) {
-  res.clearCookie(AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS);
-}
-
-async function getAuth(req: Request): Promise<Authed> {
-  const cookieToken = readSessionTokenFromCookie(req);
-
-  let sessionToken = cookieToken;
-  let source: "cookie" = "cookie";
-
-  if (!sessionToken) return { isAuthed: false };
-
-  const sessionHash = sha256Hex(sessionToken);
-
-  const row = await db
-    .select({
-      userId: authSessions.userId,
-      expiresAt: authSessions.expiresAt,
-      revokedAt: authSessions.revokedAt,
-    })
-    .from(authSessions)
-    .where(eq(authSessions.sessionHash, sessionHash))
-    .limit(1);
-
-  const s = row?.[0];
-  if (!s) return { isAuthed: false };
-  if (s.revokedAt) return { isAuthed: false };
-  if (s.expiresAt && new Date(s.expiresAt).getTime() <= Date.now()) return { isAuthed: false };
-
-  return { isAuthed: true, userId: String(s.userId), sessionToken, source };
-}
-
-async function issueSessionForEmail(
-  email: string,
-  req: Request,
-  opts?: {
-    authProvider?: AuthProvider;
-    googleSub?: string | null;
-    facebookId?: string | null;
-    linkedinId?: string | null;
-    microsoftId?: string | null;
-  },
-) {
-  const norm = normalizeEmail(email);
-  const domain = extractDomain(norm);
-
-  if (!domain) {
-    return { ok: false as const, code: "INVALID_EMAIL" as const, error: "Invalid email" };
-  }
-  if (isDisposableEmail(norm)) {
-    return {
-      ok: false as const,
-      code: "DISPOSABLE_EMAIL_BLOCKED" as const,
-      error: "Email provider not supported",
-    };
-  }
-
-  const authProvider = normalizeAuthProvider(opts?.authProvider);
-
-  if (authProvider === "email") {
-    const mx = await mxLooksValid(domain);
-    if (!mx.ok) {
-      return {
-        ok: false as const,
-        code: "MX_INVALID" as const,
-        error: "Email domain not deliverable",
-        reason: mx.reason,
-      };
+      return res.json({
+        ok: true,
+        user: {
+          id: String(user.id),
+          email: String(user.email || ""),
+          authProvider: deriveAuthProvider(user),
+          createdAt: user.createdAt,
+          lastLoginAt: user.lastLoginAt,
+        },
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Auth me failed",
+        code: "AUTH_ME_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
     }
-  }
-
-  const googleSub = String(opts?.googleSub || "").trim() || null;
-  const facebookId = String(opts?.facebookId || "").trim() || null;
-  const linkedinId = String(opts?.linkedinId || "").trim() || null;
-  const microsoftId = String(opts?.microsoftId || "").trim() || null;
-
-  const byProvider =
-    googleSub
-      ? await db
-          .select({
-            id: users.id,
-            email: users.email,
-            authProvider: users.authProvider,
-            googleSub: users.googleSub,
-            facebookId: users.facebookId,
-            linkedinId: users.linkedinId,
-            microsoftId: (users as any).microsoftId,
-          })
-          .from(users)
-          .where(eq(users.googleSub, googleSub))
-          .limit(1)
-      : facebookId
-        ? await db
-            .select({
-              id: users.id,
-              email: users.email,
-              authProvider: users.authProvider,
-              googleSub: users.googleSub,
-              facebookId: users.facebookId,
-              linkedinId: users.linkedinId,
-              microsoftId: (users as any).microsoftId,
-            })
-            .from(users)
-            .where(eq(users.facebookId, facebookId))
-            .limit(1)
-        : linkedinId
-          ? await db
-              .select({
-                id: users.id,
-                email: users.email,
-                authProvider: users.authProvider,
-                googleSub: users.googleSub,
-                facebookId: users.facebookId,
-                linkedinId: users.linkedinId,
-                microsoftId: (users as any).microsoftId,
-              })
-              .from(users)
-              .where(eq(users.linkedinId, linkedinId))
-              .limit(1)
-          : microsoftId
-            ? await db
-                .select({
-                  id: users.id,
-                  email: users.email,
-                  authProvider: users.authProvider,
-                  googleSub: users.googleSub,
-                  facebookId: users.facebookId,
-                  linkedinId: users.linkedinId,
-                  microsoftId: (users as any).microsoftId,
-                })
-                .from(users)
-                .where(eq((users as any).microsoftId, microsoftId))
-                .limit(1)
-            : [];
-
-  const byEmail = await db
-    .select({
-      id: users.id,
-      email: users.email,
-      authProvider: users.authProvider,
-      googleSub: users.googleSub,
-      facebookId: users.facebookId,
-      linkedinId: users.linkedinId,
-      microsoftId: (users as any).microsoftId,
-    })
-    .from(users)
-    .where(eq(users.email, norm))
-    .limit(1);
-
-  const providerUser = byProvider?.[0];
-  const emailUser = byEmail?.[0];
-
-  let userId = "";
-
-  if (providerUser) {
-    userId = String(providerUser.id || "");
-  } else if (emailUser) {
-    userId = String(emailUser.id || "");
-  }
-
-  if (!userId) {
-    userId = crypto.randomBytes(16).toString("hex");
-    await db.insert(users).values({
-      id: userId,
-      email: norm,
-      authProvider,
-      googleSub,
-      facebookId,
-      linkedinId,
-      microsoftId,
-      createdAt: now(),
-      lastLoginAt: null,
-    } as any);
-  }
-
-  const sessionToken = randomToken(32);
-  const sessionHash = sha256Hex(sessionToken);
-  const expiresAt = new Date(Date.now() + AUTH_SESSION_TTL_MS);
-  const ip = getIp(req);
-  const ua = String(req.headers["user-agent"] || "").slice(0, 500);
-
-  await db.transaction(async (tx) => {
-    await tx.insert(authSessions).values({
-      userId,
-      sessionHash,
-      expiresAt,
-      revokedAt: null,
-      ip,
-      userAgent: ua || null,
-      createdAt: now(),
-    });
-
-    const userPatch: Record<string, any> = {
-      lastLoginAt: now(),
-      authProvider,
-    };
-
-    const currentEmail =
-      providerUser && String(providerUser.id || "") === userId
-        ? normalizeEmail(String(providerUser.email || ""))
-        : emailUser && String(emailUser.id || "") === userId
-          ? normalizeEmail(String(emailUser.email || ""))
-          : "";
-
-    const emailConflict =
-      Boolean(providerUser && emailUser) &&
-      String(providerUser.id || "") !== String(emailUser.id || "");
-
-    if (!currentEmail || currentEmail === norm || !emailConflict) {
-      userPatch.email = norm;
-    }
-
-    if (googleSub) userPatch.googleSub = googleSub;
-    if (facebookId) userPatch.facebookId = facebookId;
-    if (linkedinId) userPatch.linkedinId = linkedinId;
-    if (microsoftId) userPatch.microsoftId = microsoftId;
-
-    await tx.update(users).set(userPatch).where(eq(users.id, userId));
   });
-
-  return { ok: true as const, userId, sessionToken, expiresAt };
-}
 
 /* -------------------- DELIVERY (EXACT-ONCE BEST-EFFORT) -------------------- */
 async function deliverGiftIfEligible(publicId: string, reason: string) {
