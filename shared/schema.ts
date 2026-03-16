@@ -227,3 +227,14 @@ export type InsertGift = z.infer<typeof insertGiftSchema>;
 export type User = typeof users.$inferSelect;
 export type AuthMagicLink = typeof authMagicLinks.$inferSelect;
 export type AuthSession = typeof authSessions.$inferSelect;
+export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
+  id: serial("id").primaryKey(),
+
+  stripeEventId: text("stripe_event_id").notNull().unique(),
+
+  stripeType: text("stripe_type").notNull(),
+
+  receivedAt: timestamp("received_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
