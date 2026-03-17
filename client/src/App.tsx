@@ -72,21 +72,14 @@ function PaySuccess() {
           You can return to the home page now. Your gift will be updated as paid once Stripe finishes processing.
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="mt-5">
           <button
             type="button"
             onClick={() => setLocation("/")}
-            className="rounded-xl border border-tm-charcoal/20 bg-tm-cream px-3 py-2 text-sm font-medium hover:opacity-90"
+            className="cursor-pointer rounded-xl border border-tm-charcoal/20 bg-tm-cream px-3 py-2 text-sm font-medium"
           >
             Go home
           </button>
-
-          <Link
-            href="/"
-            className="rounded-xl border border-tm-charcoal/20 bg-white px-3 py-2 text-sm font-medium hover:bg-tm-cream"
-          >
-            Home link
-          </Link>
         </div>
       </div>
     </div>
@@ -104,11 +97,11 @@ function PayCancel() {
           No charge was completed. You can go back and try again.
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="mt-5">
           <button
             type="button"
             onClick={() => setLocation("/")}
-            className="rounded-xl border border-tm-charcoal/20 bg-tm-cream px-3 py-2 text-sm font-medium hover:opacity-90"
+            className="cursor-pointer rounded-xl border border-tm-charcoal/20 bg-tm-cream px-3 py-2 text-sm font-medium"
           >
             Go home
           </button>
@@ -122,6 +115,8 @@ function SiteHeader() {
   const [hasSession, setHasSession] = useState(false);
   const [location] = useLocation();
 
+  const isDashboard = location === "/dashboard";
+
   useEffect(() => {
     let alive = true;
 
@@ -131,27 +126,20 @@ function SiteHeader() {
     };
 
     sync();
-
-    const onFocus = () => {
-      void sync();
-    };
-
-    window.addEventListener("focus", onFocus);
+    window.addEventListener("focus", sync);
 
     return () => {
       alive = false;
-      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("focus", sync);
     };
   }, []);
-
-  const isDashboard = location === "/dashboard";
 
   return (
     <div className="fixed inset-x-0 top-0 z-50">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
         <Link
           href="/"
-          className="rounded-xl px-3 py-2 text-sm font-medium text-white/90 transition hover:bg-white/10 hover:text-white"
+          className="cursor-pointer rounded-xl px-3 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
         >
           Home
         </Link>
@@ -178,7 +166,7 @@ function SiteHeader() {
           ) : (
             <Link
               href="/login"
-              className="cursor-pointer rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-white/18"
+              className="cursor-pointer rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white"
             >
               Sign in
             </Link>
@@ -195,31 +183,7 @@ export default function App() {
   const [apiVersion, setApiVersion] = useState<string>(() => safeGetLS("tm_api_version"));
 
   useEffect(() => {
-    fetch("/version.json")
-      .then((r) => r.json())
-      .then(setVersion)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      const c = safeGetLS("tm_api_commit");
-      const v = safeGetLS("tm_api_version");
-      setApiCommit((prev) => (prev !== c ? c : prev));
-      setApiVersion((prev) => (prev !== v ? v : prev));
-    }, 1000);
-
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "tm_api_commit") setApiCommit(safeGetLS("tm_api_commit"));
-      if (e.key === "tm_api_version") setApiVersion(safeGetLS("tm_api_version"));
-    };
-
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    fetch("/version.json").then((r) => r.json()).then(setVersion).catch(() => {});
   }, []);
 
   const frontendShort = useMemo(() => {
@@ -246,31 +210,16 @@ export default function App() {
         <Route path="/auth/google" component={AuthGoogle} />
         <Route path="/auth/google/success" component={AuthGoogle} />
         <Route path="/auth/facebook" component={AuthFacebook} />
-
         <Route path="/pay/success" component={PaySuccess} />
         <Route path="/pay/cancel" component={PayCancel} />
-
         <Route path="/tools/turnstile" component={TurnstileTool} />
         <Route component={NotFound} />
       </Switch>
 
       {version && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: 6,
-            right: 10,
-            fontSize: 10,
-            opacity: 0.6,
-            display: "flex",
-            gap: 8,
-            alignItems: "center",
-            pointerEvents: "none",
-          }}
-        >
-          <span title={version.commit}>fe:{frontendShort || "unknown"}</span>
-          <span title={apiCommit || ""}>be:{backendShort || "unknown"}</span>
-          {apiVersion ? <span title={apiVersion}>({apiVersion})</span> : null}
+        <div style={{ position: "fixed", bottom: 6, right: 10, fontSize: 10, opacity: 0.6 }}>
+          fe:{frontendShort || "unknown"} | be:{backendShort || "unknown"}{" "}
+          {apiVersion ? `(${apiVersion})` : ""}
         </div>
       )}
     </>
