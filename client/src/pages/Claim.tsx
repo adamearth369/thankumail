@@ -28,13 +28,28 @@ const PRESET_MESSAGES: Record<number, string> = {
   6: "What you did made a positive difference for those around you. I’m grateful. Thank you.",
 };
 
+function safeMessage(input: any): string {
+  let msg = String(input || "");
+
+  msg = msg.normalize("NFKC");
+  msg = msg.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+  msg = msg.replace(/\r\n/g, "\n");
+
+  if (msg.length > 280) {
+    msg = msg.slice(0, 280);
+  }
+
+  return msg.trim();
+}
+
 function getTurnstile(): any {
   return (window as any).turnstile;
 }
 
 function getPublicIdFromPath() {
   const parts = window.location.pathname.split("/").filter(Boolean);
-  return parts[parts.length - 1] || "";
+  const raw = String(parts[parts.length - 1] || "").trim().toLowerCase();
+  return /^[a-f0-9]{32}$/.test(raw) ? raw : "";
 }
 
 function isInvalidLinkSignal(status: number, code: string, msg: string) {
@@ -153,10 +168,10 @@ export default function Claim() {
   const confettiFiredRef = useRef<boolean>(false);
 
   const messageText = useMemo(() => {
-    const m = String(gift?.message || "").trim();
+    const m = safeMessage(gift?.message);
     if (m) return m;
     const presetId = Number(gift?.presetMessageId || 0) || 0;
-    return PRESET_MESSAGES[presetId] || "—";
+    return safeMessage(PRESET_MESSAGES[presetId] || "—");
   }, [gift]);
 
   const amountCents = useMemo(() => {
@@ -219,7 +234,14 @@ export default function Claim() {
       setMessageVisible(false);
 
       try {
-        const r = await fetch(`${API_BASE}/api/gifts/${publicId}`, { method: "GET" });
+        if (!publicId) {
+          lockInvalidLink();
+          return;
+        }
+
+        const r = await fetch(`${API_BASE}/api/gifts/${encodeURIComponent(publicId)}`, {
+          method: "GET",
+        });
         const j: any = await safeJson(r);
 
         if (j?.__notJson || j?.__badJson) {
@@ -494,7 +516,7 @@ export default function Claim() {
     const body: any = {};
     if (shouldShowCaptcha) body.turnstileToken = tokenRef.current || "";
 
-    const r = await fetch(`${API_BASE}/api/gifts/${publicId}/claim`, {
+    const r = await fetch(`${API_BASE}/api/gifts/${encodeURIComponent(publicId)}/claim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -506,7 +528,8 @@ export default function Claim() {
 
   async function refreshGiftSilently() {
     try {
-      const rr = await fetch(`${API_BASE}/api/gifts/${publicId}`);
+      if (!publicId) return;
+      const rr = await fetch(`${API_BASE}/api/gifts/${encodeURIComponent(publicId)}`);
       const jj: any = await safeJson(rr);
       if (rr.ok && !(jj?.__notJson || jj?.__badJson)) {
         const g = unwrapGiftPayload(jj);
@@ -671,7 +694,8 @@ export default function Claim() {
     "border-white/60 bg-white/92 backdrop-blur-sm shadow-[0_16px_50px_rgba(15,23,42,0.12)]"
   );
 
-  const glowClass = "absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.72),transparent_62%)]";
+  const glowClass =
+    "absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.72),transparent_62%)]";
 
   const messageTextClass = cn(
     "whitespace-pre-wrap text-[19px] leading-8 md:text-[22px] md:leading-9 text-slate-900 tracking-[-0.01em]",
