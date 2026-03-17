@@ -178,12 +178,19 @@ function SiteHeader() {
 </button>
             )
           ) : (
-            <Link
-              href="/login"
-              className="rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-white/18"
-            >
-              Sign in
-            </Link>
+            <button
+  type="button"
+  onClick={() => {
+    if (window.location.pathname === "/dashboard") {
+      window.location.reload();
+      return;
+    }
+    window.location.href = "/dashboard";
+  }}
+  className="rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-white/18"
+>
+  Dashboard
+</button>
           )}
         </div>
       </div>
