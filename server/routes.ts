@@ -1324,9 +1324,6 @@ try {
   );
   return res.status(200).send("duplicate");
 }
-    const type = String(event?.type || "");
-    const obj = event?.data?.object || null;
-    
 
     console.log(
       JSON.stringify({
