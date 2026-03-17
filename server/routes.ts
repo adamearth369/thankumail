@@ -251,6 +251,14 @@ function normalizeEmail(e: string) {
   return String(e || "").trim().toLowerCase();
 }
 
+function requireVerifiedOAuthEmail(email: any) {
+  const normalized = normalizeEmail(String(email || ""));
+  if (!normalized) {
+    throw new Error("OAUTH_EMAIL_REQUIRED");
+  }
+  return normalized;
+}
+
 function extractDomain(email: string) {
   const at = email.lastIndexOf("@");
   if (at <= 0) return "";
@@ -2414,15 +2422,18 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
 
   const infoJson: any = await infoResp.json().catch(() => ({}));
 
-  const email = normalizeEmail(String(infoJson?.email || ""));
-  const emailVerified = infoJson?.email_verified;
-  const googleSub = String(infoJson?.sub || "").trim();
+  const rawEmail = infoJson?.email;
+const emailVerified = infoJson?.email_verified;
+const googleSub = String(infoJson?.sub || "").trim();
 
-  if (!email) {
+let email = "";
+try {
+  email = requireVerifiedOAuthEmail(rawEmail);
+} catch {
   return oauthError(res, 400, "GOOGLE_NO_EMAIL");
 }
 
-  if (emailVerified === false) {
+if (emailVerified !== true) {
   return oauthError(res, 400, "EMAIL_NOT_VERIFIED");
 }
 
@@ -2536,10 +2547,13 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
     const infoResp = await fetch(meUrl.toString(), { method: "GET" });
     const infoJson: any = await infoResp.json().catch(() => ({}));
 
-    const email = normalizeEmail(String(infoJson?.email || ""));
-    const facebookId = String(infoJson?.id || "").trim();
+    const rawEmail = infoJson?.email;
+const facebookId = String(infoJson?.id || "").trim();
 
-    if (!email) {
+let email = "";
+try {
+  email = requireVerifiedOAuthEmail(rawEmail);
+} catch {
   return oauthError(res, 400, "FACEBOOK_NO_EMAIL", {
     hasId: Boolean(infoJson?.id),
     hasName: Boolean(infoJson?.name),
@@ -2675,18 +2689,21 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
     });
     const infoJson: any = await infoResp.json().catch(() => ({}));
 
-    const email = normalizeEmail(String(infoJson?.email || ""));
-    const emailVerified = infoJson?.email_verified;
-    const linkedinId = String(infoJson?.sub || "").trim();
+    const rawEmail = infoJson?.email;
+const emailVerified = infoJson?.email_verified;
+const linkedinId = String(infoJson?.sub || "").trim();
 
-    if (!email) {
+let email = "";
+try {
+  email = requireVerifiedOAuthEmail(rawEmail);
+} catch {
   return oauthError(res, 400, "LINKEDIN_NO_EMAIL", {
     hasSub: Boolean(infoJson?.sub),
     hasName: Boolean(infoJson?.name),
   });
 }
 
-    if (emailVerified === false) {
+if (emailVerified !== true) {
   return oauthError(res, 400, "EMAIL_NOT_VERIFIED");
 }
 
@@ -2928,17 +2945,20 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
     });
     const infoJson: any = await infoResp.json().catch(() => ({}));
 
-    let email = normalizeEmail(
-      String(
-        infoJson?.email ||
-          infoJson?.preferred_username ||
-          infoJson?.upn ||
-          idTokenClaims?.email ||
-          idTokenClaims?.preferred_username ||
-          idTokenClaims?.upn ||
-          "",
-      ),
-    );
+    let email = "";
+try {
+  email = requireVerifiedOAuthEmail(
+    infoJson?.email ||
+      infoJson?.preferred_username ||
+      infoJson?.upn ||
+      idTokenClaims?.email ||
+      idTokenClaims?.preferred_username ||
+      idTokenClaims?.upn ||
+      "",
+  );
+} catch {
+  email = "";
+}
 
     let microsoftId = String(
       infoJson?.sub || infoJson?.oid || idTokenClaims?.oid || idTokenClaims?.sub || "",
