@@ -20,7 +20,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-17_003";
+const VERSION = "routes_v2026-03-17_004";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -3257,22 +3257,20 @@ logAuthAbuse("auth_request_accepted", req, {
       }
 
       if (AUTH_RETURN_TOKEN) {
-        return res.json({
-          ok: true,
-          token: rawToken,
-          loginUrl,
-          expiresAt: expiresAt.toISOString(),
-          version: VERSION,
-        });
-      }
+  return res.json({
+    ok: true,
+    token: rawToken,
+    loginUrl,
+    expiresAt: expiresAt.toISOString(),
+    version: VERSION,
+  });
+}
 
-      return res.json({
-        ok: true,
-        sent: true,
-        loginUrl,
-        expiresAt: expiresAt.toISOString(),
-        version: VERSION,
-      });
+return res.json({
+  ok: true,
+  sent: true,
+  version: VERSION,
+});
     } catch {
       return res.status(500).json({
         error: "Request failed",
