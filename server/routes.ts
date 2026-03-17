@@ -1679,7 +1679,56 @@ export function registerRoutes(app: Express): Server {
       });
     }
   });
-  
+
+    /* -------------------- ME: GIFTS -------------------- */
+  app.get("/api/me/gifts", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+
+      if (!a.isAuthed) {
+        return res.status(401).json({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED",
+          version: VERSION,
+        });
+      }
+
+      const rows = await db
+        .select({
+          publicId: gifts.publicId,
+          senderEmail: gifts.senderEmail,
+          recipientEmail: gifts.recipientEmail,
+          recipientPhone: gifts.recipientPhone,
+          deliveryMethod: gifts.deliveryMethod,
+          messageMode: gifts.messageMode,
+          presetMessageId: gifts.presetMessageId,
+          message: gifts.message,
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
+          createdAt: gifts.createdAt,
+          deliveredAt: (gifts as any).deliveredAt,
+          claimedAt: gifts.claimedAt,
+        })
+        .from(gifts)
+        .where(eq(gifts.senderUserId, a.userId))
+        .orderBy(desc(gifts.createdAt))
+        .limit(50);
+
+      return res.json({
+        ok: true,
+        gifts: rows,
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Failed to load gifts",
+        code: "ME_GIFTS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+
   /* -------------------- ADMIN: REVOKE SESSIONS -------------------- */
   app.post("/api/admin/auth/sessions/revoke", limiterAdmin, async (req, res) => {
     try {
