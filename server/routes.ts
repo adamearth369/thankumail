@@ -778,6 +778,14 @@ async function issueSessionForEmail(
   const providerUser = byProvider?.[0];
   const emailUser = byEmail?.[0];
 
+  if (providerUser && emailUser && String(providerUser.id || "") !== String(emailUser.id || "")) {
+    return {
+      ok: false as const,
+      code: "OAUTH_EMAIL_ALREADY_LINKED" as const,
+      error: "This email is already linked to another account",
+    };
+  }
+
   let userId = "";
 
   if (providerUser) {
@@ -821,22 +829,8 @@ async function issueSessionForEmail(
     const userPatch: Record<string, any> = {
       lastLoginAt: now(),
       authProvider,
+      email: norm,
     };
-
-    const currentEmail =
-      providerUser && String(providerUser.id || "") === userId
-        ? normalizeEmail(String(providerUser.email || ""))
-        : emailUser && String(emailUser.id || "") === userId
-          ? normalizeEmail(String(emailUser.email || ""))
-          : "";
-
-    const emailConflict =
-      Boolean(providerUser && emailUser) &&
-      String(providerUser.id || "") !== String(emailUser.id || "");
-
-    if (!currentEmail || currentEmail === norm || !emailConflict) {
-      userPatch.email = norm;
-    }
 
     if (googleSub) userPatch.googleSub = googleSub;
     if (facebookId) userPatch.facebookId = facebookId;
