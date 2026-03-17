@@ -1679,7 +1679,7 @@ export function registerRoutes(app: Express): Server {
       });
     }
   });
-  
+
   /* -------------------- ME (ALIAS) -------------------- */
   app.get("/api/me", async (req, res) => {
     try {
@@ -1782,6 +1782,85 @@ export function registerRoutes(app: Express): Server {
       return res.status(500).json({
         error: "Failed to load gifts",
         code: "ME_GIFTS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+  
+  /* -------------------- ME: GIFT DETAIL -------------------- */
+  app.get("/api/me/gifts/:publicId", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+
+      if (!a.isAuthed) {
+        return res.status(401).json({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED",
+          version: VERSION,
+        });
+      }
+
+      const publicId = String(req.params.publicId || "").trim();
+
+      if (!/^[a-f0-9]{32}$/i.test(publicId)) {
+        return res.status(404).json({
+          error: "Not found",
+          code: "NOT_FOUND",
+          version: VERSION,
+        });
+      }
+
+      const rows = await db
+        .select({
+          publicId: gifts.publicId,
+          senderUserId: gifts.senderUserId,
+          senderEmail: gifts.senderEmail,
+          recipientEmail: gifts.recipientEmail,
+          recipientPhone: gifts.recipientPhone,
+          deliveryMethod: gifts.deliveryMethod,
+          messageMode: gifts.messageMode,
+          presetMessageId: gifts.presetMessageId,
+          message: gifts.message,
+          amount: gifts.amount,
+          paymentStatus: gifts.paymentStatus,
+          stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
+          stripePaymentIntentId: gifts.stripePaymentIntentId,
+          paidAt: gifts.paidAt,
+          deliveredAt: (gifts as any).deliveredAt,
+          deliveredEmailAt: (gifts as any).deliveredEmailAt,
+          deliveredSmsAt: (gifts as any).deliveredSmsAt,
+          deliveryAttemptedAt: (gifts as any).deliveryAttemptedAt,
+          deliveryError: (gifts as any).deliveryError,
+          isClaimed: gifts.isClaimed,
+          claimedAt: gifts.claimedAt,
+          createdAt: gifts.createdAt,
+          reminderCount: gifts.reminderCount,
+          lastReminderSentAt: gifts.lastReminderSentAt,
+          returnedToSenderAt: gifts.returnedToSenderAt,
+        })
+        .from(gifts)
+        .where(and(eq(gifts.publicId, publicId), eq(gifts.senderUserId, a.userId)))
+        .limit(1);
+
+      const gift = rows?.[0];
+      if (!gift) {
+        return res.status(404).json({
+          error: "Not found",
+          code: "NOT_FOUND",
+          version: VERSION,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        gift,
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Failed to load gift",
+        code: "ME_GIFT_GET_FAILED",
         detail: String(err?.message || err),
         version: VERSION,
       });
