@@ -1299,6 +1299,31 @@ async function handleStripeWebhook(req: Request, res: any) {
     if (!v.ok) return res.status(400).send("Invalid signature");
 
     const event = JSON.parse(rawBody.toString("utf8") || "{}");
+const eventId = String(event?.id || "");
+const type = String(event?.type || "");
+const obj = event?.data?.object || null;
+
+if (!eventId) return res.status(400).send("Missing event id");
+
+// -------------------- REPLAY PROTECTION (SAFE) --------------------
+try {
+  await db.insert(stripeWebhookEvents).values({
+    stripeEventId: eventId,
+    stripeType: type,
+    receivedAt: now(),
+  });
+} catch {
+  // duplicate event → already processed
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event: "stripe_webhook_duplicate_ignored",
+      stripeEventId: eventId,
+      version: VERSION,
+    }),
+  );
+  return res.status(200).send("duplicate");
+}
     const type = String(event?.type || "");
     const obj = event?.data?.object || null;
     
@@ -1787,7 +1812,7 @@ export function registerRoutes(app: Express): Server {
       });
     }
   });
-  
+
   /* -------------------- ME: GIFT DETAIL -------------------- */
   app.get("/api/me/gifts/:publicId", async (req, res) => {
     try {
