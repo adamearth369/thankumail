@@ -163,12 +163,19 @@ function SiteHeader() {
                 Dashboard
               </span>
             ) : (
-              <Link
-                href="/dashboard"
-                className="rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-white/18"
-              >
-                Dashboard
-              </Link>
+              <button
+  type="button"
+  onClick={() => {
+    if (window.location.pathname === "/dashboard") {
+      window.location.reload();
+    } else {
+      window.location.href = "/dashboard";
+    }
+  }}
+  className="rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-white/18"
+>
+  Dashboard
+</button>
             )
           ) : (
             <Link
