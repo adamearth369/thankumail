@@ -1679,6 +1679,65 @@ export function registerRoutes(app: Express): Server {
       });
     }
   });
+  
+  /* -------------------- ME (ALIAS) -------------------- */
+  app.get("/api/me", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+
+      if (!a.isAuthed) {
+        return res.status(401).json({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED",
+          version: VERSION,
+        });
+      }
+
+      const rows = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          authProvider: users.authProvider,
+          googleSub: users.googleSub,
+          facebookId: users.facebookId,
+          linkedinId: users.linkedinId,
+          microsoftId: (users as any).microsoftId,
+          createdAt: users.createdAt,
+          lastLoginAt: users.lastLoginAt,
+        })
+        .from(users)
+        .where(eq(users.id, a.userId))
+        .limit(1);
+
+      const user = rows?.[0];
+      if (!user) {
+        return res.status(401).json({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED",
+          version: VERSION,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        user: {
+          id: String(user.id),
+          email: String(user.email || ""),
+          authProvider: deriveAuthProvider(user),
+          createdAt: user.createdAt,
+          lastLoginAt: user.lastLoginAt,
+        },
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Me failed",
+        code: "ME_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
 
     /* -------------------- ME: GIFTS -------------------- */
   app.get("/api/me/gifts", async (req, res) => {
@@ -1776,7 +1835,7 @@ export function registerRoutes(app: Express): Server {
       });
     }
   });
-  
+
   /* -------------------- ADMIN: REVOKE SESSIONS -------------------- */
   app.post("/api/admin/auth/sessions/revoke", limiterAdmin, async (req, res) => {
     try {
