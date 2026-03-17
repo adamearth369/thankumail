@@ -1729,6 +1729,54 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  /* -------------------- ME: STATS -------------------- */
+  app.get("/api/me/stats", async (req, res) => {
+    try {
+      const a = await getAuth(req);
+
+      if (!a.isAuthed) {
+        return res.status(401).json({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED",
+          version: VERSION,
+        });
+      }
+
+      const rows = await db
+        .select({
+          sentCount: sql<number>`count(*)`,
+          claimedCount: sql<number>`coalesce(sum(case when ${gifts.isClaimed} = true or ${gifts.claimedAt} is not null then 1 else 0 end), 0)`,
+          pendingCount: sql<number>`coalesce(sum(case when (${gifts.isClaimed} = false or ${gifts.isClaimed} is null) and ${gifts.claimedAt} is null then 1 else 0 end), 0)`,
+          totalValueSent: sql<number>`coalesce(sum(${gifts.amount}), 0)`,
+        })
+        .from(gifts)
+        .where(eq(gifts.senderUserId, a.userId));
+
+      const stats = rows?.[0] || {
+        sentCount: 0,
+        claimedCount: 0,
+        pendingCount: 0,
+        totalValueSent: 0,
+      };
+
+      return res.json({
+        ok: true,
+        sentCount: Number(stats.sentCount || 0),
+        claimedCount: Number(stats.claimedCount || 0),
+        pendingCount: Number(stats.pendingCount || 0),
+        totalValueSent: Number(stats.totalValueSent || 0),
+        version: VERSION,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: "Failed to load stats",
+        code: "ME_STATS_FAILED",
+        detail: String(err?.message || err),
+        version: VERSION,
+      });
+    }
+  });
+  
   /* -------------------- ADMIN: REVOKE SESSIONS -------------------- */
   app.post("/api/admin/auth/sessions/revoke", limiterAdmin, async (req, res) => {
     try {
