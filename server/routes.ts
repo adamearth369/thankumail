@@ -20,7 +20,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-17_004";
+const VERSION = "routes_v2026-03-17_005";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -3221,15 +3221,36 @@ if (!mx.ok) {
       const expiresAt = new Date(Date.now() + AUTH_MAGIC_LINK_TTL_MS);
       const ua = String(req.headers["user-agent"] || "").slice(0, 500);
 
-      await db.insert(authMagicLinks).values({
-        email,
-        tokenHash,
-        expiresAt,
-        consumedAt: null,
-        ip,
-        userAgent: ua || null,
-        createdAt: now(),
-      });
+      try {
+  await db.insert(authMagicLinks).values({
+    email,
+    tokenHash,
+    expiresAt,
+    consumedAt: null,
+    ip,
+    userAgent: ua || null,
+    createdAt: now(),
+  });
+
+  logAuthAbuse("auth_request_magiclink_persisted", req, {
+    emailHash: sha256Hex(email),
+    emailDomain: domain,
+    expiresAt: expiresAt.toISOString(),
+  });
+} catch (e: any) {
+  logAuthAbuse("auth_request_magiclink_persist_failed", req, {
+    code: "AUTH_REQUEST_PERSIST_FAILED",
+    emailHash: sha256Hex(email),
+    emailDomain: domain,
+    error: String(e?.message || e),
+  });
+
+  return res.status(500).json({
+    error: "Request failed",
+    code: "AUTH_REQUEST_FAILED",
+    version: VERSION,
+  });
+}
 
       const newCount = bumpAuthRequestEmailCount(email, nowMs);
 
