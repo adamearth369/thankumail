@@ -1131,7 +1131,20 @@ const limiterClaim = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => ipKeyGenerator(getIp(req) || req.ip || "unknown"),
-  handler: (_req, res) => {
+  handler: (req, res) => {
+    const ip = getIp(req);
+
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: "abuse_claim_rate_limited",
+        ip,
+        path: req.originalUrl,
+        method: req.method,
+        version: VERSION,
+      }),
+    );
+
     return res.status(429).json({
       error: "Too many claim attempts",
       code: "CLAIM_RATE_LIMITED",
