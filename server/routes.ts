@@ -20,11 +20,11 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-17_001";
+const VERSION = "routes_v2026-03-17_002";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1_auth_request_error_normalize_v1_auth_me_error_normalize_v1_auth_logout_error_normalize_v1_auth_me_gifts_error_normalize_v1_admin_token_header_canonical_v1_claim_rate_limit_ipv6_safe_v1_oauth_error_status_normalize_v1_stripe_checkout_auth_error_normalize_v1_stripe_webhook_event_replay_protection_v1_v1_oauth_single_email_single_user";
+const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1_auth_request_error_normalize_v1_auth_me_error_normalize_v1_auth_logout_error_normalize_v1_auth_me_gifts_error_normalize_v1_admin_token_header_canonical_v1_claim_rate_limit_ipv6_safe_v1_oauth_error_status_normalize_v1_stripe_checkout_auth_error_normalize_v1_stripe_webhook_event_replay_protection_v1_v1_oauth_single_email_single_user_auth_abuse_logging_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -444,6 +444,23 @@ function deriveAuthProvider(user: {
   if (String(user.linkedinId || "").trim()) return "linkedin";
   if (String(user.microsoftId || "").trim()) return "microsoft";
   return "email";
+}
+
+function logAuthAbuse(event: string, req: Request, fields: Record<string, any> = {}) {
+  const ip = getIp(req);
+  const ua = String(req.headers["user-agent"] || "").slice(0, 200);
+
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event,
+      ip,
+      ua,
+      path: req.path,
+      method: req.method,
+      ...fields,
+    }),
+  );
 }
 
 /* -------------------- AUTH: SESSION REVOKE HELPERS -------------------- */
@@ -2368,17 +2385,29 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   const err = String(req.query.error || "");
 
   if (err) {
+  logAuthAbuse("oauth_google_failed", req, {
+    code: "GOOGLE_OAUTH_ERROR",
+  });
+
   return oauthError(res, 400, "GOOGLE_OAUTH_ERROR", { error: err });
 }
 
   if (!code || !state) {
+  logAuthAbuse("oauth_google_failed", req, {
+    code: "GOOGLE_CALLBACK_INVALID",
+  });
+
   return oauthError(res, 400, "GOOGLE_CALLBACK_INVALID");
 }
 
   const saved = oauthStateStore.get(state);
   oauthStateStore.delete(state);
 
-  if (!saved || saved.exp <= Date.now() || saved.provider !== "google") {
+  if (!saved) {
+  logAuthAbuse("oauth_google_failed", req, {
+    code: "OAUTH_STATE_INVALID",
+  });
+
   return oauthError(res, 400, "OAUTH_STATE_INVALID");
 }
 
@@ -2386,10 +2415,20 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   const ua = String(req.headers["user-agent"] || "").slice(0, 200);
 
   if (saved.ip && saved.ip !== ip) {
+  logAuthAbuse("oauth_google_failed", req, {
+    code: "OAUTH_STATE_MISMATCH",
+    check: "ip",
+  });
+
   return oauthError(res, 400, "OAUTH_STATE_MISMATCH");
 }
 
   if (saved.ua && saved.ua !== ua) {
+  logAuthAbuse("oauth_google_failed", req, {
+    code: "OAUTH_STATE_MISMATCH",
+    check: "ua",
+  });
+
   return oauthError(res, 400, "OAUTH_STATE_MISMATCH");
 }
 
@@ -2406,6 +2445,10 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
   const accessToken = String(tokenJson?.access_token || "");
 
   if (!accessToken) {
+  logAuthAbuse("oauth_google_failed", req, {
+    code: "GOOGLE_TOKEN_EXCHANGE_FAILED",
+  });
+
   return oauthError(res, 400, "GOOGLE_TOKEN_EXCHANGE_FAILED", tokenJson);
 }
 
@@ -3065,30 +3108,47 @@ try {
       }
 
       const v = await verifyTurnstile(turnstileToken, ip);
-      if (!v.ok) {
-        return res.status(400).json({
-          error: "Verification failed",
-          code: "VERIFICATION_FAILED",
-          version: VERSION,
-        });
-      }
+if (!v.ok) {
+  logAuthAbuse("auth_request_failed", req, {
+    code: "VERIFICATION_FAILED",
+    turnstile: true,
+  });
+
+  return res.status(400).json({
+    error: "Verification failed",
+    code: "VERIFICATION_FAILED",
+    version: VERSION,
+  });
+}
 
       if (isDisposableEmail(email)) {
-        return res.status(400).json({
-          error: "Invalid request",
-          code: "INVALID_REQUEST",
-          version: VERSION,
-        });
-      }
+  logAuthAbuse("auth_request_failed", req, {
+    code: "EMAIL_NOT_ALLOWED",
+    emailDomain: email.split("@")[1] || "",
+    disposable: true,
+  });
+
+  return res.status(400).json({
+    error: "Email not allowed",
+    code: "EMAIL_NOT_ALLOWED",
+    version: VERSION,
+  });
+}
 
       const mx = await mxLooksValid(domain);
-      if (!mx.ok) {
-        return res.status(400).json({
-          error: "Invalid request",
-          code: "INVALID_REQUEST",
-          version: VERSION,
-        });
-      }
+if (!mx.ok) {
+  logAuthAbuse("auth_request_failed", req, {
+    code: "INVALID_REQUEST",
+    emailDomain: domain,
+    mxReason: mx.reason,
+  });
+
+  return res.status(400).json({
+    error: "Invalid request",
+    code: "INVALID_REQUEST",
+    version: VERSION,
+  });
+}
 
       const rawToken = randomToken(24);
       const tokenHash = sha256Hex(rawToken);
