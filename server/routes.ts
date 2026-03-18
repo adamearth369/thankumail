@@ -20,7 +20,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-17_005";
+const VERSION = "routes_v2026-03-17_006";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -1134,6 +1134,24 @@ const limiterAuthRequest = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(getIp(req) || req.ip || "unknown"),
+  handler: (req, res) => {
+    const ip = getIp(req);
+
+    logAuthAbuse("auth_request_ip_rate_limited", req, {
+      code: "AUTH_REQUEST_IP_RATE_LIMITED",
+      ip,
+      path: req.originalUrl,
+      method: req.method,
+    });
+
+    return res.status(429).json({
+      error: "Too many requests",
+      code: "AUTH_REQUEST_IP_RATE_LIMITED",
+      retryAfterSec: 60,
+      version: VERSION,
+    });
+  },
 });
 
 const limiterAuthConsume = rateLimit({
