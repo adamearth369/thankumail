@@ -227,6 +227,7 @@ export type InsertGift = z.infer<typeof insertGiftSchema>;
 export type User = typeof users.$inferSelect;
 export type AuthMagicLink = typeof authMagicLinks.$inferSelect;
 export type AuthSession = typeof authSessions.$inferSelect;
+
 export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
   id: serial("id").primaryKey(),
 
@@ -238,3 +239,21 @@ export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
     .defaultNow()
     .notNull(),
 });
+
+/* -------------------- AUTH EMAIL THROTTLE -------------------- */
+export const authEmailThrottle = pgTable("auth_email_throttle", {
+  id: serial("id").primaryKey(),
+
+  emailHash: text("email_hash").notNull(),
+
+  windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+
+  count: integer("count").notNull().default(1),
+
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export type StripeWebhookEvent = typeof stripeWebhookEvents.$inferSelect;
+export type AuthEmailThrottle = typeof authEmailThrottle.$inferSelect;

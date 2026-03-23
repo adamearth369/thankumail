@@ -10,7 +10,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { db } from "./db";
-import { gifts, users, authMagicLinks, authSessions, stripeWebhookEvents } from "@shared/schema";
+import {
+  gifts,
+  users,
+  authMagicLinks,
+  authSessions,
+  stripeWebhookEvents,
+  authEmailThrottle,
+} from "@shared/schema";
 import {
   sendGiftEmail,
   sendReminderEmail,
@@ -20,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-17_006";
+const VERSION = "routes_v2026-03-23_007";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -561,47 +568,6 @@ function getStripeRawBody(req: Request): Buffer {
 /* -------------------- DAILY COUNTS -------------------- */
 const memIpCounts = new Map<string, { day: string; count: number }>();
 const memPhoneCounts = new Map<string, { day: string; count: number }>();
-const memAuthRequestEmailCounts = new Map<string, { windowStart: number; count: number }>();
-
-const AUTH_REQUEST_EMAIL_WINDOW_MS = 15 * 60 * 1000;
-const AUTH_REQUEST_EMAIL_MAX = 3;
-
-function getAuthRequestEmailKey(email: string) {
-  return sha256Hex(normalizeEmail(email));
-}
-
-function pruneAuthRequestEmailCounts(nowMs: number) {
-  for (const [k, v] of memAuthRequestEmailCounts.entries()) {
-    if (!v || nowMs - v.windowStart >= AUTH_REQUEST_EMAIL_WINDOW_MS) {
-      memAuthRequestEmailCounts.delete(k);
-    }
-  }
-}
-
-function getAuthRequestEmailCount(email: string, nowMs = Date.now()) {
-  const key = getAuthRequestEmailKey(email);
-  const cur = memAuthRequestEmailCounts.get(key);
-  if (!cur) return 0;
-  if (nowMs - cur.windowStart >= AUTH_REQUEST_EMAIL_WINDOW_MS) {
-    memAuthRequestEmailCounts.delete(key);
-    return 0;
-  }
-  return cur.count;
-}
-
-function bumpAuthRequestEmailCount(email: string, nowMs = Date.now()) {
-  const key = getAuthRequestEmailKey(email);
-  const cur = memAuthRequestEmailCounts.get(key);
-
-  if (!cur || nowMs - cur.windowStart >= AUTH_REQUEST_EMAIL_WINDOW_MS) {
-    memAuthRequestEmailCounts.set(key, { windowStart: nowMs, count: 1 });
-    return 1;
-  }
-
-  cur.count += 1;
-  memAuthRequestEmailCounts.set(key, cur);
-  return cur.count;
-}
 
 function dayKey(d: Date) {
   const y = d.getUTCFullYear();
@@ -659,7 +625,57 @@ async function countDailyBySenderEmail(senderEmail: string) {
     .where(and(eq(gifts.senderEmail, senderEmail), gte(gifts.createdAt, start)));
   return Number(rows?.[0]?.c || 0);
 }
+/* -------------------- AUTH EMAIL DB THROTTLE -------------------- */
+const AUTH_DB_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_DB_MAX = 3;
 
+async function getAuthEmailThrottle(emailHash: string) {
+  const rows = await db
+    .select({
+      id: authEmailThrottle.id,
+      count: authEmailThrottle.count,
+      windowStart: authEmailThrottle.windowStart,
+    })
+    .from(authEmailThrottle)
+    .where(eq(authEmailThrottle.emailHash, emailHash))
+    .orderBy(desc(authEmailThrottle.windowStart))
+    .limit(1);
+
+  return rows?.[0] || null;
+}
+
+async function bumpAuthEmailThrottle(emailHash: string) {
+  const nowTs = new Date();
+  const existing = await getAuthEmailThrottle(emailHash);
+
+  if (!existing) {
+    await db.insert(authEmailThrottle).values({
+      emailHash,
+      windowStart: nowTs,
+      count: 1,
+    });
+    return 1;
+  }
+
+  const windowAge = nowTs.getTime() - new Date(existing.windowStart).getTime();
+
+  if (windowAge >= AUTH_DB_WINDOW_MS) {
+    await db.insert(authEmailThrottle).values({
+      emailHash,
+      windowStart: nowTs,
+      count: 1,
+    });
+    return 1;
+  }
+
+  const updated = await db
+    .update(authEmailThrottle)
+    .set({ count: existing.count + 1 })
+    .where(eq(authEmailThrottle.id, existing.id))
+    .returning({ count: authEmailThrottle.count });
+
+  return Number(updated?.[0]?.count || existing.count + 1);
+}
 /* -------------------- AUTH -------------------- */
 type Authed =
   | { isAuthed: true; userId: string; sessionToken: string; source: "cookie" }
@@ -3150,25 +3166,27 @@ try {
       const domain = extractDomain(email);
       const turnstileToken = String(parsed.data.turnstileToken || "").trim();
 
-      const nowMs = Date.now();
-pruneAuthRequestEmailCounts(nowMs);
+      const emailHash = sha256Hex(email);
+const throttle = await getAuthEmailThrottle(emailHash);
 
-const emailCount = getAuthRequestEmailCount(email, nowMs);
+if (throttle) {
+  const windowAge = Date.now() - new Date(throttle.windowStart).getTime();
 
-if (emailCount >= AUTH_REQUEST_EMAIL_MAX) {
-  logAuthAbuse("auth_request_rate_limited", req, {
-    code: "AUTH_REQUEST_RATE_LIMITED",
-    emailHash: sha256Hex(email),
-    emailDomain: domain,
-    count: emailCount,
-  });
+  if (windowAge < AUTH_DB_WINDOW_MS && Number(throttle.count || 0) >= AUTH_DB_MAX) {
+    logAuthAbuse("auth_request_rate_limited", req, {
+      code: "AUTH_REQUEST_RATE_LIMITED",
+      emailHash,
+      emailDomain: domain,
+      count: Number(throttle.count || 0),
+    });
 
-  return res.status(429).json({
-    error: "Too many requests",
-    code: "AUTH_REQUEST_RATE_LIMITED",
-    retryAfterSec: Math.ceil(AUTH_REQUEST_EMAIL_WINDOW_MS / 1000),
-    version: VERSION,
-  });
+    return res.status(429).json({
+      error: "Too many requests",
+      code: "AUTH_REQUEST_RATE_LIMITED",
+      retryAfterSec: Math.ceil(AUTH_DB_WINDOW_MS / 1000),
+      version: VERSION,
+    });
+  }
 }
 
       if (!domain) {
@@ -3282,6 +3300,9 @@ logAuthAbuse("auth_request_accepted", req, {
 
       try {
         logAuth("auth_magiclink_email_send_start", { toDomain: domain });
+
+        await bumpAuthEmailThrottle(emailHash);
+
         const r = await sendAuthMagicLinkEmail({ to: email, loginUrl });
         logAuth("auth_magiclink_email_send_result", {
           toDomain: domain,
