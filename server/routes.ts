@@ -3255,7 +3255,7 @@ if (throttle) {
   const domainWindowAge = Date.now() - new Date(domainThrottle.windowStart).getTime();
   const domainCount = Number(domainThrottle.count || 0);
 
-  if (domainWindowAge < AUTH_DB_WINDOW_MS && domainCount >= 10) {
+    if (domainWindowAge < AUTH_DB_WINDOW_MS && domainCount >= 10) {
     logAuthAbuse("auth_request_domain_rate_limited", req, {
       code: "AUTH_REQUEST_DOMAIN_RATE_LIMITED",
       emailHash,
@@ -3271,6 +3271,8 @@ if (throttle) {
       version: VERSION,
     });
   }
+}
+
 }
 
       if (!domain) {
