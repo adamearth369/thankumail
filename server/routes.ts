@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-24_009";
+const VERSION = "routes_v2026-03-24_010";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -656,6 +656,54 @@ async function bumpAuthEmailThrottle(emailHash: string) {
     });
     return 1;
   }
+
+  async function getAuthDomainThrottle(domainHash: string) {
+  const rows = await db
+    .select({
+      id: authEmailThrottle.id,
+      count: authEmailThrottle.count,
+      windowStart: authEmailThrottle.windowStart,
+    })
+    .from(authEmailThrottle)
+    .where(eq(authEmailThrottle.emailHash, domainHash))
+    .orderBy(desc(authEmailThrottle.windowStart))
+    .limit(1);
+
+  return rows?.[0] || null;
+}
+
+async function bumpAuthDomainThrottle(domainHash: string) {
+  const nowTs = new Date();
+  const existing = await getAuthDomainThrottle(domainHash);
+
+  if (!existing) {
+    await db.insert(authEmailThrottle).values({
+      emailHash: domainHash,
+      windowStart: nowTs,
+      count: 1,
+    });
+    return 1;
+  }
+
+  const windowAge = nowTs.getTime() - new Date(existing.windowStart).getTime();
+
+  if (windowAge >= AUTH_DB_WINDOW_MS) {
+    await db.insert(authEmailThrottle).values({
+      emailHash: domainHash,
+      windowStart: nowTs,
+      count: 1,
+    });
+    return 1;
+  }
+
+  const updated = await db
+    .update(authEmailThrottle)
+    .set({ count: existing.count + 1 })
+    .where(eq(authEmailThrottle.id, existing.id))
+    .returning({ count: authEmailThrottle.count });
+
+  return Number(updated?.[0]?.count || existing.count + 1);
+}
 
   const windowAge = nowTs.getTime() - new Date(existing.windowStart).getTime();
 
@@ -3167,7 +3215,10 @@ try {
       const turnstileToken = String(parsed.data.turnstileToken || "").trim();
 
       const emailHash = sha256Hex(email);
-const throttle = await getAuthEmailThrottle(emailHash);
+      const domainHash = sha256Hex(domain);
+
+      const throttle = await getAuthEmailThrottle(emailHash);
+      const domainThrottle = await getAuthDomainThrottle(domainHash);
 
 if (throttle) {
   const windowAge = Date.now() - new Date(throttle.windowStart).getTime();
@@ -3195,6 +3246,27 @@ if (throttle) {
     return res.status(429).json({
       error: "Too many requests",
       code: "AUTH_REQUEST_RATE_LIMITED",
+      retryAfterSec: Math.ceil(AUTH_DB_WINDOW_MS / 1000),
+      version: VERSION,
+    });
+  }
+
+  if (domainThrottle) {
+  const domainWindowAge = Date.now() - new Date(domainThrottle.windowStart).getTime();
+  const domainCount = Number(domainThrottle.count || 0);
+
+  if (domainWindowAge < AUTH_DB_WINDOW_MS && domainCount >= 10) {
+    logAuthAbuse("auth_request_domain_rate_limited", req, {
+      code: "AUTH_REQUEST_DOMAIN_RATE_LIMITED",
+      emailHash,
+      domainHash,
+      emailDomain: domain,
+      count: domainCount,
+    });
+
+    return res.status(429).json({
+      error: "Too many requests",
+      code: "AUTH_REQUEST_DOMAIN_RATE_LIMITED",
       retryAfterSec: Math.ceil(AUTH_DB_WINDOW_MS / 1000),
       version: VERSION,
     });
@@ -3312,6 +3384,7 @@ logAuthAbuse("auth_request_accepted", req, {
         logAuth("auth_magiclink_email_send_start", { toDomain: domain });
 
         await bumpAuthEmailThrottle(emailHash);
+        await bumpAuthDomainThrottle(domainHash);
 
         const r = await sendAuthMagicLinkEmail({ to: email, loginUrl });
         logAuth("auth_magiclink_email_send_result", {
