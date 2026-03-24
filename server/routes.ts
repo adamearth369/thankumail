@@ -27,11 +27,11 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-24_012";
+const VERSION = "routes_v2026-03-24_013";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1_auth_request_error_normalize_v1_auth_me_error_normalize_v1_auth_logout_error_normalize_v1_auth_me_gifts_error_normalize_v1_admin_token_header_canonical_v1_claim_rate_limit_ipv6_safe_v1_oauth_error_status_normalize_v1_stripe_checkout_auth_error_normalize_v1_stripe_webhook_event_replay_protection_v1_v1_oauth_single_email_single_user_auth_abuse_logging_v1";
+const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1_auth_request_error_normalize_v1_auth_me_error_normalize_v1_auth_logout_error_normalize_v1_auth_me_gifts_error_normalize_v1_admin_token_header_canonical_v1_claim_rate_limit_ipv6_safe_v1_oauth_error_status_normalize_v1_stripe_checkout_auth_error_normalize_v1_stripe_webhook_event_replay_protection_v1_v1_oauth_single_email_single_user_auth_abuse_logging_v1_auth_request_uniform_timing_response_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -65,6 +65,10 @@ const AUTH_MX_VALIDATE_ENABLED =
   String(process.env.AUTH_MX_VALIDATE_ENABLED ?? "false").toLowerCase() === "true";
 const AUTH_MAGIC_LINK_ENABLED =
   String(process.env.AUTH_MAGIC_LINK_ENABLED ?? "false").toLowerCase() === "true";
+const AUTH_REQUEST_MIN_RESPONSE_MS = Math.max(
+  0,
+  Number(process.env.AUTH_REQUEST_MIN_RESPONSE_MS ?? 900),
+);
 
 /* -------------------- GOOGLE OAUTH -------------------- */
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
@@ -3215,15 +3219,23 @@ try {
       });
     }
 
+    const startedAt = Date.now();
+
+    const finishUniformAuthRequestResponse = async () => {
+      await sleep(Math.max(0, AUTH_REQUEST_MIN_RESPONSE_MS - (Date.now() - startedAt)));
+
+      return res.json({
+        ok: true,
+        sent: true,
+        version: VERSION,
+      });
+    };
+
     try {
       const ip = getIp(req);
       const parsed = zAuthRequest.safeParse(req.body || {});
       if (!parsed.success) {
-        return res.status(400).json({
-          error: "Invalid request",
-          code: "INVALID_REQUEST",
-          version: VERSION,
-        });
+        return finishUniformAuthRequestResponse();
       }
 
       const email = normalizeEmail(parsed.data.email);
@@ -3236,123 +3248,108 @@ try {
       const throttle = await getAuthEmailThrottle(emailHash);
       const domainThrottle = await getAuthDomainThrottle(domainHash);
 
-if (throttle) {
-  const windowAge = Date.now() - new Date(throttle.windowStart).getTime();
-  const count = Number(throttle.count || 0);
+      if (throttle) {
+        const windowAge = Date.now() - new Date(throttle.windowStart).getTime();
+        const count = Number(throttle.count || 0);
 
-  // 🔹 Near-limit warning (2 of 3)
-  if (windowAge < AUTH_DB_WINDOW_MS && count === AUTH_DB_MAX - 1) {
-    logAuthAbuse("auth_request_email_throttle_near_limit", req, {
-      emailHash,
-      emailDomain: domain,
-      countInWindow: count,
-      windowMs: AUTH_DB_WINDOW_MS,
-    });
-  }
+        if (windowAge < AUTH_DB_WINDOW_MS && count === AUTH_DB_MAX - 1) {
+          logAuthAbuse("auth_request_email_throttle_near_limit", req, {
+            emailHash,
+            emailDomain: domain,
+            countInWindow: count,
+            windowMs: AUTH_DB_WINDOW_MS,
+          });
+        }
 
-  // 🔴 Hard limit
-  if (windowAge < AUTH_DB_WINDOW_MS && count >= AUTH_DB_MAX) {
-    logAuthAbuse("auth_request_rate_limited", req, {
-      code: "AUTH_REQUEST_RATE_LIMITED",
-      emailHash,
-      emailDomain: domain,
-      count,
-    });
+        if (windowAge < AUTH_DB_WINDOW_MS && count >= AUTH_DB_MAX) {
+          logAuthAbuse("auth_request_rate_limited", req, {
+            code: "AUTH_REQUEST_RATE_LIMITED",
+            emailHash,
+            emailDomain: domain,
+            count,
+          });
 
-    return res.status(429).json({
-      error: "Too many requests",
-      code: "AUTH_REQUEST_RATE_LIMITED",
-      retryAfterSec: Math.ceil(AUTH_DB_WINDOW_MS / 1000),
-      version: VERSION,
-    });
-  }
+          return res.status(429).json({
+            error: "Too many requests",
+            code: "AUTH_REQUEST_RATE_LIMITED",
+            retryAfterSec: Math.ceil(AUTH_DB_WINDOW_MS / 1000),
+            version: VERSION,
+          });
+        }
+      }
 
-  if (domainThrottle) {
-  const domainWindowAge = Date.now() - new Date(domainThrottle.windowStart).getTime();
-  const domainCount = Number(domainThrottle.count || 0);
+      if (domainThrottle) {
+        const domainWindowAge = Date.now() - new Date(domainThrottle.windowStart).getTime();
+        const domainCount = Number(domainThrottle.count || 0);
 
-    if (domainWindowAge < AUTH_DB_WINDOW_MS && domainCount >= 10) {
-    logAuthAbuse("auth_request_domain_rate_limited", req, {
-      code: "AUTH_REQUEST_DOMAIN_RATE_LIMITED",
-      emailHash,
-      domainHash,
-      emailDomain: domain,
-      count: domainCount,
-    });
+        if (domainWindowAge < AUTH_DB_WINDOW_MS && domainCount >= 10) {
+          logAuthAbuse("auth_request_domain_rate_limited", req, {
+            code: "AUTH_REQUEST_DOMAIN_RATE_LIMITED",
+            emailHash,
+            domainHash,
+            emailDomain: domain,
+            count: domainCount,
+          });
 
-    return res.status(429).json({
-      error: "Too many requests",
-      code: "AUTH_REQUEST_DOMAIN_RATE_LIMITED",
-      retryAfterSec: Math.ceil(AUTH_DB_WINDOW_MS / 1000),
-      version: VERSION,
-    });
-  }
-}
-
-}
+          return res.status(429).json({
+            error: "Too many requests",
+            code: "AUTH_REQUEST_DOMAIN_RATE_LIMITED",
+            retryAfterSec: Math.ceil(AUTH_DB_WINDOW_MS / 1000),
+            version: VERSION,
+          });
+        }
+      }
 
       if (!domain) {
-        return res.status(400).json({
-          error: "Invalid request",
-          code: "INVALID_REQUEST",
-          version: VERSION,
-        });
+        return finishUniformAuthRequestResponse();
       }
 
       if (shouldRequireTurnstile() && !turnstileToken) {
-        return res.status(400).json({
-          error: "Verification failed",
+        logAuthAbuse("auth_request_turnstile_failed", req, {
           code: "VERIFICATION_FAILED",
-          version: VERSION,
+          turnstile: true,
+          emailHash,
+          emailDomain: domain,
+          reason: "missing_token",
         });
+
+        return finishUniformAuthRequestResponse();
       }
 
       const v = await verifyTurnstile(turnstileToken, ip);
-if (!v.ok) {
-  logAuthAbuse("auth_request_turnstile_failed", req, {
-  code: "VERIFICATION_FAILED",
-  turnstile: true,
-  emailHash: sha256Hex(email),
-  emailDomain: domain,
-});
+      if (!v.ok) {
+        logAuthAbuse("auth_request_turnstile_failed", req, {
+          code: "VERIFICATION_FAILED",
+          turnstile: true,
+          emailHash,
+          emailDomain: domain,
+        });
 
-  return res.status(400).json({
-    error: "Verification failed",
-    code: "VERIFICATION_FAILED",
-    version: VERSION,
-  });
-}
+        return finishUniformAuthRequestResponse();
+      }
 
       if (isDisposableEmail(email)) {
-  logAuthAbuse("auth_request_disposable_blocked", req, {
-  code: "EMAIL_NOT_ALLOWED",
-  emailHash: sha256Hex(email),
-  emailDomain: domain,
-  disposable: true,
-});
+        logAuthAbuse("auth_request_disposable_blocked", req, {
+          code: "EMAIL_NOT_ALLOWED",
+          emailHash,
+          emailDomain: domain,
+          disposable: true,
+        });
 
-  return res.status(400).json({
-    error: "Email not allowed",
-    code: "EMAIL_NOT_ALLOWED",
-    version: VERSION,
-  });
-}
+        return finishUniformAuthRequestResponse();
+      }
 
       const mx = await mxLooksValid(domain);
-if (!mx.ok) {
-  logAuthAbuse("auth_request_mx_failed", req, {
-  code: "INVALID_REQUEST",
-  emailHash: sha256Hex(email),
-  emailDomain: domain,
-  mxReason: mx.reason,
-});
+      if (!mx.ok) {
+        logAuthAbuse("auth_request_mx_failed", req, {
+          code: "INVALID_REQUEST",
+          emailHash,
+          emailDomain: domain,
+          mxReason: mx.reason,
+        });
 
-  return res.status(400).json({
-    error: "Invalid request",
-    code: "INVALID_REQUEST",
-    version: VERSION,
-  });
-}
+        return finishUniformAuthRequestResponse();
+      }
 
       const rawToken = randomToken(24);
       const tokenHash = sha256Hex(rawToken);
@@ -3360,41 +3357,37 @@ if (!mx.ok) {
       const ua = String(req.headers["user-agent"] || "").slice(0, 500);
 
       try {
-  await db.insert(authMagicLinks).values({
-    email,
-    tokenHash,
-    expiresAt,
-    consumedAt: null,
-    ip,
-    userAgent: ua || null,
-    createdAt: now(),
-  });
+        await db.insert(authMagicLinks).values({
+          email,
+          tokenHash,
+          expiresAt,
+          consumedAt: null,
+          ip,
+          userAgent: ua || null,
+          createdAt: now(),
+        });
 
-  logAuthAbuse("auth_request_magiclink_persisted", req, {
-    emailHash: sha256Hex(email),
-    emailDomain: domain,
-    expiresAt: expiresAt.toISOString(),
-  });
-} catch (e: any) {
-  logAuthAbuse("auth_request_magiclink_persist_failed", req, {
-    code: "AUTH_REQUEST_PERSIST_FAILED",
-    emailHash: sha256Hex(email),
-    emailDomain: domain,
-    error: String(e?.message || e),
-  });
+        logAuthAbuse("auth_request_magiclink_persisted", req, {
+          emailHash,
+          emailDomain: domain,
+          expiresAt: expiresAt.toISOString(),
+        });
+      } catch (e: any) {
+        logAuthAbuse("auth_request_magiclink_persist_failed", req, {
+          code: "AUTH_REQUEST_PERSIST_FAILED",
+          emailHash,
+          emailDomain: domain,
+          error: String(e?.message || e),
+        });
 
-  return res.status(500).json({
-    error: "Request failed",
-    code: "AUTH_REQUEST_FAILED",
-    version: VERSION,
-  });
-}
+        return finishUniformAuthRequestResponse();
+      }
 
-logAuthAbuse("auth_request_accepted", req, {
-  emailHash,
-  emailDomain: domain,
-  count: throttle ? Number(throttle.count || 0) + 1 : 1,
-});
+      logAuthAbuse("auth_request_accepted", req, {
+        emailHash,
+        emailDomain: domain,
+        count: throttle ? Number(throttle.count || 0) + 1 : 1,
+      });
 
       const loginUrl = buildAuthConsumeUrl(rawToken);
 
@@ -3418,26 +3411,25 @@ logAuthAbuse("auth_request_accepted", req, {
       }
 
       if (AUTH_RETURN_TOKEN) {
-  return res.json({
-    ok: true,
-    token: rawToken,
-    loginUrl,
-    expiresAt: expiresAt.toISOString(),
-    version: VERSION,
-  });
-}
+        await sleep(Math.max(0, AUTH_REQUEST_MIN_RESPONSE_MS - (Date.now() - startedAt)));
 
-return res.json({
-  ok: true,
-  sent: true,
-  version: VERSION,
-});
-    } catch {
-      return res.status(500).json({
-        error: "Request failed",
+        return res.json({
+          ok: true,
+          token: rawToken,
+          loginUrl,
+          expiresAt: expiresAt.toISOString(),
+          version: VERSION,
+        });
+      }
+
+      return finishUniformAuthRequestResponse();
+    } catch (e: any) {
+      logAuthAbuse("auth_request_failed_catch", req, {
         code: "AUTH_REQUEST_FAILED",
-        version: VERSION,
+        error: String(e?.message || e),
       });
+
+      return finishUniformAuthRequestResponse();
     }
   });
 
