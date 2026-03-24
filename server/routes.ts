@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-24_008";
+const VERSION = "routes_v2026-03-24_009";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -3300,12 +3300,10 @@ if (!mx.ok) {
   });
 }
 
-      const newCount = bumpAuthRequestEmailCount(email, nowMs);
-
 logAuthAbuse("auth_request_accepted", req, {
-  emailHash: sha256Hex(email),
+  emailHash,
   emailDomain: domain,
-  count: newCount,
+  count: throttle ? Number(throttle.count || 0) + 1 : 1,
 });
 
       const loginUrl = buildAuthConsumeUrl(rawToken);
