@@ -657,7 +657,27 @@ async function bumpAuthEmailThrottle(emailHash: string) {
     return 1;
   }
 
-  async function getAuthDomainThrottle(domainHash: string) {
+  const windowAge = nowTs.getTime() - new Date(existing.windowStart).getTime();
+
+  if (windowAge >= AUTH_DB_WINDOW_MS) {
+    await db.insert(authEmailThrottle).values({
+      emailHash,
+      windowStart: nowTs,
+      count: 1,
+    });
+    return 1;
+  }
+
+  const updated = await db
+    .update(authEmailThrottle)
+    .set({ count: existing.count + 1 })
+    .where(eq(authEmailThrottle.id, existing.id))
+    .returning({ count: authEmailThrottle.count });
+
+  return Number(updated?.[0]?.count || existing.count + 1);
+}
+
+async function getAuthDomainThrottle(domainHash: string) {
   const rows = await db
     .select({
       id: authEmailThrottle.id,
@@ -690,26 +710,6 @@ async function bumpAuthDomainThrottle(domainHash: string) {
   if (windowAge >= AUTH_DB_WINDOW_MS) {
     await db.insert(authEmailThrottle).values({
       emailHash: domainHash,
-      windowStart: nowTs,
-      count: 1,
-    });
-    return 1;
-  }
-
-  const updated = await db
-    .update(authEmailThrottle)
-    .set({ count: existing.count + 1 })
-    .where(eq(authEmailThrottle.id, existing.id))
-    .returning({ count: authEmailThrottle.count });
-
-  return Number(updated?.[0]?.count || existing.count + 1);
-}
-
-  const windowAge = nowTs.getTime() - new Date(existing.windowStart).getTime();
-
-  if (windowAge >= AUTH_DB_WINDOW_MS) {
-    await db.insert(authEmailThrottle).values({
-      emailHash,
       windowStart: nowTs,
       count: 1,
     });
