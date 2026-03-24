@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-23_007";
+const VERSION = "routes_v2026-03-24_008";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -3171,13 +3171,25 @@ const throttle = await getAuthEmailThrottle(emailHash);
 
 if (throttle) {
   const windowAge = Date.now() - new Date(throttle.windowStart).getTime();
+  const count = Number(throttle.count || 0);
 
-  if (windowAge < AUTH_DB_WINDOW_MS && Number(throttle.count || 0) >= AUTH_DB_MAX) {
+  // 🔹 Near-limit warning (2 of 3)
+  if (windowAge < AUTH_DB_WINDOW_MS && count === AUTH_DB_MAX - 1) {
+    logAuthAbuse("auth_request_email_throttle_near_limit", req, {
+      emailHash,
+      emailDomain: domain,
+      countInWindow: count,
+      windowMs: AUTH_DB_WINDOW_MS,
+    });
+  }
+
+  // 🔴 Hard limit
+  if (windowAge < AUTH_DB_WINDOW_MS && count >= AUTH_DB_MAX) {
     logAuthAbuse("auth_request_rate_limited", req, {
       code: "AUTH_REQUEST_RATE_LIMITED",
       emailHash,
       emailDomain: domain,
-      count: Number(throttle.count || 0),
+      count,
     });
 
     return res.status(429).json({
