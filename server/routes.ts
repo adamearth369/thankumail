@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-24_010";
+const VERSION = "routes_v2026-03-24_011";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -3293,7 +3293,7 @@ if (throttle) {
 
       const v = await verifyTurnstile(turnstileToken, ip);
 if (!v.ok) {
-  logAuthAbuse("auth_request_failed", req, {
+  logAuthAbuse("auth_request_turnstile_failed", req, {
   code: "VERIFICATION_FAILED",
   turnstile: true,
   emailHash: sha256Hex(email),
@@ -3308,7 +3308,7 @@ if (!v.ok) {
 }
 
       if (isDisposableEmail(email)) {
-  logAuthAbuse("auth_request_failed", req, {
+  logAuthAbuse("auth_request_disposable_blocked", req, {
   code: "EMAIL_NOT_ALLOWED",
   emailHash: sha256Hex(email),
   emailDomain: domain,
@@ -3324,7 +3324,7 @@ if (!v.ok) {
 
       const mx = await mxLooksValid(domain);
 if (!mx.ok) {
-  logAuthAbuse("auth_request_failed", req, {
+  logAuthAbuse("auth_request_mx_failed", req, {
   code: "INVALID_REQUEST",
   emailHash: sha256Hex(email),
   emailDomain: domain,
