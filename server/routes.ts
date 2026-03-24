@@ -27,11 +27,11 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-24_013";
+const VERSION = "routes_v2026-03-24_014";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
-const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1_auth_request_error_normalize_v1_auth_me_error_normalize_v1_auth_logout_error_normalize_v1_auth_me_gifts_error_normalize_v1_admin_token_header_canonical_v1_claim_rate_limit_ipv6_safe_v1_oauth_error_status_normalize_v1_stripe_checkout_auth_error_normalize_v1_stripe_webhook_event_replay_protection_v1_v1_oauth_single_email_single_user_auth_abuse_logging_v1_auth_request_uniform_timing_response_v1";
+const ROUTES_MARKER = "locked_scope_guest_preset_email_only_no_amount_no_sms_registered_google_only_preset_or_custom_280_optional_sms_fixed_amounts_25_50_100_250_500_1000_google_oauth_redirect_v3_add_api_auth_google_alias_plus_stripe_checkout_webhook_persist_v3_alias_routes_fix_paywall_delivery_v1_stripe_webhook_rawbody_fix_v1_stripe_webhook_route_no_route_raw_v1_admin_gifts_list_v1_delivery_tracking_v1_exact_once_paid_delivery_v1_admin_stripe_reconcile_v1_admin_stripe_session_fetch_v1_admin_reconcile_idempotent_v1_claim_safe_gift_get_v1_reminder_persist_atomic_v2_reminder_persist_verify_v1_auth_logout_revoke_v1_reminder_persist_patch_v1_admin_gift_get_v1_admin_reminder_target_v1_reminder_gap_env_parse_debug_v1_facebook_oauth_v1_auth_me_provider_fields_v1_oauth_provider_persist_v2_auth_provider_column_persist_v1_linkedin_oidc_v1_microsoft_oidc_v1_microsoft_graph_me_email_fallback_v1_oauth_skip_mx_v1_microsoft_oauth_hardening_v1_microsoft_existing_user_reuse_v1_dashboard_me_gifts_v1_dashboard_stats_v1_dashboard_gift_detail_v1_me_remind_v1_auth_cookie_only_remove_bearer_v1_auth_no_token_return_v1_stripe_webhook_amount_match_v1_enumeration_publicid_validation_v1_claim_requires_paid_v1_claim_turnstile_enforced_v1_claim_rate_limit_v1_claim_rate_limit_ip_key_v1_auth_remove_google_fragment_token_v1_auth_remove_facebook_fragment_token_v1_auth_cookie_only_cleanup_v1_gift_get_publicid_validation_v2_claim_timing_floor_v1_claim_paid_check_restore_v1_claim_timing_equalization_v1_microsoft_tenant_restriction_enforce_v1_oauth_error_sanitize_v1_google_oauth_error_sanitize_v1_facebook_oauth_error_sanitize_v1_linkedin_oauth_error_sanitize_v1_oauth_error_sweep_fix_v1_auth_request_error_normalize_v1_auth_me_error_normalize_v1_auth_logout_error_normalize_v1_auth_me_gifts_error_normalize_v1_admin_token_header_canonical_v1_claim_rate_limit_ipv6_safe_v1_oauth_error_status_normalize_v1_stripe_checkout_auth_error_normalize_v1_stripe_webhook_event_replay_protection_v1_v1_oauth_single_email_single_user_auth_abuse_logging_v1_auth_request_uniform_timing_response_v1_auth_email_canonical_pipeline_v1";
 
 /* -------------------- URLS -------------------- */
 const FRONTEND_URL = String(process.env.FRONTEND_URL || "https://thankumail.com").replace(/\/+$/, "");
@@ -258,29 +258,50 @@ function moneyToCents(dollars: number) {
   return Number.isFinite(cents) ? cents : 0;
 }
 
-function normalizeEmail(e: string) {
+type CanonicalEmailParts = {
+  raw: string;
+  email: string;
+  domain: string;
+  emailHash: string;
+  domainHash: string;
+};
+
+function normalizeEmail(e: unknown) {
   return String(e || "").trim().toLowerCase();
 }
 
+function canonicalizeEmailParts(input: unknown): CanonicalEmailParts {
+  const raw = String(input || "");
+  const email = normalizeEmail(raw);
+  const at = email.lastIndexOf("@");
+  const domain = at > 0 ? email.slice(at + 1).trim().toLowerCase() : "";
+
+  return {
+    raw,
+    email,
+    domain,
+    emailHash: sha256Hex(email),
+    domainHash: sha256Hex(domain),
+  };
+}
+
 function requireVerifiedOAuthEmail(email: any) {
-  const normalized = normalizeEmail(String(email || ""));
-  if (!normalized) {
+  const canonical = canonicalizeEmailParts(email);
+  if (!canonical.email) {
     throw new Error("OAUTH_EMAIL_REQUIRED");
   }
-  return normalized;
+  return canonical.email;
 }
 
-function extractDomain(email: string) {
-  const at = email.lastIndexOf("@");
-  if (at <= 0) return "";
-  return email.slice(at + 1).trim().toLowerCase();
+function extractDomain(email: unknown) {
+  return canonicalizeEmailParts(email).domain;
 }
 
-function isDisposableEmail(email: string) {
-  const d = extractDomain(email);
-  if (!d) return false;
+function isDisposableEmail(email: unknown) {
+  const canonical = canonicalizeEmailParts(email);
+  if (!canonical.domain) return false;
   if (!DISPOSABLE_EMAIL_DOMAINS.size) return false;
-  return DISPOSABLE_EMAIL_DOMAINS.has(d);
+  return DISPOSABLE_EMAIL_DOMAINS.has(canonical.domain);
 }
 
 function isE164(s: string) {
@@ -620,13 +641,14 @@ function getMemPhone(p: string) {
 
 async function countDailyBySenderEmail(senderEmail: string) {
   if (!DAILY_LIMIT_SENDER) return 0;
-  if (!senderEmail) return 0;
+  const canonical = canonicalizeEmailParts(senderEmail);
+  if (!canonical.email) return 0;
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const rows = await db
     .select({ c: sql<number>`count(*)` })
     .from(gifts)
-    .where(and(eq(gifts.senderEmail, senderEmail), gte(gifts.createdAt, start)));
+    .where(and(eq(gifts.senderEmail, canonical.email), gte(gifts.createdAt, start)));
   return Number(rows?.[0]?.c || 0);
 }
 /* -------------------- AUTH EMAIL DB THROTTLE -------------------- */
@@ -795,8 +817,9 @@ async function issueSessionForEmail(
     microsoftId?: string | null;
   },
 ) {
-  const norm = normalizeEmail(email);
-  const domain = extractDomain(norm);
+  const canonicalEmail = canonicalizeEmailParts(email);
+  const norm = canonicalEmail.email;
+  const domain = canonicalEmail.domain;
 
   if (!domain) {
     return { ok: false as const, code: "INVALID_EMAIL" as const, error: "Invalid email" };
@@ -1703,6 +1726,7 @@ export function registerRoutes(app: Express): Server {
         disposableEnvLoaded: DISPOSABLE_EMAIL_DOMAINS_ENV.size > 0,
         disposableFilePath: DISPOSABLE_EMAIL_DOMAINS_FILE_PATH,
         authConsumeUrlSample: `${publicSiteBase()}/auth/consume?token=...`,
+        canonicalEmailPipeline: true,
       },
 
       google: {
@@ -3238,12 +3262,13 @@ try {
         return finishUniformAuthRequestResponse();
       }
 
-      const email = normalizeEmail(parsed.data.email);
-      const domain = extractDomain(email);
+      const canonicalEmail = canonicalizeEmailParts(parsed.data.email);
+      const email = canonicalEmail.email;
+      const domain = canonicalEmail.domain;
       const turnstileToken = String(parsed.data.turnstileToken || "").trim();
 
-      const emailHash = sha256Hex(email);
-      const domainHash = sha256Hex(domain);
+      const emailHash = canonicalEmail.emailHash;
+      const domainHash = canonicalEmail.domainHash;
 
       const throttle = await getAuthEmailThrottle(emailHash);
       const domainThrottle = await getAuthDomainThrottle(domainHash);
@@ -3496,7 +3521,7 @@ try {
           .where(eq(users.id, a.userId))
           .limit(1);
 
-        normSenderEmail = String(u?.[0]?.email || "").trim().toLowerCase();
+        normSenderEmail = canonicalizeEmailParts(u?.[0]?.email || "").email;
 
         if (!normSenderEmail) {
           return res.status(401).json({
@@ -3506,7 +3531,7 @@ try {
           });
         }
       } else {
-        normSenderEmail = senderEmail ? String(senderEmail).trim().toLowerCase() : "";
+        normSenderEmail = canonicalizeEmailParts(senderEmail || "").email;
         if (!normSenderEmail) {
           return res.status(400).json({
             error: "Sender email is required",
@@ -3537,7 +3562,7 @@ try {
         }
       }
 
-      const toEmail = String(recipientEmail || "").trim().toLowerCase();
+      const toEmail = canonicalizeEmailParts(recipientEmail || "").email;
       const toPhone = String(recipientPhone || "").trim();
 
       if (!isRegistered) {
