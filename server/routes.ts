@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-24_011";
+const VERSION = "routes_v2026-03-24_012";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -1198,9 +1198,25 @@ const limiterAuthRequest = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  requestPropertyName: "authRequestRateLimit",
   keyGenerator: (req) => ipKeyGenerator(getIp(req) || req.ip || "unknown"),
   handler: (req, res) => {
     const ip = getIp(req);
+    const authRequestRateLimit = (req as any).authRequestRateLimit;
+if (authRequestRateLimit) {
+  const remaining = Number(authRequestRateLimit.remaining ?? -1);
+  const limit = Number(authRequestRateLimit.limit ?? -1);
+
+  if (remaining >= 0 && limit > 0 && remaining <= 2) {
+    logAuthAbuse("auth_request_ip_near_limit", req, {
+      ip,
+      remaining,
+      limit,
+      path: req.originalUrl,
+      method: req.method,
+    });
+  }
+}
 
     logAuthAbuse("auth_request_ip_rate_limited", req, {
       code: "AUTH_REQUEST_IP_RATE_LIMITED",
