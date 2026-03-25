@@ -1,6 +1,3 @@
-// WHERE TO PASTE: client/src/pages/Claim.tsx
-// ACTION: Full file replacement
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 
@@ -9,7 +6,6 @@ const API_BASE = "https://api.thankumail.com";
 const TURNSTILE_SCRIPT_SRC =
   "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
-// Fallback (Cloudflare test key)
 const FALLBACK_TURNSTILE_SITE_KEY = "0x4AAAAAACXaTgda6akpnmmC";
 
 const FONT_BODY =
@@ -127,6 +123,10 @@ function fireConfettiBurst() {
 
 function unwrapGiftPayload(j: any) {
   return j?.gift && typeof j.gift === "object" ? j.gift : j;
+}
+
+function isGiftClaimed(g: any) {
+  return Boolean(g?.claimed || g?.isClaimed || g?.claimedAt);
 }
 
 export default function Claim() {
@@ -261,10 +261,7 @@ export default function Claim() {
         const g = unwrapGiftPayload(j);
 
         setGift(g);
-
-        const claimed = Boolean(g?.isClaimed);
-        setAlreadyClaimed(claimed);
-
+        setAlreadyClaimed(isGiftClaimed(g));
         setError("");
       } catch (e: any) {
         const msg = String(e?.message || "Failed to load thankümail");
@@ -534,7 +531,7 @@ export default function Claim() {
       if (rr.ok && !(jj?.__notJson || jj?.__badJson)) {
         const g = unwrapGiftPayload(jj);
         setGift(g);
-        setAlreadyClaimed(Boolean(g?.isClaimed));
+        setAlreadyClaimed(isGiftClaimed(g));
       }
     } catch {}
   }
@@ -549,15 +546,13 @@ export default function Claim() {
       setClaiming(true);
       setError("");
       try {
-        const claimedBefore = Boolean(gift?.isClaimed) || alreadyClaimed;
+        const claimedBefore = isGiftClaimed(gift) || alreadyClaimed;
 
         const { r, j } = await postClaim();
 
         if (j?.__notJson || j?.__badJson) {
           throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
         }
-
-        const payload = unwrapGiftPayload(j);
 
         if (!r.ok) {
           const code = String(j?.code || "");
@@ -585,7 +580,7 @@ export default function Claim() {
           throw new Error(msg);
         }
 
-        if (claimedBefore || Boolean(payload?.isClaimed && gift?.isClaimed)) {
+        if (claimedBefore) {
           setAlreadyClaimed(true);
           setOk(false);
           setError("");
@@ -620,15 +615,13 @@ export default function Claim() {
     setError("");
 
     try {
-      const claimedBefore = Boolean(gift?.isClaimed) || alreadyClaimed;
+      const claimedBefore = isGiftClaimed(gift) || alreadyClaimed;
 
       const { r, j } = await postClaim();
 
       if (j?.__notJson || j?.__badJson) {
         throw new Error("Claim page misrouted — API returned HTML instead of JSON.");
       }
-
-      const payload = unwrapGiftPayload(j);
 
       if (hasAmount && r.status === 429 && j?.retryAfterSec) {
         const sec = Math.max(0, Number(j.retryAfterSec) || 0);
@@ -663,7 +656,7 @@ export default function Claim() {
         throw new Error(msg);
       }
 
-      if (claimedBefore || Boolean(payload?.isClaimed && gift?.isClaimed)) {
+      if (claimedBefore) {
         setAlreadyClaimed(true);
         setOk(false);
         setError("");
