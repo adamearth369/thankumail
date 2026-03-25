@@ -70,7 +70,7 @@ export const gifts = pgTable("gifts", {
 
   // OPTIONAL (server should set from authed user; guests provide)
   senderEmail: text("sender_email"),
-  senderEmailHash: text("sender_email_hash").index(),
+  senderEmailHash: text("sender_email_hash"),
 
   // Delivery targets (at least one required at API layer)
   recipientEmail: text("recipient_email"),
