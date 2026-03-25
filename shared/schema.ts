@@ -61,7 +61,6 @@ export const authSessions = pgTable("auth_sessions", {
 });
 
 /* -------------------- TABLES -------------------- */
-export const giftsSenderEmailHashIdx = index("gifts_sender_email_hash_idx").on(gifts.senderEmailHash);
 export const gifts = pgTable("gifts", {
   id: serial("id").primaryKey(),
   publicId: text("public_id").notNull().unique(),
@@ -259,4 +258,3 @@ export const authEmailThrottle = pgTable("auth_email_throttle", {
 
 export type StripeWebhookEvent = typeof stripeWebhookEvents.$inferSelect;
 export type AuthEmailThrottle = typeof authEmailThrottle.$inferSelect;
-import { index } from "drizzle-orm/pg-core";
