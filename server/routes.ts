@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-24_020";
+const VERSION = "routes_v2026-03-25_021";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -1506,38 +1506,36 @@ async function handleStripeWebhook(req: Request, res: any) {
     if (!v.ok) return res.status(400).send("Invalid signature");
 
     const event = JSON.parse(rawBody.toString("utf8") || "{}");
-const eventId = String(event?.id || "");
-const type = String(event?.type || "");
-const obj = event?.data?.object || null;
+    const eventId = String(event?.id || "");
+    const type = String(event?.type || "");
+    const obj = event?.data?.object || null;
 
-if (!eventId) return res.status(400).send("Missing event id");
+    if (!eventId) return res.status(400).send("Missing event id");
 
-// -------------------- REPLAY PROTECTION (SAFE) --------------------
-try {
-  await db.insert(stripeWebhookEvents).values({
-    stripeEventId: eventId,
-    stripeType: type,
-    receivedAt: now(),
-  });
-} catch {
-  // duplicate event → already processed
-  console.log(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      event: "stripe_webhook_duplicate_ignored",
-      stripeEventId: eventId,
-      version: VERSION,
-    }),
-  );
-  return res.status(200).send("duplicate");
-}
+    try {
+      await db.insert(stripeWebhookEvents).values({
+        stripeEventId: eventId,
+        stripeType: type,
+        receivedAt: now(),
+      });
+    } catch {
+      console.log(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: "stripe_webhook_duplicate_ignored",
+          stripeEventId: eventId,
+          version: VERSION,
+        }),
+      );
+      return res.status(200).send("duplicate");
+    }
 
     console.log(
       JSON.stringify({
         ts: new Date().toISOString(),
         event: "stripe_webhook_received",
         stripeType: type,
-        stripeId: String(event?.id || ""),
+        stripeId: eventId,
         version: VERSION,
       }),
     );
@@ -1548,7 +1546,6 @@ try {
       const paymentStatus = normalizeStripePaymentStatus(obj?.payment_status);
       const amountTotal = obj?.amount_total ?? null;
       const metadata = obj?.metadata || {};
-
       const publicId = String(metadata?.publicId || "").trim();
 
       console.log(
@@ -1575,7 +1572,6 @@ try {
               amount: gifts.amount,
               paymentStatus: gifts.paymentStatus,
               paidAt: gifts.paidAt,
-              deliveredAt: (gifts as any).deliveredAt,
             })
             .from(gifts)
             .where(eq(gifts.publicId, publicId))
@@ -1586,20 +1582,6 @@ try {
 
           const alreadyPaid =
             Boolean(g.paidAt) || String(g.paymentStatus || "").toLowerCase() === "paid";
-
-          if (alreadyPaid) {
-            await tx
-              .update(gifts)
-              .set({
-                stripeCheckoutSessionId: sessionId || null,
-                stripePaymentIntentId: paymentIntentId || null,
-                paymentStatus: "paid",
-              })
-              .where(eq(gifts.id, g.id));
-
-            shouldDeliver = true;
-            return;
-          }
 
           const existingAmountCents =
             g.amount == null || g.amount === undefined ? null : Number(g.amount);
@@ -1638,10 +1620,19 @@ try {
             return;
           }
 
-          const setAmount =
-            existingAmountCents == null && normalizedAmountCents != null
-              ? normalizedAmountCents
-              : undefined;
+          if (alreadyPaid) {
+            await tx
+              .update(gifts)
+              .set({
+                stripeCheckoutSessionId: sessionId || null,
+                stripePaymentIntentId: paymentIntentId || null,
+                paymentStatus: "paid",
+              })
+              .where(eq(gifts.id, g.id));
+
+            shouldDeliver = false;
+            return;
+          }
 
           await tx
             .update(gifts)
@@ -1650,7 +1641,6 @@ try {
               stripeCheckoutSessionId: sessionId || null,
               stripePaymentIntentId: paymentIntentId || null,
               paidAt: stripeIsPaid(paymentStatus) ? now() : null,
-              amount: setAmount as any,
             })
             .where(eq(gifts.id, g.id));
 
