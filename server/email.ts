@@ -32,7 +32,7 @@ type SendAuthMagicLinkEmailArgs = {
   loginUrl: string; // absolute URL
 };
 
-const EMAIL_VERSION = "email_v2026-03-16_001";
+const EMAIL_VERSION = "email_v2026-03-26_002";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -470,7 +470,7 @@ export async function sendAuthMagicLinkEmail(
 
 export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: boolean; error?: string }> {
   const claimUrl = toAbsoluteLink(args.claimUrl);
-  const subject = `You received a thankümail`;
+  const subject = `A message for you`;
 
   const showAmount = shouldShowAmount(args.amountCents);
 
@@ -489,8 +489,8 @@ export async function sendGiftEmail(args: SendGiftEmailArgs): Promise<{ ok: bool
   `;
 
   const htmlContent = shell({
-    title: "You received a thankümail 🎁",
-    preheader: "A note for you — open when you’re ready.",
+    title: "You received a message",
+    preheader: "You have a new message",
     bodyHtml,
     ctaHref: claimUrl,
     ctaLabel: showAmount ? "Open your thankümail" : "Read your thankümail",
