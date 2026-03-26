@@ -32,7 +32,7 @@ type SendAuthMagicLinkEmailArgs = {
   loginUrl: string; // absolute URL
 };
 
-const EMAIL_VERSION = "email_v2026-03-26_002";
+const EMAIL_VERSION = "email_v2026-03-26_003";
 
 function env(name: string, fallback = "") {
   const v = process.env[name];
@@ -141,52 +141,31 @@ function wordmarkUrl() {
 }
 
 function fontCss() {
-  const base = publicSite();
-
   return `
-  @font-face {
-    font-family: 'TM Quicksand';
-    font-style: normal;
-    font-weight: 600;
-    src: url('${base}/fonts/quicksand-600.woff2') format('woff2');
-  }
-  @font-face {
-    font-family: 'TM DM Sans';
-    font-style: normal;
-    font-weight: 400;
-    src: url('${base}/fonts/dm-sans-400.woff2') format('woff2');
-  }
-  @font-face {
-    font-family: 'TM DM Sans';
-    font-style: normal;
-    font-weight: 500;
-    src: url('${base}/fonts/dm-sans-500.woff2') format('woff2');
-  }
-
   :root { color-scheme: light; supported-color-schemes: light; }
 
   body, table, td, div, p, a, span, h1, h2, h3 {
-    font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-family: Arial, Helvetica, sans-serif !important;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
   }
 
   .tm-wordmark {
-    font-family: 'TM Quicksand', 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.2px;
+    font-family: Arial, Helvetica, sans-serif !important;
+    font-weight: 700 !important;
+    letter-spacing: 0;
   }
 
   .tm-title {
-    font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    font-weight: 800 !important;
-    letter-spacing: -0.2px;
+    font-family: Arial, Helvetica, sans-serif !important;
+    font-weight: 700 !important;
+    letter-spacing: 0;
   }
 
   .tm-btn {
-    font-family: 'TM DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    font-weight: 800 !important;
-    letter-spacing: 0.2px;
+    font-family: Arial, Helvetica, sans-serif !important;
+    font-weight: 700 !important;
+    letter-spacing: 0;
   }
   `;
 }
