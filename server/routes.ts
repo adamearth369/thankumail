@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-25_021";
+const VERSION = "routes_v2026-03-25_022";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -3859,7 +3859,7 @@ await db.insert(gifts).values({
     }
   });
 
-  /* -------------------- CLAIM -------------------- */
+/* -------------------- CLAIM -------------------- */
   app.post("/api/gifts/:publicId/claim", limiterClaim, async (req, res) => {
     const claimStartedAt = Date.now();
     const CLAIM_TIMING_FLOOR_MS = 350;
@@ -3880,7 +3880,7 @@ await db.insert(gifts).values({
         });
       }
 
-      const row = await db
+      const preRow = await db
         .select({
           id: gifts.id,
           amount: gifts.amount,
@@ -3893,11 +3893,12 @@ await db.insert(gifts).values({
         .where(eq(gifts.publicId, publicId))
         .limit(1);
 
-      const g = row?.[0];
-      const amountCents = Number(g?.amount || 0);
-      const paymentStatus = String(g?.paymentStatus || "").toLowerCase();
+      const preGift = preRow?.[0];
+      const preAmountCents = Number(preGift?.amount || 0);
+      const createdAtMs = preGift?.createdAt ? new Date(preGift.createdAt).getTime() : 0;
+      const minDelayMs = MIN_CLAIM_DELAY_SEC * 1000;
 
-      if (!g) {
+      if (!preGift) {
         await applyClaimTimingFloor();
         return res.status(404).json({
           error: "Not found",
@@ -3906,7 +3907,7 @@ await db.insert(gifts).values({
         });
       }
 
-      if (g.isClaimed || g.claimedAt) {
+      if (preGift.isClaimed || preGift.claimedAt) {
         await applyClaimTimingFloor();
         return res.status(409).json({
           error: "Already claimed",
@@ -3914,18 +3915,6 @@ await db.insert(gifts).values({
           version: VERSION,
         });
       }
-
-      if (amountCents > 0 && paymentStatus !== "paid") {
-        await applyClaimTimingFloor();
-        return res.status(409).json({
-          error: "Gift not paid",
-          code: "GIFT_NOT_PAID",
-          version: VERSION,
-        });
-      }
-
-      const createdAtMs = g.createdAt ? new Date(g.createdAt).getTime() : 0;
-      const minDelayMs = MIN_CLAIM_DELAY_SEC * 1000;
 
       if (createdAtMs && Date.now() - createdAtMs < minDelayMs) {
         const waitMs = minDelayMs - (Date.now() - createdAtMs);
@@ -3938,7 +3927,7 @@ await db.insert(gifts).values({
         });
       }
 
-      if (amountCents > 0 && shouldRequireTurnstile()) {
+      if (preAmountCents > 0 && shouldRequireTurnstile()) {
         const turnstileToken = String((req.body as any)?.turnstileToken || "").trim();
         const remoteip = getIp(req);
 
@@ -3954,19 +3943,102 @@ await db.insert(gifts).values({
         }
       }
 
-      const updated = await db
-        .update(gifts)
-        .set({ isClaimed: true, claimedAt: now() })
-        .where(and(eq(gifts.id, g.id), eq(gifts.isClaimed, false), isNull(gifts.claimedAt)))
-        .returning({ id: gifts.id });
+      const claimResult = await db.transaction(async (tx) => {
+        const row = await tx
+          .select({
+            id: gifts.id,
+            publicId: gifts.publicId,
+            amount: gifts.amount,
+            paymentStatus: gifts.paymentStatus,
+            paidAt: gifts.paidAt,
+            createdAt: gifts.createdAt,
+            claimedAt: gifts.claimedAt,
+            isClaimed: gifts.isClaimed,
+          })
+          .from(gifts)
+          .where(eq(gifts.publicId, publicId))
+          .limit(1);
 
-      if (!updated?.length) {
+        const g = row?.[0];
+        if (!g) return { ok: false as const, status: 404, code: "NOT_FOUND" as const };
+
+        if (g.isClaimed || g.claimedAt) {
+          return { ok: false as const, status: 409, code: "ALREADY_CLAIMED" as const };
+        }
+
+        const amountCents = Number(g.amount || 0);
+        const paymentStatus = String(g.paymentStatus || "").toLowerCase();
+        const paid = Boolean(g.paidAt) || paymentStatus === "paid";
+
+        if (amountCents > 0 && !paid) {
+          return { ok: false as const, status: 409, code: "GIFT_NOT_PAID" as const };
+        }
+
+        const updated = await tx
+          .update(gifts)
+          .set({ isClaimed: true, claimedAt: now() })
+          .where(and(eq(gifts.id, g.id), eq(gifts.isClaimed, false), isNull(gifts.claimedAt)))
+          .returning({
+            id: gifts.id,
+            publicId: gifts.publicId,
+          });
+
+        if (!updated?.length) {
+          return { ok: false as const, status: 409, code: "ALREADY_CLAIMED" as const };
+        }
+
+        return {
+          ok: true as const,
+          publicId: String(updated[0].publicId),
+        };
+      });
+
+      if (!claimResult.ok) {
         await applyClaimTimingFloor();
+
+        if (claimResult.code === "NOT_FOUND") {
+          return res.status(404).json({
+            error: "Not found",
+            code: "NOT_FOUND",
+            version: VERSION,
+          });
+        }
+
+        if (claimResult.code === "ALREADY_CLAIMED") {
+          return res.status(409).json({
+            error: "Already claimed",
+            code: "ALREADY_CLAIMED",
+            version: VERSION,
+          });
+        }
+
+        if (claimResult.code === "GIFT_NOT_PAID") {
+          return res.status(409).json({
+            error: "Gift not paid",
+            code: "GIFT_NOT_PAID",
+            version: VERSION,
+          });
+        }
+
         return res.status(409).json({
-          error: "Already claimed",
-          code: "ALREADY_CLAIMED",
+          error: "Claim failed",
+          code: "CLAIM_FAILED",
           version: VERSION,
         });
+      }
+
+      try {
+        await deliverGiftIfEligible(claimResult.publicId, "claim_success");
+      } catch (e: any) {
+        console.log(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            event: "delivery_after_claim_error",
+            publicId: claimResult.publicId,
+            error: String(e?.message || e),
+            version: VERSION,
+          }),
+        );
       }
 
       await applyClaimTimingFloor();
