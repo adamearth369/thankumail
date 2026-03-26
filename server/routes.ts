@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-25_025";
+const VERSION = "routes_v2026-03-25_026";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -1429,10 +1429,8 @@ async function handleCreateCheckoutSession(req: Request, res: any) {
       }
     }
 
-    const successUrl =
-      String(parsed.data.successUrl || "").trim() ||
-      `${FRONTEND_URL}/pay/success?session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = String(parsed.data.cancelUrl || "").trim() || `${FRONTEND_URL}/pay/cancel`;
+    const successUrl = `${FRONTEND_URL}/pay/success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${FRONTEND_URL}/pay/cancel`;
 
     const params = new URLSearchParams();
     params.set("mode", "payment");
