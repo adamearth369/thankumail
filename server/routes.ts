@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-25_024";
+const VERSION = "routes_v2026-03-25_025";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -1466,14 +1466,33 @@ async function handleCreateCheckoutSession(req: Request, res: any) {
     const sessionUrl = String(created.data?.url || "");
 
     if (publicId && sessionId) {
-      await db
-        .update(gifts)
-        .set({
-          stripeCheckoutSessionId: sessionId,
-          paymentStatus: "created",
-        })
-        .where(and(eq(gifts.publicId, publicId), eq(gifts.senderUserId, a.userId)));
-    }
+  const updated = await db
+    .update(gifts)
+    .set({
+      stripeCheckoutSessionId: sessionId,
+      paymentStatus: "created",
+    })
+    .where(
+      and(
+        eq(gifts.publicId, publicId),
+        eq(gifts.senderUserId, a.userId),
+        isNull(gifts.stripeCheckoutSessionId),
+        isNull(gifts.paidAt),
+      ),
+    )
+    .returning({
+      id: gifts.id,
+      stripeCheckoutSessionId: gifts.stripeCheckoutSessionId,
+    });
+
+  if (!updated?.length) {
+    return res.status(409).json({
+      error: "Checkout session already exists or gift already paid",
+      code: "CHECKOUT_SESSION_ALREADY_EXISTS",
+      version: VERSION,
+    });
+  }
+}
 
     return res.json({
       ok: true,
