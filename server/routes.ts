@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-25_023";
+const VERSION = "routes_v2026-03-25_024";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -2465,7 +2465,12 @@ if (!/^[a-f0-9]{32}$/i.test(publicId)) {
           returnedToSenderAt: gifts.returnedToSenderAt,
         })
         .from(gifts)
-        .where(eq(gifts.publicId, publicId))
+        .where(
+          and(
+            eq(gifts.publicId, publicId),
+            eq(gifts.stripeCheckoutSessionId, sessionId)
+         )
+       )
         .limit(1);
 
       const g = rows?.[0];
