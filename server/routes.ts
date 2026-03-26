@@ -27,7 +27,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-25_022";
+const VERSION = "routes_v2026-03-25_023";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -3967,8 +3967,7 @@ await db.insert(gifts).values({
         }
 
         const amountCents = Number(g.amount || 0);
-        const paymentStatus = String(g.paymentStatus || "").toLowerCase();
-        const paid = Boolean(g.paidAt) || paymentStatus === "paid";
+        const paid = Boolean(g.paidAt);
 
         if (amountCents > 0 && !paid) {
           return { ok: false as const, status: 409, code: "GIFT_NOT_PAID" as const };
