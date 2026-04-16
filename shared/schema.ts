@@ -119,6 +119,13 @@ export const gifts = pgTable("gifts", {
   returnedToSenderAt: timestamp("returned_to_sender_at", { withTimezone: true }),
 });
 
+export const supporters = pgTable("supporters", {
+  id: serial("id").primaryKey(),
+  name: text("name"),
+  anonymous: boolean("anonymous").default(false).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 /* -------------------- INSERT SCHEMA -------------------- */
 export const insertGiftSchema = createInsertSchema(gifts)
   .omit({

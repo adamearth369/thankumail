@@ -17,6 +17,7 @@ import {
   authSessions,
   stripeWebhookEvents,
   authEmailThrottle,
+  supporters,
 } from "@shared/schema";
 import {
   sendGiftEmail,
@@ -27,7 +28,7 @@ import {
 import { sendGiftSms } from "./sms";
 
 /* -------------------- VERSION -------------------- */
-const VERSION = "routes_v2026-03-25_026";
+const VERSION = "routes_v2026-04-16_027_supporters";
 const COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "";
 
 /* -------------------- ROUTES MARKER -------------------- */
@@ -1220,7 +1221,21 @@ const zAdminRemindersSend = z.object({
   limit: z.coerce.number().int().optional().nullable(),
   publicId: z.string().trim().optional().nullable(),
 });
+app.get("/api/supporters", async (_req, res) => {
+  try {
+    const rows = await db
+      .select({
+        name: supporters.name,
+        anonymous: supporters.anonymous,
+      })
+      .from(supporters)
+      .orderBy(desc(supporters.createdAt));
 
+    res.json({ supporters: rows });
+  } catch {
+    res.status(500).json({ error: "Failed to load supporters" });
+  }
+});
 /* -------------------- RATE LIMITERS -------------------- */
 const limiterCreateGift = rateLimit({
   windowMs: 60_000,

@@ -11,6 +11,7 @@ import AuthFacebook from "./pages/AuthFacebook";
 import Dashboard from "./pages/Dashboard";
 import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
+import Supporters from "./pages/Supporters";
 
 const API_BASE = "https://api.thankumail.com";
 
@@ -205,6 +206,7 @@ export default function App() {
         <Route path="/claim/:publicId" component={Claim} />
         <Route path="/login" component={Login} />
         <Route path="/dashboard" component={Dashboard} />
+        <Route path="/supporters" component={Supporters} />
         <Route path="/terms" component={Terms} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/auth/google" component={AuthGoogle} />
