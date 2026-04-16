@@ -33,7 +33,7 @@ export default function Supporters() {
           </h1>
 
           <p className="mx-auto mt-4 max-w-2xl text-sm md:text-base text-tm-cream/75 leading-relaxed">
-            These are the people who believed in ThankuMail early.
+            These are the people who believed in thankumail early.
             <br />
             Some chose to be named.
             <br />
