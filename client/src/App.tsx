@@ -117,6 +117,7 @@ function SiteHeader() {
   const [location] = useLocation();
 
   const isDashboard = location === "/dashboard";
+  const isSupporters = location === "/supporters";
 
   useEffect(() => {
     let alive = true;
@@ -138,12 +139,23 @@ function SiteHeader() {
   return (
     <div className="fixed inset-x-0 top-0 z-50">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-        <Link
-          href="/"
-          className="cursor-pointer rounded-xl px-3 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
-        >
-          Home
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/"
+            className="cursor-pointer rounded-xl px-3 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
+          >
+            Home
+          </Link>
+
+          <Link
+            href="/supporters"
+            className={`cursor-pointer rounded-xl px-3 py-2 text-sm font-medium text-white/90 ${
+              isSupporters ? "bg-white/20" : "hover:bg-white/10"
+            }`}
+          >
+            Supporters
+          </Link>
+        </div>
 
         <div className="flex items-center gap-2">
           {hasSession ? (
