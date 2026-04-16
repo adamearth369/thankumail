@@ -1823,6 +1823,7 @@ app.get("/api/supporters", async (_req, res) => {
     res.status(500).json({ error: "Failed to load supporters" });
   }
 });
+
   /* -------------------- STRIPE: CONFIG -------------------- */
   app.get("/api/stripe/config", (_req, res) => {
     if (!STRIPE_PUBLISHABLE_KEY) {
