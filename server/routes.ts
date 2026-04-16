@@ -1221,21 +1221,7 @@ const zAdminRemindersSend = z.object({
   limit: z.coerce.number().int().optional().nullable(),
   publicId: z.string().trim().optional().nullable(),
 });
-app.get("/api/supporters", async (_req, res) => {
-  try {
-    const rows = await db
-      .select({
-        name: supporters.name,
-        anonymous: supporters.anonymous,
-      })
-      .from(supporters)
-      .orderBy(desc(supporters.createdAt));
 
-    res.json({ supporters: rows });
-  } catch {
-    res.status(500).json({ error: "Failed to load supporters" });
-  }
-});
 /* -------------------- RATE LIMITERS -------------------- */
 const limiterCreateGift = rateLimit({
   windowMs: 60_000,
@@ -1822,7 +1808,21 @@ export function registerRoutes(app: Express): Server {
       presetIds: { min: PRESET_MIN_ID, max: PRESET_MAX_ID },
     });
   });
+app.get("/api/supporters", async (_req, res) => {
+  try {
+    const rows = await db
+      .select({
+        name: supporters.name,
+        anonymous: supporters.anonymous,
+      })
+      .from(supporters)
+      .orderBy(desc(supporters.createdAt));
 
+    res.json({ supporters: rows });
+  } catch {
+    res.status(500).json({ error: "Failed to load supporters" });
+  }
+});
   /* -------------------- STRIPE: CONFIG -------------------- */
   app.get("/api/stripe/config", (_req, res) => {
     if (!STRIPE_PUBLISHABLE_KEY) {
